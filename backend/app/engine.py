@@ -24,7 +24,7 @@ class TraceResult:
     tokens: list[str]
     predicted_next_token: str
     hidden_states: list[list[list[float]]]      # [layer][token][dim]
-    attention: list[list[list[list[float]]]]    # [layer][head][query][key], [] where unavailable
+    attention: list[list[list[list[float]]]]    # [layer][head][query][key]
     logit_lens: list[list[dict]]                 # [layer][top-k] -> {token, prob}, taken at the last position
 
 
@@ -36,11 +36,21 @@ class Engine:
         dtype: torch.dtype = torch.bfloat16,
         load_in_4bit: bool = False,
     ):
+        # transformers no longer accepts a bare `load_in_4bit` kwarg — it has
+        # to go through BitsAndBytesConfig, and only when actually enabled
+        # (passing quantization_config=None is fine, passing load_in_4bit
+        # directly raises a TypeError on current transformers).
+        quantization_config = None
+        if load_in_4bit:
+            from transformers import BitsAndBytesConfig
+
+            quantization_config = BitsAndBytesConfig(load_in_4bit=True)
+
         self.model = LanguageModel(
             model_name,
             device_map=device_map,
             torch_dtype=dtype,
-            load_in_4bit=load_in_4bit,
+            quantization_config=quantization_config,
             attn_implementation="eager",
             dispatch=True,
         )
@@ -55,17 +65,27 @@ class Engine:
     def trace(self, prompt: str, top_k: int = 5) -> TraceResult:
         tokens = self.tokenizer.tokenize(prompt)
 
-        with self.model.trace(prompt):
-            hidden_states, attentions, logit_lens = [], [], []
+        # Declared *before* the trace context: nnsight defers/executes the
+        # `with` block's body separately from this frame, so assigning these
+        # lists inside it would never propagate back out (UnboundLocalError
+        # on exit). Mutating them via .append() from inside works fine since
+        # it's a closure over the same list object, not a reassignment.
+        hidden_states, attentions, logit_lens = [], [], []
 
+        with self.model.trace(prompt):
             for layer in self.model.model.layers:
+                # self_attn.output must be requested before layer.output — nnsight
+                # schedules saves in the order they're referenced, and self_attn
+                # runs before the parent layer finishes, so asking for it after
+                # layer.output raises MissedProviderError ("out of order").
+                #
+                # attn_implementation="eager" (forced in __init__) means every
+                # Llama/Gemma-style self_attn returns (attn_output, attn_weights, ...),
+                # so index 1 is always populated here.
+                attentions.append(layer.self_attn.output[1].save())
+
                 hs = layer.output[0].save()
                 hidden_states.append(hs)
-
-                attn_weights = None
-                if len(layer.self_attn.output) > 1:
-                    attn_weights = layer.self_attn.output[1].save()
-                attentions.append(attn_weights)
 
                 # "if generation stopped here": push this layer's residual
                 # stream through the final norm + unembedding early.
@@ -79,7 +99,11 @@ class Engine:
             tokens=tokens,
             predicted_next_token=self._decode_argmax(final_logits),
             hidden_states=[hs.float().cpu().tolist() for hs in hidden_states],
-            attention=[a.float().cpu().tolist() if a is not None else [] for a in attentions],
+            # attn_weights keeps its (batch, head, query, key) shape even
+            # though hidden_states above already comes back batch-less on
+            # this transformers version — drop the batch=1 dim so the actual
+            # output matches the [layer][head][query][key] shape promised above.
+            attention=[a[0].float().cpu().tolist() for a in attentions],
             logit_lens=[self._topk(logits, top_k) for logits in logit_lens],
         )
 
@@ -93,18 +117,25 @@ class Engine:
 
         with self.model.generate(prompt, max_new_tokens=max_new_tokens):
             o_proj_input = self.model.model.layers[layer_idx].self_attn.o_proj.input[0]
-            o_proj_input[:, :, lo:hi] = 0
+            # o_proj's input is (..., hidden_size) — batch/seq dims vary (e.g.
+            # flattened to (seq_len, hidden) during generate on some transformers
+            # versions), so index only the last dim rather than assuming a rank.
+            o_proj_input[..., lo:hi] = 0
             out = self.model.generator.output.save()
 
         return self.tokenizer.decode(out[0], skip_special_tokens=True)
 
     def _topk(self, logits, k: int) -> list[dict]:
-        probs = torch.softmax(logits[0, -1].float(), dim=-1)
+        # logits can come back as (batch, seq, vocab) or (seq, vocab) depending
+        # on the call site (some transformers versions drop the batch dim for
+        # a manually-invoked submodule) — `...` absorbs whichever leading dims
+        # are present so this always lands on the last token's vocab vector.
+        probs = torch.softmax(logits[..., -1, :].float(), dim=-1)
         top = torch.topk(probs, k)
         return [
-            {"token": self.tokenizer.decode([idx]), "prob": prob.item()}
+            {"token": self.tokenizer.decode([idx]), "prob": prob}
             for idx, prob in zip(top.indices.tolist(), top.values.tolist())
         ]
 
     def _decode_argmax(self, logits) -> str:
-        return self.tokenizer.decode([logits[0, -1].argmax().item()])
+        return self.tokenizer.decode([logits[..., -1, :].argmax().item()])

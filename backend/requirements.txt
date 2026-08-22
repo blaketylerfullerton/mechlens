@@ -7,3 +7,4 @@ sentencepiece
 protobuf
 fastapi>=0.111
 uvicorn[standard]>=0.30
+pytest>=8.0
