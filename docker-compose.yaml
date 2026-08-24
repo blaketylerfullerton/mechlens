@@ -1,0 +1,32 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      MODEL_NAME: ${MODEL_NAME:-HuggingFaceTB/SmolLM2-135M}
+      DEVICE_MAP: ${DEVICE_MAP:-cpu}
+    volumes:
+      # Cache downloaded model weights across rebuilds instead of
+      # re-pulling them from the Hub every time the image is rebuilt.
+      - hf-cache:/root/.cache/huggingface
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_TARGET: http://backend:8000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+
+volumes:
+  hf-cache:
