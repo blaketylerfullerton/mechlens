@@ -7,7 +7,7 @@ import {
   NavigationMenuList,
   navigationMenuTriggerStyle,
 } from "@/components/ui/navigation-menu";
-
+import { VariableIcon } from '@heroicons/react/24/solid'
 const links = [
   { label: "Trace", href: "#" },
   { label: "Docs", href: "#" },
@@ -20,10 +20,17 @@ const links = [
 export function TopNav() {
   return (
     <header className="grid grid-cols-3 items-center border-b border-border px-8 py-4">
-      <span className="text-lg font-semibold text-foreground">mechlensss</span>
+      <span className="flex items-center">
+        <span className="inline-flex items-center text-lg font-semibold text-foreground">
+          M
+          <VariableIcon className="size-5" />
+          chlens
+        </span>
+      </span>
       <NavigationMenu className="justify-self-center">
         <NavigationMenuList>
           {links.map((link) =>
+     
             link.comingSoon ? (
               <NavigationMenuItem key={link.label}>
                 <span
