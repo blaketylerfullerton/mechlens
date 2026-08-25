@@ -14,6 +14,11 @@ per-layer logit lens, all from a browser UI.
 - **Ablate** — zero out a single attention head's contribution before it's
   mixed back into the residual stream, then generate, to see what that head
   was doing.
+- **Jacobian lens** — backward-pass complement to the logit lens: per layer,
+  decode the gradient of a target token's logit w.r.t. that layer's hidden
+  state (instead of the hidden state itself), showing which vocab directions
+  are causally on the path to the prediction rather than which one the
+  representation currently looks like.
 - React + Vite frontend (shadcn/ui components) talking to a FastAPI backend.
 
 ## Quick start
@@ -46,6 +51,10 @@ Set in `.env` (used by both `dev.sh` and Docker Compose):
   logit lens per layer
 - `POST /api/ablate` — `{ prompt, layer, head, max_new_tokens }` → generated
   text with that attention head zeroed out
+- `POST /api/jacobian` — `{ prompt, target_token?, top_k }` → per-layer
+  gradient norm and top vocab tokens aligned with the direction that most
+  increases the target token's logit (defaults to the model's own top
+  prediction)
 
 ## Roadmap
 

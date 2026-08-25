@@ -15,7 +15,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.engine import Engine, TraceResult  # noqa: E402
+from app.engine import Engine, JacobianLensResult, TraceResult  # noqa: E402
 
 TINY_MODEL = "trl-internal-testing/tiny-random-LlamaForCausalLM"
 
@@ -63,6 +63,40 @@ def test_trace_shapes(engine):
     assert set(result.logit_lens[0][0].keys()) == {"token", "prob"}
 
     assert isinstance(result.predicted_next_token, str)
+
+
+def test_jacobian_lens_shapes(engine):
+    result = engine.jacobian_lens("Hello there", top_k=3)
+    assert isinstance(result, JacobianLensResult)
+
+    assert len(result.layers) == engine.n_layers
+    assert isinstance(result.target_token_id, int)
+    assert isinstance(result.target_token, str)
+
+    for layer in result.layers:
+        assert isinstance(layer["grad_norm"], float)
+        assert layer["grad_norm"] >= 0
+        assert len(layer["top_aligned_tokens"]) == 3
+        assert set(layer["top_aligned_tokens"][0].keys()) == {"token", "score"}
+
+
+def test_jacobian_lens_explicit_target(engine):
+    # Find any low-id token this tiny tokenizer round-trips to a single id;
+    # this just checks the explicit-target path resolves to that id, rather
+    # than falling back to argmax.
+    tokenizer = engine.tokenizer
+    token_str = ids = None
+    for candidate_id in range(10):
+        candidate_str = tokenizer.decode([candidate_id])
+        candidate_ids = tokenizer.encode(candidate_str, add_special_tokens=False)
+        if len(candidate_ids) == 1:
+            token_str, ids = candidate_str, candidate_ids
+            break
+    if token_str is None:
+        pytest.skip("no low-id token round-trips to a single token for this checkpoint")
+
+    result = engine.jacobian_lens("Hello there", target_token=token_str, top_k=2)
+    assert result.target_token_id == ids[0]
 
 
 def test_ablate_head_runs(engine):

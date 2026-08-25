@@ -22,8 +22,8 @@ function GithubIcon(props: SVGProps<SVGSVGElement>) {
 const centerLinks = [
   { label: "Trace", to: "/" },
   { label: "Attention heatmaps", to: "/attention" },
+  { label: "Jacobian lens", to: "/jacobian" },
   { label: "Activation patching", comingSoon: true },
-  { label: "Logit attribution", comingSoon: true },
 ];
 
 const rightLinks = [

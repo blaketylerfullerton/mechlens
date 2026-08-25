@@ -2,6 +2,7 @@ import { createRootRoute, createRoute, createRouter, Outlet } from "@tanstack/re
 import { TopNav } from "@/components/TopNav";
 import { TracePage } from "@/pages/TracePage";
 import { AttentionPage } from "@/pages/AttentionPage";
+import { JacobianPage } from "@/pages/JacobianPage";
 
 const rootRoute = createRootRoute({
   component: () => (
@@ -24,7 +25,13 @@ const attentionRoute = createRoute({
   component: AttentionPage,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute, attentionRoute]);
+const jacobianRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/jacobian",
+  component: JacobianPage,
+});
+
+const routeTree = rootRoute.addChildren([indexRoute, attentionRoute, jacobianRoute]);
 
 export const router = createRouter({ routeTree });
 

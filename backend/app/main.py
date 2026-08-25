@@ -51,6 +51,11 @@ class AblateRequest(PromptRequest):
     max_new_tokens: int = 30
 
 
+class JacobianRequest(PromptRequest):
+    target_token: str | None = None
+    top_k: int = 5
+
+
 @app.post("/api/generate")
 def generate(req: GenerateRequest):
     return {"text": engine.generate(req.prompt, max_new_tokens=req.max_new_tokens)}
@@ -64,3 +69,8 @@ def trace(req: TraceRequest):
 @app.post("/api/ablate")
 def ablate(req: AblateRequest):
     return {"text": engine.ablate_head(req.prompt, req.layer, req.head, max_new_tokens=req.max_new_tokens)}
+
+
+@app.post("/api/jacobian")
+def jacobian(req: JacobianRequest):
+    return asdict(engine.jacobian_lens(req.prompt, target_token=req.target_token, top_k=req.top_k))
