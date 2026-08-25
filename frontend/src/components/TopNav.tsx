@@ -8,6 +8,7 @@ import {
   navigationMenuTriggerStyle,
 } from "@/components/ui/navigation-menu";
 import { VariableIcon } from '@heroicons/react/24/solid'
+import { Link, useRouterState } from "@tanstack/react-router";
 import type { SVGProps } from "react";
 
 function GithubIcon(props: SVGProps<SVGSVGElement>) {
@@ -19,9 +20,9 @@ function GithubIcon(props: SVGProps<SVGSVGElement>) {
 }
 
 const centerLinks = [
-  { label: "Trace", href: "#" },
+  { label: "Trace", to: "/" },
+  { label: "Attention heatmaps", to: "/attention" },
   { label: "Activation patching", comingSoon: true },
-  { label: "Attention heatmaps", comingSoon: true },
   { label: "Logit attribution", comingSoon: true },
 ];
 
@@ -34,10 +35,10 @@ const rightLinks = [
   },
 ];
 
-function NavLinks({ links }: { links: typeof centerLinks | typeof rightLinks }) {
+function CenterNavLinks({ pathname }: { pathname: string }) {
   return (
     <NavigationMenuList>
-      {links.map((link) =>
+      {centerLinks.map((link) =>
         "comingSoon" in link && link.comingSoon ? (
           <NavigationMenuItem key={link.label}>
             <span
@@ -56,11 +57,11 @@ function NavLinks({ links }: { links: typeof centerLinks | typeof rightLinks }) 
         ) : (
           <NavigationMenuItem key={link.label}>
             <NavigationMenuLink
-              href={link.href}
-              aria-label={"icon" in link && link.icon ? link.label : undefined}
+              render={<Link to={link.to} />}
+              active={pathname === link.to}
               className={navigationMenuTriggerStyle()}
             >
-              {"icon" in link && link.icon ? <link.icon className="size-4" /> : link.label}
+              {link.label}
             </NavigationMenuLink>
           </NavigationMenuItem>
         )
@@ -69,7 +70,27 @@ function NavLinks({ links }: { links: typeof centerLinks | typeof rightLinks }) 
   );
 }
 
+function RightNavLinks() {
+  return (
+    <NavigationMenuList>
+      {rightLinks.map((link) => (
+        <NavigationMenuItem key={link.label}>
+          <NavigationMenuLink
+            href={link.href}
+            aria-label={link.icon ? link.label : undefined}
+            className={navigationMenuTriggerStyle()}
+          >
+            {link.icon ? <link.icon className="size-4" /> : link.label}
+          </NavigationMenuLink>
+        </NavigationMenuItem>
+      ))}
+    </NavigationMenuList>
+  );
+}
+
 export function TopNav() {
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+
   return (
     <header className="grid grid-cols-3 items-center border-b border-border px-8 py-4">
       <span className="flex items-center">
@@ -80,10 +101,10 @@ export function TopNav() {
         </span>
       </span>
       <NavigationMenu className="justify-self-center">
-        <NavLinks links={centerLinks} />
+        <CenterNavLinks pathname={pathname} />
       </NavigationMenu>
       <NavigationMenu className="justify-self-end">
-        <NavLinks links={rightLinks} />
+        <RightNavLinks />
       </NavigationMenu>
     </header>
   );

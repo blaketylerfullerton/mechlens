@@ -1,7 +1,5 @@
-import { useState } from "react";
-import type { TraceResult } from "./types";
+import { useTrace } from "@/hooks/useTrace";
 import { Button } from "@/components/ui/button";
-import { TopNav } from "@/components/TopNav";
 import {
   Card,
   CardContent,
@@ -27,34 +25,11 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-export default function App() {
-  const [prompt, setPrompt] = useState("The capital of France is");
-  const [topK, setTopK] = useState(5);
-  const [result, setResult] = useState<TraceResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  async function runTrace() {
-    setError(null);
-    setLoading(true);
-    try {
-      const res = await fetch("/api/trace", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt, top_k: topK }),
-      });
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-      setResult(await res.json());
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
-    }
-  }
+export function TracePage() {
+  const { prompt, setPrompt, topK, setTopK, result, error, loading, runTrace } = useTrace();
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <TopNav />
+    <>
       <div className="border-b border-border bg-muted/50">
         <div className="mx-auto max-w-[100rem] px-8 py-4">
           <h1 className="text-sm font-medium text-foreground">Trace</h1>
@@ -202,6 +177,6 @@ export default function App() {
           )}
         </div>
       </main>
-    </div>
+    </>
   );
 }

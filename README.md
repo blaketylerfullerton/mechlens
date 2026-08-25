@@ -1,4 +1,4 @@
-# mechlens
+# Mechlens
 
 Full stack application for mechanistic interpretability. It loads a Hugging
 Face causal LM with [nnsight](https://nnsight.net/) and lets you trace a
