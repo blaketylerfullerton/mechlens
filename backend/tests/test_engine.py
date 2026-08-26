@@ -15,7 +15,11 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.engine import Engine, JacobianLensResult, TraceResult  # noqa: E402
+from app.engine import Engine  # noqa: E402
+from app.lenses.ablate import ablate_head  # noqa: E402
+from app.lenses.generate import generate  # noqa: E402
+from app.lenses.jacobian import JacobianLensResult, jacobian_lens  # noqa: E402
+from app.lenses.trace import TraceResult, trace  # noqa: E402
 
 TINY_MODEL = "trl-internal-testing/tiny-random-LlamaForCausalLM"
 
@@ -31,13 +35,13 @@ def test_load(engine):
 
 
 def test_generate(engine):
-    out = engine.generate("Hello there", max_new_tokens=5)
+    out = generate(engine, "Hello there", max_new_tokens=5)
     assert isinstance(out, str)
     assert out.startswith("Hello there")
 
 
 def test_trace_shapes(engine):
-    result = engine.trace("Hello there", top_k=3)
+    result = trace(engine, "Hello there", top_k=3)
     assert isinstance(result, TraceResult)
 
     n_layers = engine.n_layers
@@ -66,7 +70,7 @@ def test_trace_shapes(engine):
 
 
 def test_jacobian_lens_shapes(engine):
-    result = engine.jacobian_lens("Hello there", top_k=3)
+    result = jacobian_lens(engine, "Hello there", top_k=3)
     assert isinstance(result, JacobianLensResult)
 
     assert len(result.layers) == engine.n_layers
@@ -95,11 +99,11 @@ def test_jacobian_lens_explicit_target(engine):
     if token_str is None:
         pytest.skip("no low-id token round-trips to a single token for this checkpoint")
 
-    result = engine.jacobian_lens("Hello there", target_token=token_str, top_k=2)
+    result = jacobian_lens(engine, "Hello there", target_token=token_str, top_k=2)
     assert result.target_token_id == ids[0]
 
 
 def test_ablate_head_runs(engine):
-    out = engine.ablate_head("Hello there", layer_idx=0, head_idx=0, max_new_tokens=5)
+    out = ablate_head(engine, "Hello there", layer_idx=0, head_idx=0, max_new_tokens=5)
     assert isinstance(out, str)
     assert out.startswith("Hello there")

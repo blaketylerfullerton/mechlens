@@ -20,4 +20,4 @@ jobs:
       - name: Run tests
         run: pytest backend
       - name: Run frontend tests
-        run: npm run test frontend
+        run: npm --prefix frontend ci && npm --prefix frontend run test

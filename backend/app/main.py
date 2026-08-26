@@ -8,6 +8,10 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from app.engine import Engine
+from app.lenses.ablate import ablate_head
+from app.lenses.generate import generate as run_generate
+from app.lenses.jacobian import jacobian_lens
+from app.lenses.trace import trace as run_trace
 
 load_dotenv()
 
@@ -58,19 +62,19 @@ class JacobianRequest(PromptRequest):
 
 @app.post("/api/generate")
 def generate(req: GenerateRequest):
-    return {"text": engine.generate(req.prompt, max_new_tokens=req.max_new_tokens)}
+    return {"text": run_generate(engine, req.prompt, max_new_tokens=req.max_new_tokens)}
 
 
 @app.post("/api/trace")
 def trace(req: TraceRequest):
-    return asdict(engine.trace(req.prompt, top_k=req.top_k))
+    return asdict(run_trace(engine, req.prompt, top_k=req.top_k))
 
 
 @app.post("/api/ablate")
 def ablate(req: AblateRequest):
-    return {"text": engine.ablate_head(req.prompt, req.layer, req.head, max_new_tokens=req.max_new_tokens)}
+    return {"text": ablate_head(engine, req.prompt, req.layer, req.head, max_new_tokens=req.max_new_tokens)}
 
 
 @app.post("/api/jacobian")
 def jacobian(req: JacobianRequest):
-    return asdict(engine.jacobian_lens(req.prompt, target_token=req.target_token, top_k=req.top_k))
+    return asdict(jacobian_lens(engine, req.prompt, target_token=req.target_token, top_k=req.top_k))

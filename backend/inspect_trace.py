@@ -14,6 +14,7 @@ import sys
 import torch
 
 from app.engine import Engine
+from app.lenses.trace import trace
 
 MODEL = "HuggingFaceTB/SmolLM2-135M"
 PROMPT = sys.argv[1] if len(sys.argv) > 1 else "The capital of France is"
@@ -120,7 +121,7 @@ if __name__ == "__main__":
     print(f"loading {MODEL}...")
     engine = Engine(MODEL, device_map="cpu", dtype=torch.float32)
     print(f"tracing '{PROMPT}'...")
-    result = engine.trace(PROMPT, top_k=TOP_K)
+    result = trace(engine, PROMPT, top_k=TOP_K)
     layer = LAYER if LAYER is not None else engine.n_layers // 2
 
     print_header(engine, result)
