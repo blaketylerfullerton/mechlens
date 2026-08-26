@@ -1,4 +1,5 @@
 import os
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 
@@ -20,18 +21,33 @@ load_dotenv()
 MODEL_NAME = os.getenv("MODEL_NAME", "HuggingFaceTB/SmolLM2-135M")
 DEVICE_MAP = os.getenv("DEVICE_MAP", "cpu")
 
-engine: Engine | None = None
+# How many distinct models to keep loaded at once. The UI's model picker lets
+# a user flip between models, but each one is real memory — evict the
+# least-recently-used once we're over the cap rather than growing unbounded.
+MAX_LOADED_MODELS = int(os.getenv("MAX_LOADED_MODELS", "3"))
+
+_engines: "OrderedDict[str, Engine]" = OrderedDict()
+
+def get_engine(model_name: str) -> Engine:
+    if model_name in _engines:
+        _engines.move_to_end(model_name)
+        return _engines[model_name]
+
+    # Loaded lazily and cached, not per-request — reloading the model on
+    # every call would make each request take as long as
+    # `inspect_trace.py`'s entire startup.
+    engine = Engine(model_name, device_map=DEVICE_MAP, dtype=torch.float32)
+    _engines[model_name] = engine
+    if len(_engines) > MAX_LOADED_MODELS:
+        _engines.popitem(last=False)
+    return engine
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global engine
-    # Loaded once at startup, not per-request — reloading the model on every
-    # call would make each request take as long as `inspect_trace.py`'s
-    # entire startup.
-    engine = Engine(MODEL_NAME, device_map=DEVICE_MAP, dtype=torch.float32)
+    get_engine(MODEL_NAME)
     yield
-    engine = None
+    _engines.clear()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -39,6 +55,7 @@ app = FastAPI(lifespan=lifespan)
 
 class PromptRequest(BaseModel):
     prompt: str
+    model: str = MODEL_NAME
 
 
 class GenerateRequest(PromptRequest):
@@ -62,19 +79,23 @@ class JacobianRequest(PromptRequest):
 
 @app.post("/api/generate")
 def generate(req: GenerateRequest):
+    engine = get_engine(req.model)
     return {"text": run_generate(engine, req.prompt, max_new_tokens=req.max_new_tokens)}
 
 
 @app.post("/api/trace")
 def trace(req: TraceRequest):
+    engine = get_engine(req.model)
     return asdict(run_trace(engine, req.prompt, top_k=req.top_k))
 
 
 @app.post("/api/ablate")
 def ablate(req: AblateRequest):
+    engine = get_engine(req.model)
     return {"text": ablate_head(engine, req.prompt, req.layer, req.head, max_new_tokens=req.max_new_tokens)}
 
 
 @app.post("/api/jacobian")
 def jacobian(req: JacobianRequest):
+    engine = get_engine(req.model)
     return asdict(jacobian_lens(engine, req.prompt, target_token=req.target_token, top_k=req.top_k))
