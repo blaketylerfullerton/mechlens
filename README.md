@@ -1,5 +1,7 @@
 # Mechlens
 
+DevTools for what's happening inside a transformer.
+
 Full stack application for mechanistic interpretability. It loads a Hugging
 Face causal LM with [nnsight](https://nnsight.net/) and lets you trace a
 prompt through the model to inspect hidden states, attention patterns, and a

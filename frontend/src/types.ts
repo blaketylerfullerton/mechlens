@@ -21,9 +21,23 @@ export interface JacobianAlignedToken {
   score: number;
 }
 
-export interface JacobianLayerResult {
+export interface JacobianPositionResult {
+  token: string;
   grad_norm: number;
   top_aligned_tokens: JacobianAlignedToken[];
+}
+
+export interface JacobianLayerResult {
+  positions: JacobianPositionResult[];
+}
+
+export interface NextTokenPrediction {
+  token: string;
+  prob: number;
+}
+
+export interface PositionNextTokenPredictions {
+  top_predictions: NextTokenPrediction[];
 }
 
 export interface JacobianLensResult {
@@ -31,5 +45,6 @@ export interface JacobianLensResult {
   tokens: string[];
   target_token: string;
   target_token_id: number;
-  layers: JacobianLayerResult[];
+  next_token_predictions: PositionNextTokenPredictions[]; // [position], real forward-pass softmax
+  layers: JacobianLayerResult[]; // [layer][position]
 }
