@@ -22,7 +22,7 @@ import numpy as np
 import torch
 from transformer_lens import HookedTransformer
 
-from schema import (
+from .schema import (
     LayerState,
     LogitSummary,
     TokenInfo,
@@ -201,6 +201,7 @@ def generate_trace(
         model=cfg.model_name,
         device=str(model.cfg.device),
         dtype=str(cfg.dtype),
+        normalization=cfg.normalization_type,
         n_layers=n_layers,
         d_model=d_model,
         prompt=prompt,

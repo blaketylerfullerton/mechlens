@@ -19,8 +19,8 @@ from pathlib import Path
 
 import numpy as np
 
-from capture import CaptureResult
-from schema import ResidualRef, Trace
+from .capture import CaptureResult
+from .schema import SCHEMA_VERSION, ResidualRef, Trace
 
 DEFAULT_TRACE_DIR = Path(__file__).resolve().parents[1] / "traces"
 
@@ -53,8 +53,30 @@ def save_trace(
         dtype=str(result.residuals.dtype),
     )
 
-    json_path.write_text(trace.model_dump_json(indent=2))
+    json_path.write_text(_stamped(trace).model_dump_json(indent=2))
     return json_path
+
+
+def update_trace(trace: Trace, json_path: Path | str) -> Path:
+    """Rewrite just the JSON half, leaving the residual sidecar alone.
+
+    This is the enrichment path: a pass mutates a loaded trace and saves it
+    back over itself. The tensor never changes, so re-writing 7MB of .npy on
+    every SAE tweak would be pure waste.
+    """
+    json_path = Path(json_path)
+    json_path.write_text(_stamped(trace).model_dump_json(indent=2))
+    return json_path
+
+
+def _stamped(trace: Trace) -> Trace:
+    """Mark the document with the schema version that just wrote it.
+
+    An older trace enriched by current code comes out with current fields in
+    it, so it would be lying if it kept claiming the version it was born under.
+    """
+    trace.schema_version = SCHEMA_VERSION
+    return trace
 
 
 def load_trace(json_path: Path | str) -> Trace:

@@ -2,14 +2,17 @@
 Phase 0 smoke test: load gemma-2-2b under TransformerLens, greedy-generate
 20 tokens with a manual loop, and verify residual-stream hooks are reachable.
 
-Run:  python scripts/00_smoke_generate.py
+Superseded by `app.cli trace` for real work; kept because it is the smallest
+thing that answers "is the model and its hooks reachable at all?".
+
+Run from backend/:  python -m app.smoke_test
 Requires: HF_TOKEN in env, license accepted at hf.co/google/gemma-2-2b
 """
 
 import time
 import torch
 
-from model_cache import MODEL_NAME, get_model
+from .model_cache import MODEL_NAME, get_model
 
 N_NEW_TOKENS = 20
 PROMPT = "The Golden Gate Bridge is located in the city of"
