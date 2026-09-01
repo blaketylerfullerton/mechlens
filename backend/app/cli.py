@@ -7,6 +7,7 @@
     python -m app.cli enrich traces/<id>.json --lens       # decode every layer
     python -m app.cli show traces/<id>.json --layer 20
     python -m app.cli show traces/<id>.json --lens --token 12
+    python -m app.cli view traces/<id>.json                 # the same thing, in a browser
 
 `enrich` is the loop you actually iterate in: it reads the residual sidecar, so
 re-running the SAE pass on a saved trace costs seconds. `--sae` and `--labels`
@@ -33,6 +34,7 @@ from .passes.sae import SAEPass
 from .sae_cache import DEFAULT_WIDTH
 from .schema import Trace
 from .store import DEFAULT_TRACE_DIR, load, save_trace, update_trace
+from .viewer import DEFAULT_PORT
 
 PROMPT = "The Golden Gate Bridge is located in the city of"
 
@@ -326,6 +328,19 @@ def cmd_show(args: argparse.Namespace) -> None:
         print(f"  resid norms: L0 {norms[:, 0].mean():.0f} -> L{trace.n_layers - 1} {norms[:, -1].mean():.0f}")
 
 
+def cmd_view(args: argparse.Namespace) -> None:
+    # Imported here rather than at module scope: `trace` and `enrich` have no
+    # business pulling in an HTTP server.
+    from .viewer import serve
+
+    serve(
+        port=args.port,
+        trace=str(args.trace) if args.trace else None,
+        trace_dir=args.out_dir,
+        open_browser=not args.no_browser,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="app.cli", description=__doc__.splitlines()[0])
     sub = p.add_subparsers(dest="command", required=True)
@@ -381,6 +396,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--token", type=int, help="token position to show (default: the last one)")
     s.add_argument("--lens", action="store_true", help="show the per-layer logit lens instead")
     s.set_defaults(func=cmd_show)
+
+    v = sub.add_parser("view", help="open the trace viewer in a browser")
+    v.add_argument("trace", type=Path, nargs="?", help="trace to open (default: the picker)")
+    v.add_argument("--port", type=int, default=DEFAULT_PORT)
+    v.add_argument("--out-dir", type=Path, default=DEFAULT_TRACE_DIR, help="where traces live")
+    v.add_argument("--no-browser", action="store_true")
+    v.set_defaults(func=cmd_view)
 
     return p
 

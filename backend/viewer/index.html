@@ -1,0 +1,940 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mechlens — logit lens</title>
+
+<!--
+  The phase-4 HUD. A static page: no build step, no CDN, no server required.
+
+  Three ways in, in priority order:
+    ?trace=<url>        fetched on load (what `python -m app.cli view` opens)
+    the trace dropdown  populated from /api/traces when a server offers it
+    drag a .json in     works straight off file://, where fetch cannot
+
+  It reads the Trace JSON only. The .residuals.npy sidecar is never touched —
+  everything drawn here was already summarised into the document by a pass.
+-->
+
+<style>
+  /* ---------------------------------------------------------------------
+     Palette. Slots and ramps from the project's data-viz reference: blue is
+     sequential slot 1, orange slot 2. Blue carries "this is the answer" and
+     orange "this is an echo" in EVERY view here — the grid and the curves
+     agree, so a hue means one thing on the whole page. Validated for CVD
+     separation in both modes (worst pair dE 24.7 light / 26.8 dark).
+     --------------------------------------------------------------------- */
+  :root {
+    color-scheme: light;
+    --plane:      #f9f9f7;
+    --surface:    #fcfcfb;
+    --ink:        #0b0b0b;
+    --ink-2:      #52514e;
+    --muted:      #898781;
+    --gridline:   #e1e0d9;
+    --axis:       #c3c2b7;
+    --border:     rgba(11, 11, 11, 0.10);
+    --hairline:   rgba(11, 11, 11, 0.06);
+    --answer:     #2a78d6;
+    --echo:       #eb6834;
+    --neutral:    #898781;
+    --good:       #0ca30c;
+    --critical:   #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --plane:    #0d0d0d;
+      --surface:  #1a1a19;
+      --ink:      #ffffff;
+      --ink-2:    #c3c2b7;
+      --muted:    #898781;
+      --gridline: #2c2c2a;
+      --axis:     #383835;
+      --border:   rgba(255, 255, 255, 0.10);
+      --hairline: rgba(255, 255, 255, 0.06);
+      --answer:   #3987e5;
+      --echo:     #d95926;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --plane: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7;
+    --gridline: #2c2c2a; --axis: #383835;
+    --border: rgba(255,255,255,0.10); --hairline: rgba(255,255,255,0.06);
+    --answer: #3987e5; --echo: #d95926;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--plane);
+    color: var(--ink);
+    font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+  /* ------------------------------------------------------------------ bar */
+  .topbar {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 10px 16px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 30;
+  }
+  .brand { font-weight: 600; letter-spacing: -0.01em; }
+  .brand span { color: var(--muted); font-weight: 400; }
+  .spacer { flex: 1; }
+  select, button, label.filebtn {
+    font: inherit; color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 4px 9px; cursor: pointer;
+  }
+  button:hover, label.filebtn:hover { background: var(--hairline); }
+  button[aria-pressed="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+  .segmented { display: inline-flex; gap: 4px; }
+  .filebtn input { display: none; }
+
+  main { padding: 16px; display: grid; gap: 16px; max-width: 100%; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 16px;
+  }
+  h2 {
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.07em; color: var(--muted);
+    margin: 0 0 10px;
+  }
+
+  /* ----------------------------------------------------------- the prompt */
+  .prompt { font-size: 15px; line-height: 1.7; }
+  .prompt .p { color: var(--ink); }
+  .prompt .g { color: var(--answer); font-weight: 600; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .chip {
+    font-size: 11px; color: var(--ink-2);
+    border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px;
+  }
+
+  /* ------------------------------------------------------------ statistics */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+  .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+  .tile .k { font-size: 11px; color: var(--muted); }
+  .tile .v { font-size: 24px; font-weight: 600; letter-spacing: -0.02em; margin-top: 2px; }
+  .tile .n { font-size: 11px; color: var(--ink-2); margin-top: 2px; }
+  .ok  { color: var(--good); }
+  .bad { color: var(--critical); }
+
+  /* --------------------------------------------------------- the grid HUD */
+  .hud { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
+  @media (max-width: 1000px) { .hud { grid-template-columns: minmax(0, 1fr); } }
+
+  .gridwrap { overflow: auto; max-height: 78vh; border: 1px solid var(--hairline); border-radius: 8px; }
+  .grid { display: grid; width: max-content; background: var(--surface); }
+
+  .gcell, .ghead, .glayer, .gcorner {
+    font-size: 10px; line-height: 1;
+    display: flex; align-items: center;
+    white-space: nowrap; overflow: hidden;
+  }
+  /* 2px of surface between fills, per the mark spec: adjacent cells must not
+     bleed into one continuous wash. */
+  .gcell {
+    height: 20px; padding: 0 4px; margin: 1px;
+    border-radius: 3px; cursor: pointer;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .gcell.empty { background: repeating-linear-gradient(45deg, transparent 0 3px, var(--hairline) 3px 6px); }
+  .gcell.pin  { outline: 2px solid var(--ink); outline-offset: -2px; }
+  .gcell.rowlit, .gcell.collit { filter: saturate(1.25) brightness(1.06); }
+
+  .ghead {
+    position: sticky; top: 0; z-index: 12;
+    background: var(--surface); border-bottom: 1px solid var(--gridline);
+    height: 34px; padding: 0 5px;
+    flex-direction: column; align-items: flex-start; justify-content: center; gap: 2px;
+    cursor: pointer;
+  }
+  .ghead .t { font-family: ui-monospace, Menlo, monospace; color: var(--ink); }
+  .ghead .i { color: var(--muted); font-size: 9px; }
+  .ghead.gen .t { color: var(--answer); font-weight: 600; }
+  .ghead.lit { background: var(--hairline); }
+
+  .glayer {
+    position: sticky; left: 0; z-index: 11;
+    background: var(--surface); border-right: 1px solid var(--gridline);
+    color: var(--muted); justify-content: flex-end;
+    padding: 0 7px 0 9px; height: 20px; margin: 1px 0;
+    font-variant-numeric: tabular-nums;
+  }
+  .glayer.lit { color: var(--ink); background: var(--hairline); }
+  .glayer.out { color: var(--ink); font-weight: 600; border-top: 1px solid var(--axis); }
+  .gcorner { position: sticky; left: 0; top: 0; z-index: 13; background: var(--surface);
+             border-right: 1px solid var(--gridline); border-bottom: 1px solid var(--gridline); }
+
+  /* ------------------------------------------------------------ the legend */
+  .legend { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; margin-bottom: 10px; }
+  .lkey { display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--ink-2); }
+  .lramp { width: 68px; height: 10px; border-radius: 3px; border: 1px solid var(--border); }
+  .lnote { font-size: 11px; color: var(--muted); }
+
+  /* ------------------------------------------------------------ the detail */
+  .detail { position: sticky; top: 74px; }
+  .dhead { font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
+  .dclass { font-size: 11px; margin-top: 3px; }
+  .dstats { display: flex; gap: 14px; margin: 12px 0; font-size: 11px; color: var(--ink-2); }
+  .dstats b { display: block; color: var(--ink); font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .rowlist { display: grid; gap: 3px; }
+  .row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; font-size: 11px; }
+  .row .tok { font-family: ui-monospace, Menlo, monospace; overflow: hidden; text-overflow: ellipsis; }
+  .row .num { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+  .meter { height: 4px; border-radius: 2px; background: var(--answer); }
+  .meter.dim { background: var(--neutral); }
+  .feat { font-size: 11px; padding: 5px 0; border-top: 1px solid var(--hairline); }
+  .feat .fh { display: flex; gap: 8px; align-items: baseline; }
+  .feat .fi { font-family: ui-monospace, Menlo, monospace; color: var(--ink-2); }
+  .feat .fa { color: var(--muted); font-variant-numeric: tabular-nums; margin-left: auto; }
+  .feat .fl { color: var(--ink-2); margin-top: 1px; }
+  .feat a { color: var(--answer); text-decoration: none; }
+  .feat a:hover { text-decoration: underline; }
+  .empty-note { color: var(--muted); font-size: 11px; }
+
+  /* ------------------------------------------------------------- the drop */
+  #drop {
+    position: fixed; inset: 0; z-index: 100; display: none;
+    place-items: center; background: color-mix(in srgb, var(--plane) 88%, transparent);
+    backdrop-filter: blur(2px);
+  }
+  #drop.on { display: grid; }
+  #drop div { border: 2px dashed var(--answer); border-radius: 12px; padding: 40px 60px; font-size: 15px; }
+
+  #splash { display: grid; place-items: center; min-height: 60vh; text-align: center; gap: 8px; }
+  #splash .big { font-size: 17px; font-weight: 600; }
+  #splash p { color: var(--ink-2); margin: 0; max-width: 46ch; }
+  #splash code { background: var(--hairline); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+</style>
+
+<div class="topbar">
+  <div class="brand">mechlens <span>· logit lens</span></div>
+  <select id="pick" hidden></select>
+  <label class="filebtn">open trace…<input type="file" id="file" accept=".json"></label>
+  <div class="spacer"></div>
+  <div class="segmented" id="modes" role="group" aria-label="Cell colour">
+    <button data-mode="answer"  aria-pressed="true">answer</button>
+    <button data-mode="prob"    aria-pressed="false">probability</button>
+    <button data-mode="entropy" aria-pressed="false">entropy</button>
+  </div>
+  <button id="theme" aria-pressed="false" title="Toggle light / dark">◐</button>
+</div>
+
+<main id="app">
+  <div id="splash">
+    <div class="big">No trace loaded</div>
+    <p>Drag a <code>traces/*.json</code> file anywhere onto this page, or use
+       <b>open trace…</b>. Serving via <code>python -m app.cli view</code> gives
+       you the picker and deep links.</p>
+  </div>
+</main>
+
+<div id="drop"><div>drop a trace JSON</div></div>
+
+<script>
+"use strict";
+
+/* =====================================================================
+   Colour. The cell fill has to carry a magnitude (how confident) inside a
+   class (answer / echo / neither), so each class gets its own one-hue ramp
+   anchored on the page surface — never a rainbow across one scale.
+
+   The interpolation is done in OKLab rather than sRGB so the ramp is
+   perceptually even, and the cell's text colour is then chosen from the
+   fill's measured luminance. That is the whole reason this is computed in
+   JS instead of left to `color-mix()`: a label sitting inside a colour
+   fill has to pick ink or surface by luminance, and CSS cannot tell us
+   what it mixed.
+   ===================================================================== */
+
+const srgbToLin = c => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+const linToSrgb = c => (c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055);
+
+function parseColor(str) {
+  // Resolves CSS custom properties too, by letting the browser do it.
+  const probe = document.createElement("span");
+  probe.style.color = str;
+  document.body.appendChild(probe);
+  const m = getComputedStyle(probe).color.match(/[\d.]+/g);
+  probe.remove();
+  return [ +m[0], +m[1], +m[2] ];
+}
+
+function rgbToOklab([r, g, b]) {
+  const R = srgbToLin(r / 255), G = srgbToLin(g / 255), B = srgbToLin(b / 255);
+  const l = Math.cbrt(0.4122214708 * R + 0.5363325363 * G + 0.0514459929 * B);
+  const m = Math.cbrt(0.2119034982 * R + 0.6806995451 * G + 0.1073969566 * B);
+  const s = Math.cbrt(0.0883024619 * R + 0.2817188376 * G + 0.6299787005 * B);
+  return [
+    0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+    1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+    0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s,
+  ];
+}
+
+function oklabToRgb([L, A, B]) {
+  const l_ = L + 0.3963377774 * A + 0.2158037573 * B;
+  const m_ = L - 0.1055613458 * A - 0.0638541728 * B;
+  const s_ = L - 0.0894841775 * A - 1.2914855480 * B;
+  const l = l_ ** 3, m = m_ ** 3, s = s_ ** 3;
+  const out = [
+     4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+    -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+    -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s,
+  ];
+  return out.map(v => Math.round(Math.min(1, Math.max(0, linToSrgb(v))) * 255));
+}
+
+const relLum = ([r, g, b]) =>
+  0.2126 * srgbToLin(r / 255) + 0.7152 * srgbToLin(g / 255) + 0.0722 * srgbToLin(b / 255);
+const contrast = (a, b) => {
+  const [hi, lo] = [relLum(a), relLum(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+};
+
+let PAL = null;
+function readPalette() {
+  const get = n => parseColor(getComputedStyle(document.documentElement).getPropertyValue(n).trim());
+  PAL = {
+    surface: get("--surface"), ink: get("--ink"),
+    answer: get("--answer"), echo: get("--echo"), neutral: get("--neutral"),
+  };
+  PAL.lab = {
+    surface: rgbToOklab(PAL.surface),
+    answer: rgbToOklab(PAL.answer),
+    echo: rgbToOklab(PAL.echo),
+    neutral: rgbToOklab(PAL.neutral),
+  };
+}
+
+/* A ramp step: surface -> hue at fraction t, plus the ink that reads on it.
+   `floor` keeps a near-zero cell faintly visible instead of invisible; a cell
+   that exists is worth seeing even when the model gives it 1%. */
+const rampCache = new Map();
+function ramp(hue, t, floor = 0.10) {
+  const f = floor + (1 - floor) * Math.min(1, Math.max(0, t));
+  const key = hue + "|" + f.toFixed(3);
+  if (rampCache.has(key)) return rampCache.get(key);
+
+  const a = PAL.lab.surface, b = PAL.lab[hue];
+  const rgb = oklabToRgb([0, 1, 2].map(i => a[i] + (b[i] - a[i]) * f));
+  const ink = contrast(rgb, PAL.ink) >= contrast(rgb, PAL.surface) ? PAL.ink : PAL.surface;
+  const step = { bg: `rgb(${rgb.join()})`, fg: `rgb(${ink.join()})` };
+  rampCache.set(key, step);
+  return step;
+}
+const cssRamp = hue =>
+  `linear-gradient(90deg, ${ramp(hue, 0).bg}, ${ramp(hue, 0.5).bg}, ${ramp(hue, 1).bg})`;
+
+/* =====================================================================
+   State
+   ===================================================================== */
+
+let TRACE = null;
+let MODE = "answer";
+let PIN = null;     // {pos, layer} — layer null means "the model's own output"
+let HOVER = null;
+
+const $ = s => document.querySelector(s);
+const el = (tag, cls, txt) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (txt != null) n.textContent = txt;
+  return n;
+};
+const pct = v => (v * 100).toFixed(v >= 0.0995 ? 1 : 2) + "%";
+/* Token text is shown as a quoted literal so leading spaces are visible —
+   ' of' and 'of' are different tokens and the space is the whole difference. */
+const tok = t => "'" + t.replace(/\n/g, "\\n").replace(/\t/g, "\\t") + "'";
+
+const passOf = name => (TRACE.passes || []).find(p => p.name === name) || null;
+const lensOf = (pos, layer) => TRACE.steps[pos].layers[layer].logit_lens;
+const answerOf = pos => TRACE.steps[pos].logits.top_k[0];
+
+/* The three classes the "answer" view separates. This is the reading the
+   whole HUD is built to support, and the one a naive lens display gets
+   wrong: an early layer decoding back to the token already in front of it
+   is an echo of the input, not a prediction about the output. */
+function classify(pos, layer) {
+  const lens = lensOf(pos, layer);
+  if (!lens) return null;
+  const id = lens.top_k[0].token_id;
+  if (id === answerOf(pos).token_id) return "answer";
+  if (id === TRACE.steps[pos].token.token_id) return "echo";
+  return "other";
+}
+const CLASS_HUE = { answer: "answer", echo: "echo", other: "neutral" };
+const CLASS_SAYS = {
+  answer: "matches the model's final answer here",
+  echo: "an echo of the token at this position, not a prediction",
+  other: "neither the final answer nor an echo",
+};
+
+/* =====================================================================
+   Render
+   ===================================================================== */
+
+function renderAll() {
+  readPalette();
+  rampCache.clear();
+  const app = $("#app");
+  app.innerHTML = "";
+  app.append(cardMeta(), tilesRow());
+  if (passOf("lens")) app.append(cardCurves(), cardHud());
+  else app.append(noLens());
+  renderDetail();
+}
+
+function cardMeta() {
+  const c = el("div", "card");
+  const p = el("div", "prompt");
+  p.append(el("span", "p", TRACE.prompt), el("span", "g", TRACE.completion));
+  c.append(p);
+
+  const chips = el("div", "chips");
+  const add = t => chips.append(el("span", "chip", t));
+  add(TRACE.model);
+  add(`${TRACE.n_layers} layers × ${TRACE.steps.length} tokens`);
+  add(`${TRACE.n_prompt_tokens} prompt + ${TRACE.n_generated_tokens} generated`);
+  add(`schema ${TRACE.schema_version}`);
+  add(`normalization ${TRACE.normalization || "?"}`);
+  add("passes: " + ((TRACE.passes || []).map(x => x.name).join(", ") || "none"));
+  c.append(chips);
+  return c;
+}
+
+function tile(k, v, note, cls) {
+  const t = el("div", "tile");
+  t.append(el("div", "k", k));
+  const val = el("div", "v" + (cls ? " " + cls : ""), v);
+  t.append(val);
+  if (note) t.append(el("div", "n", note));
+  return t;
+}
+
+function tilesRow() {
+  const row = el("div", "tiles");
+  const lens = passOf("lens"), sae = passOf("sae"), lab = passOf("labels");
+
+  if (lens) {
+    const s = lens.stats;
+    const cross = s.crossover_layer;
+    row.append(tile(
+      "Crossover layer",
+      cross < 0 ? "—" : "L" + cross,
+      cross < 0 ? "the answer never settles" : "half the positions hold the answer by here",
+    ));
+
+    /* The correctness check gets a tile of its own because everything else on
+       this page is only worth reading if it passed. Status colour is paired
+       with words, never carrying the meaning alone. */
+    const ag = s.final_layer_agreement;
+    if (ag == null) {
+      row.append(tile("Final layer check", "n/a", "last layer was not decoded"));
+    } else {
+      const ties = s.final_layer_argmax_ties || 0;
+      row.append(tile(
+        "Final layer check",
+        ag === 1 ? "exact" : pct(ag),
+        ag === 1
+          ? `reproduces the model's own output${ties ? ` · ${ties} argmax tie${ties > 1 ? "s" : ""}` : ""}`
+          : "does NOT reproduce the model — do not trust this trace",
+        ag === 1 ? "ok" : "bad",
+      ));
+    }
+    row.append(tile("Lens time", lens.elapsed_s.toFixed(1) + "s",
+      `${lens.params.n_layers_decoded} layers · softcap ${lens.params.output_logits_soft_cap}`));
+  }
+  if (sae) {
+    row.append(tile("Mean L0", sae.stats.l0_mean.toFixed(1),
+      `explained variance ${sae.stats.explained_variance_mean.toFixed(3)} · ${sae.params.width}`));
+  }
+  if (lab) {
+    row.append(tile("Feature labels", pct(lab.stats.coverage),
+      `${lab.stats.features_labelled} of ${lab.stats.features_wanted} distinct`));
+  }
+  return row;
+}
+
+/* --------------------------------------------------------- the two curves */
+
+function cardCurves() {
+  const c = el("div", "card");
+  c.append(el("h2", null, "Where the answer forms"));
+
+  const s = passOf("lens").stats;
+  const agree = s.top1_agreement_by_layer || [];
+  const echo = s.echo_by_layer || [];
+  const n = agree.length;
+  if (!n) return c;
+
+  const W = 720, H = 150, L = 34, R = 116, T = 10, B = 26;
+  const x = i => L + (n === 1 ? 0 : (i / (n - 1)) * (W - L - R));
+  const y = v => T + (1 - v) * (H - T - B);
+  const path = a => a.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("");
+
+  let g = "";
+  // Recessive gridlines and ticks — they carry the values not directly labelled.
+  for (const v of [0, 0.5, 1]) {
+    g += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--gridline)" stroke-width="1"/>`
+      +  `<text x="${L - 7}" y="${y(v) + 3.5}" text-anchor="end" font-size="9" fill="var(--muted)">${v * 100}%</text>`;
+  }
+  for (let i = 0; i < n; i += 5) {
+    g += `<text x="${x(i)}" y="${H - 8}" text-anchor="middle" font-size="9" fill="var(--muted)">L${i}</text>`;
+  }
+  if (n > 1) {
+    g += `<text x="${x(n - 1)}" y="${H - 8}" text-anchor="middle" font-size="9" fill="var(--muted)">L${n - 1}</text>`;
+  }
+
+  const cross = s.crossover_layer;
+  if (cross >= 0 && cross < n) {
+    g += `<line x1="${x(cross)}" x2="${x(cross)}" y1="${T}" y2="${H - B}" stroke="var(--axis)"
+            stroke-width="1" stroke-dasharray="3 3"/>`
+      +  `<text x="${x(cross) + 4}" y="${T + 9}" font-size="9" fill="var(--muted)">crossover L${cross}</text>`;
+  }
+
+  // 2px lines, direct end-labels rather than a value on every point.
+  g += `<path d="${path(echo)}" fill="none" stroke="var(--echo)" stroke-width="2" stroke-linejoin="round"/>`;
+  g += `<path d="${path(agree)}" fill="none" stroke="var(--answer)" stroke-width="2" stroke-linejoin="round"/>`;
+  const lastA = agree[n - 1], lastE = echo[n - 1];
+  g += `<circle cx="${x(n - 1)}" cy="${y(lastA)}" r="3" fill="var(--answer)"/>`
+    +  `<circle cx="${x(n - 1)}" cy="${y(lastE)}" r="3" fill="var(--echo)"/>`
+    +  `<text x="${x(n - 1) + 8}" y="${y(lastA) + 3.5}" font-size="10" fill="var(--ink-2)">holds the answer ${Math.round(lastA * 100)}%</text>`
+    +  `<text x="${x(n - 1) + 8}" y="${y(lastE) + 3.5}" font-size="10" fill="var(--ink-2)">echoes input ${Math.round(lastE * 100)}%</text>`;
+
+  // A crosshair tied to the grid's hovered row, so the two views are one instrument.
+  g += `<line id="xhair" x1="0" x2="0" y1="${T}" y2="${H - B}" stroke="var(--ink)"
+          stroke-width="1" opacity="0"/>`;
+
+  const wrap = el("div");
+  wrap.style.overflowX = "auto";
+  wrap.innerHTML =
+    `<svg viewBox="0 0 ${W} ${H}" width="100%" style="min-width:520px;display:block"
+          role="img" aria-label="Per-layer share of positions holding the final answer, and echoing the current token">${g}</svg>`;
+  c.append(wrap);
+
+  // A legend is always present for two series — identity never rests on hue alone.
+  const lg = el("div", "legend");
+  lg.style.marginTop = "6px";
+  for (const [hue, text] of [["answer", "holds the final answer"], ["echo", "echoes the current token"]]) {
+    const k = el("div", "lkey");
+    const sw = el("span");
+    sw.style.cssText = `width:14px;height:2px;border-radius:1px;background:var(--${hue})`;
+    k.append(sw, el("span", null, text));
+    lg.append(k);
+  }
+  lg.append(el("span", "lnote",
+    "Entropy is deliberately not plotted here: it starts low because early layers echo their input, not because the model is sure."));
+  c.append(lg);
+  return c;
+}
+
+/* ------------------------------------------------------------- the grid */
+
+function cardHud() {
+  const c = el("div", "card");
+  c.append(el("h2", null, "Every layer's guess, per position"));
+  c.append(legend());
+
+  const hud = el("div", "hud");
+  const wrap = el("div", "gridwrap");
+  wrap.append(buildGrid());
+  const side = el("div", "detail");
+  side.id = "detail";
+  hud.append(wrap, side);
+  c.append(hud);
+  return c;
+}
+
+function legend() {
+  const l = el("div", "legend");
+  const keys = MODE === "answer"
+    ? [["answer", "holds the final answer"], ["echo", "echoes this token"], ["neutral", "something else"]]
+    : [["answer", MODE === "prob" ? "top-1 probability" : "certainty (low entropy)"]];
+  for (const [hue, text] of keys) {
+    const k = el("div", "lkey");
+    const r = el("span", "lramp");
+    r.style.background = cssRamp(hue);
+    k.append(r, el("span", null, text));
+    l.append(k);
+  }
+  l.append(el("span", "lnote", "darker = stronger · a column shows what the model would say AFTER that token"));
+  return l;
+}
+
+function buildGrid() {
+  const nPos = TRACE.steps.length, nLay = TRACE.n_layers;
+  const g = el("div", "grid");
+  g.style.gridTemplateColumns = `auto repeat(${nPos}, 62px)`;
+
+  g.append(el("div", "gcorner"));
+  for (let p = 0; p < nPos; p++) {
+    const step = TRACE.steps[p];
+    const h = el("div", "ghead" + (step.token.source === "generated" ? " gen" : ""));
+    h.dataset.pos = p;
+    h.append(el("div", "t", tok(step.token.text).slice(0, 9)), el("div", "i", "#" + p));
+    h.title = `position ${p} ${tok(step.token.text)} (${step.token.source})`;
+    g.append(h);
+  }
+
+  for (let L = 0; L < nLay; L++) {
+    const lab = el("div", "glayer", "L" + L);
+    lab.dataset.layer = L;
+    g.append(lab);
+    for (let p = 0; p < nPos; p++) g.append(buildCell(p, L));
+  }
+
+  /* The model's own output, as a row beneath the stack. It is not a lens
+     reading — it is what the trace recorded the model actually predicting —
+     so it sits below layer 25 where the last lens row should equal it. */
+  const outLab = el("div", "glayer out", "model");
+  outLab.dataset.layer = "out";
+  g.append(outLab);
+  for (let p = 0; p < nPos; p++) {
+    const a = answerOf(p);
+    const c = el("div", "gcell");
+    c.dataset.pos = p; c.dataset.layer = "out";
+    const step = ramp("answer", a.prob);
+    c.style.background = step.bg; c.style.color = step.fg;
+    c.textContent = tok(a.text).slice(0, 9);
+    c.title = `position ${p}: the model predicts ${tok(a.text)} ${pct(a.prob)}`;
+    g.append(c);
+  }
+  return g;
+}
+
+function buildCell(pos, layer) {
+  const c = el("div", "gcell");
+  c.dataset.pos = pos; c.dataset.layer = layer;
+  const lens = lensOf(pos, layer);
+  if (!lens) {
+    c.classList.add("empty");
+    c.title = `layer ${layer} was not decoded`;
+    return c;
+  }
+  const top = lens.top_k[0];
+  const kind = classify(pos, layer);
+
+  let hue, t;
+  if (MODE === "answer") { hue = CLASS_HUE[kind]; t = top.prob; }
+  else if (MODE === "prob") { hue = "answer"; t = top.prob; }
+  else {
+    /* Entropy over a 256k vocab. Normalised against ln(256k) would flatten
+       everything into the bottom sixth of the ramp, so 6 nats is used as the
+       practical ceiling — beyond that the model is uniform for any purpose. */
+    hue = "answer"; t = 1 - Math.min(1, lens.entropy / 6);
+  }
+  const step = ramp(hue, t);
+  c.style.background = step.bg; c.style.color = step.fg;
+  c.textContent = tok(top.text).slice(0, 9);
+  c.title = `L${layer} @ ${pos}: ${tok(top.text)} ${pct(top.prob)} · H ${lens.entropy.toFixed(2)} · ${CLASS_SAYS[kind]}`;
+  return c;
+}
+
+/* ------------------------------------------------------------ the detail */
+
+function renderDetail() {
+  const box = $("#detail");
+  if (!box) return;
+  box.innerHTML = "";
+  const at = HOVER || PIN;
+  if (!at) {
+    box.append(el("div", "card"));
+    box.firstChild.append(el("div", "empty-note",
+      "Hover a cell for its full distribution. Click to pin it, then use the arrow keys."));
+    return;
+  }
+  const card = el("div", "card");
+  const { pos, layer } = at;
+  const step = TRACE.steps[pos];
+  const ans = answerOf(pos);
+
+  card.append(el("div", "dhead",
+    layer === "out" ? `position ${pos} · the model's output` : `position ${pos} · layer ${layer}`));
+
+  const sub = el("div", "dclass");
+  sub.style.color = "var(--ink-2)";
+  sub.append(el("span", null, `token ${tok(step.token.text)} (${step.token.source}) → predicts ${tok(ans.text)} ${pct(ans.prob)}`));
+  card.append(sub);
+
+  const lens = layer === "out" ? step.logits : lensOf(pos, layer);
+  if (!lens) {
+    card.append(el("div", "empty-note", "This layer was not decoded."));
+    box.append(card);
+    return;
+  }
+
+  if (layer !== "out") {
+    const kind = classify(pos, layer);
+    const line = el("div", "dclass", CLASS_SAYS[kind]);
+    line.style.color = `var(--${CLASS_HUE[kind] === "neutral" ? "muted" : CLASS_HUE[kind]})`;
+    card.append(line);
+  }
+
+  const st = el("div", "dstats");
+  const stat = (k, v) => { const d = el("div"); d.append(el("b", null, v), el("span", null, k)); return d; };
+  st.append(stat("entropy", lens.entropy.toFixed(2)));
+  if (layer !== "out") {
+    const state = step.layers[layer];
+    st.append(stat("resid norm", Math.round(state.resid_norm)));
+    if (state.l0 != null) st.append(stat("L0", state.l0));
+  }
+  card.append(st);
+
+  card.append(el("h2", null, layer === "out" ? "next-token distribution" : "logit lens, top " + lens.top_k.length));
+  const list = el("div", "rowlist");
+  for (const t of lens.top_k) {
+    const r = el("div", "row");
+    const isAns = t.token_id === ans.token_id;
+    r.append(el("div", "tok", tok(t.text)));
+    r.append(el("div", "num", pct(t.prob)));
+    const bar = el("div", "meter" + (isAns ? "" : " dim"));
+    bar.style.width = Math.max(2, t.prob * 100) + "%";
+    bar.style.gridColumn = "1 / -1";
+    r.append(bar);
+    list.append(r);
+  }
+  card.append(list);
+  box.append(card);
+
+  if (layer !== "out") box.append(featuresCard(pos, layer));
+}
+
+function featuresCard(pos, layer) {
+  const card = el("div", "card");
+  card.style.marginTop = "12px";
+  const state = TRACE.steps[pos].layers[layer];
+  const lab = passOf("labels");
+  card.append(el("h2", null, "SAE features"));
+
+  if (!state.features || !state.features.length) {
+    card.append(el("div", "empty-note",
+      passOf("sae") ? "Nothing active here." : "No SAE pass on this trace — run enrich --sae."));
+    return card;
+  }
+  for (const f of state.features.slice(0, 8)) {
+    const d = el("div", "feat");
+    const h = el("div", "fh");
+    h.append(el("span", "fi", "#" + f.index), el("span", "fa", f.activation.toFixed(2)));
+    d.append(h);
+
+    const meta = TRACE.labels ? TRACE.labels[layer + "/" + f.index] : null;
+    if (meta) {
+      const t = el("div", "fl");
+      const url = featureUrl(layer, f.index, lab);
+      if (url) {
+        const a = el("a", null, meta.text);
+        a.href = url; a.target = "_blank"; a.rel = "noreferrer";
+        t.append(a);
+      } else t.textContent = meta.text;
+      d.append(t);
+    } else if (lab) {
+      d.append(el("div", "fl empty-note", "unlabelled"));
+    }
+    card.append(d);
+  }
+  return card;
+}
+
+/* The labels pass records the URL as a template plus its parts rather than
+   writing thousands of copies of the same string, so the link is rebuilt here. */
+function featureUrl(layer, feature, lab) {
+  if (!lab || !lab.params.url_template) return null;
+  const set = (lab.params.source_set_template || "").replace("{layer}", layer);
+  if (!set) return null;
+  return lab.params.url_template
+    .replace("{model_id}", lab.params.neuronpedia_model)
+    .replace("{source_set}", set)
+    .replace("{feature}", feature);
+}
+
+function noLens() {
+  const c = el("div", "card");
+  c.append(el("h2", null, "No logit lens on this trace"));
+  c.append(el("div", "empty-note", "Run: python -m app.cli enrich <trace>.json --lens"));
+  return c;
+}
+
+/* =====================================================================
+   Interaction
+   ===================================================================== */
+
+function highlight() {
+  const at = HOVER || PIN;
+  for (const n of document.querySelectorAll(".rowlit,.collit,.lit")) {
+    n.classList.remove("rowlit", "collit", "lit");
+  }
+  const xh = $("#xhair");
+  if (xh) xh.setAttribute("opacity", "0");
+  if (!at) return;
+
+  for (const n of document.querySelectorAll(`.gcell[data-layer="${at.layer}"]`)) n.classList.add("rowlit");
+  for (const n of document.querySelectorAll(`.gcell[data-pos="${at.pos}"]`)) n.classList.add("collit");
+  const lab = document.querySelector(`.glayer[data-layer="${at.layer}"]`);
+  if (lab) lab.classList.add("lit");
+  const head = document.querySelector(`.ghead[data-pos="${at.pos}"]`);
+  if (head) head.classList.add("lit");
+
+  if (xh && at.layer !== "out") {
+    const n = (passOf("lens").stats.top1_agreement_by_layer || []).length;
+    if (n > 1) {
+      const W = 720, L = 34, R = 116;
+      const x = L + (at.layer / (n - 1)) * (W - L - R);
+      xh.setAttribute("x1", x); xh.setAttribute("x2", x); xh.setAttribute("opacity", "0.35");
+    }
+  }
+}
+
+function pinsync() {
+  for (const n of document.querySelectorAll(".gcell.pin")) n.classList.remove("pin");
+  if (!PIN) return;
+  const n = document.querySelector(`.gcell[data-pos="${PIN.pos}"][data-layer="${PIN.layer}"]`);
+  if (n) n.classList.add("pin");
+}
+
+document.addEventListener("mouseover", e => {
+  const c = e.target.closest(".gcell");
+  const h = e.target.closest(".ghead");
+  if (c) HOVER = { pos: +c.dataset.pos, layer: c.dataset.layer === "out" ? "out" : +c.dataset.layer };
+  else if (h) HOVER = { pos: +h.dataset.pos, layer: PIN ? PIN.layer : 0 };
+  else return;
+  renderDetail(); highlight();
+});
+
+$("#app").addEventListener("mouseleave", () => { HOVER = null; renderDetail(); highlight(); });
+
+document.addEventListener("click", e => {
+  const c = e.target.closest(".gcell");
+  if (!c) return;
+  PIN = { pos: +c.dataset.pos, layer: c.dataset.layer === "out" ? "out" : +c.dataset.layer };
+  HOVER = null;
+  pinsync(); renderDetail(); highlight();
+});
+
+document.addEventListener("keydown", e => {
+  if (!TRACE || !PIN) return;
+  const keys = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] };
+  const d = keys[e.key];
+  if (!d) return;
+  e.preventDefault();
+  const nLay = TRACE.n_layers;
+  let L = PIN.layer === "out" ? nLay : PIN.layer;
+  L = Math.min(nLay, Math.max(0, L + d[1]));
+  PIN = {
+    pos: Math.min(TRACE.steps.length - 1, Math.max(0, PIN.pos + d[0])),
+    layer: L === nLay ? "out" : L,
+  };
+  HOVER = null;
+  pinsync(); renderDetail(); highlight();
+  document.querySelector(`.gcell[data-pos="${PIN.pos}"][data-layer="${PIN.layer}"]`)
+    ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+});
+
+$("#modes").addEventListener("click", e => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  MODE = b.dataset.mode;
+  for (const n of $("#modes").children) n.setAttribute("aria-pressed", String(n === b));
+  if (TRACE) { renderAll(); pinsync(); highlight(); }
+});
+
+$("#theme").addEventListener("click", () => {
+  const root = document.documentElement;
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  const now = root.dataset.theme || (dark ? "dark" : "light");
+  root.dataset.theme = now === "dark" ? "light" : "dark";
+  if (TRACE) { renderAll(); pinsync(); highlight(); }
+});
+
+/* =====================================================================
+   Getting a trace in
+   ===================================================================== */
+
+function adopt(trace, name) {
+  TRACE = trace;
+  PIN = null; HOVER = null;
+  /* Open on the last position — the one the model was actually answering, and
+     the only column whose prediction was not already decided by the prompt. */
+  if (trace.steps && trace.steps.length) PIN = { pos: trace.steps.length - 1, layer: "out" };
+  document.title = `${name || trace.trace_id} — mechlens`;
+  renderAll(); pinsync(); highlight();
+}
+
+async function fetchTrace(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  adopt(await r.json(), url.split("/").pop());
+}
+
+function fail(msg) {
+  $("#app").innerHTML = "";
+  const c = el("div", "card");
+  c.append(el("h2", null, "Could not load that trace"), el("div", "empty-note", msg));
+  $("#app").append(c);
+}
+
+$("#file").addEventListener("change", e => {
+  const f = e.target.files[0];
+  if (f) readFile(f);
+});
+
+function readFile(f) {
+  const r = new FileReader();
+  r.onload = () => {
+    try { adopt(JSON.parse(r.result), f.name); }
+    catch (err) { fail(`${f.name}: ${err.message}`); }
+  };
+  r.readAsText(f);
+}
+
+const drop = $("#drop");
+let dragDepth = 0;
+addEventListener("dragenter", e => { e.preventDefault(); if (++dragDepth === 1) drop.classList.add("on"); });
+addEventListener("dragover", e => e.preventDefault());
+addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; drop.classList.remove("on"); } });
+addEventListener("drop", e => {
+  e.preventDefault();
+  dragDepth = 0; drop.classList.remove("on");
+  const f = e.dataTransfer.files[0];
+  if (f) readFile(f);
+});
+
+/* The picker only appears when something is serving /api/traces — the page
+   itself stays a static file, so this is a convenience, not a requirement. */
+async function discover() {
+  try {
+    const r = await fetch("/api/traces");
+    if (!r.ok) return;
+    const list = await r.json();
+    if (!list.length) return;
+    const pick = $("#pick");
+    pick.hidden = false;
+    for (const t of list) {
+      const o = document.createElement("option");
+      o.value = t.path;
+      o.textContent = `${t.name}  (${t.tokens} tok · ${t.passes.join("/") || "raw"})`;
+      pick.append(o);
+    }
+    pick.addEventListener("change", () => {
+      history.replaceState(null, "", "?trace=" + encodeURIComponent(pick.value));
+      fetchTrace(pick.value).catch(err => fail(String(err)));
+    });
+    const want = new URLSearchParams(location.search).get("trace");
+    if (want) pick.value = want;
+    else { pick.selectedIndex = 0; fetchTrace(pick.value).catch(() => {}); }
+  } catch { /* static file:// — the dropzone is the way in */ }
+}
+
+readPalette();
+const want = new URLSearchParams(location.search).get("trace");
+if (want) fetchTrace(want).catch(err => fail(`${want}: ${err.message}. Serve the directory (python -m app.cli view) or drag the file in.`));
+discover();
+</script>

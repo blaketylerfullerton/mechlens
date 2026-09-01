@@ -1,5 +1,6 @@
 # mechlens
 
+![Dashboard](/docs/dashboard.png)
 Mechanistic-interpretability tracing for `gemma-2-2b` under TransformerLens.
 
 Generate token by token, capture the residual stream at every layer, then run
