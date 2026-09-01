@@ -86,9 +86,16 @@ def print_sae_summary(trace: Trace, layer: int | None = None, position: int | No
     # look for. Default to the last token — the one the model just produced.
     # (Picking by resid_norm instead always lands on position 1, since norms
     # grow with depth but shrink with position in Gemma 2.)
-    layer = layer if layer is not None else trace.n_layers // 2
     pos = position if position is not None else len(trace.steps) - 1
     step = trace.steps[pos]
+
+    # Default to the middle of the layers that were actually *encoded*, not the
+    # middle of the model: `--layers 12` leaves every other layer featureless,
+    # and defaulting blindly to n_layers//2 reports an empty l0=None state as
+    # though the pass had done nothing.
+    if layer is None:
+        encoded = [s.layer for s in step.layers if s.features]
+        layer = encoded[len(encoded) // 2] if encoded else trace.n_layers // 2
     state = step.layers[layer]
     print(f"\nlayer {layer}, token {pos} {step.token.text!r}  (l0={state.l0})")
 
@@ -144,12 +151,15 @@ def cmd_trace(args: argparse.Namespace) -> None:
             result.trace,
             result.residuals,
         )
-        update_trace(result.trace, json_path)
-        print_sae_summary(result.trace)
-
     if args.labels:
         apply(_labels_pass(args), result.trace, result.residuals)
+
+    if args.sae or args.labels:
         update_trace(result.trace, json_path)
+        # Same as `enrich`: report once every pass has run, so the feature list
+        # is printed with its labels rather than as bare integers.
+        if args.sae:
+            print_sae_summary(result.trace)
         print_label_summary(result.trace)
 
 

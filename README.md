@@ -6,6 +6,35 @@ Generate token by token, capture the residual stream at every layer, then run
 enrichment passes over the saved trace — SAE features and Neuronpedia labels
 now, logit lens and attribution next.
 
+## Status
+
+Phases 0–3 are done; the trace schema is at **1.2**.
+
+| phase | what | state |
+| --- | --- | --- |
+| 0 | model loading — `gemma-2-2b` under TransformerLens, bf16 on CUDA | done |
+| 1 | residual capture — token-by-token, all 26 layers | done |
+| 2 | SAE encoding — Gemma Scope 16k, top-k features per (token, layer) | done |
+| 3 | Neuronpedia labels — human-readable text and links for those features | done |
+| — | logit lens — `LayerState.logit_lens` defined and empty | unclaimed |
+| 4 | attribution — `LayerState.edges` defined and empty | next |
+
+Measured on the traces in `backend/traces/`:
+
+| | |
+| --- | --- |
+| SAE health | mean L0 **78.3**, mean explained variance **0.880** (per-layer 0.83–0.96) |
+| SAE encode | **0.3s** for a 31-token trace, 26 layers, once the SAEs are resident |
+| label coverage | **6234/6234** distinct features on golden-gate, in **1.5s**, no network |
+| label table | **425,679** explanations, 26 layers, imported in **51s** |
+| mapping check | **10/10** features matched Neuronpedia's own activations (corr ≥ 0.998) |
+| tests | **52 passed, 1 skipped** in ~7s |
+
+Two known gaps, both deliberate. Explanation embeddings are not imported by
+default (`--embeddings`, ~2GB) and nothing consumes them yet. And position 0
+(BOS) produces meaningless SAE activations — a known Gemma Scope artifact, kept
+per-token but excluded from every summary statistic.
+
 ## Setup
 
 ```bash
@@ -23,7 +52,7 @@ python -m app.cli trace -p "The Golden Gate Bridge is located in the city of" -n
 python -m app.cli enrich traces/<id>.json --sae     # SAE features, no model load
 python -m app.cli enrich traces/<id>.json --labels  # Neuronpedia labels, no network
 python -m app.cli show traces/<id>.json --layer 20
-python -m app.cli trace -p "2 + 2 =" -n 8 --sae     # or do both at once
+python -m app.cli trace -p "2 + 2 =" -n 8 --sae --labels   # or all three at once
 ```
 
 `--labels` reads a local SQLite table built once from Neuronpedia's public export:
@@ -51,6 +80,10 @@ A trace is two files that travel together:
 Splitting them is what makes `enrich` cheap: a pass reads the tensor off disk and
 never touches gemma, so iterating on pass code costs seconds instead of a
 generation run.
+
+Neither is committed. `backend/traces/` and `backend/data/` are gitignored — a
+trace is a few MB of JSON plus a multi-MB `.npy`, and the label DB (66MB) is
+rebuildable from the export in under a minute.
 
 ```python
 from app.store import load
