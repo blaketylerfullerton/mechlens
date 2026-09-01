@@ -1,8 +1,9 @@
 torch>=2.3
 transformers>=4.43
-nnsight>=0.3
+transformer-lens>=2.0
 accelerate>=0.30
-bitsandbytes>=0.43
+numpy>=1.26
+pydantic>=2.7
 sentencepiece
 protobuf
 fastapi>=0.111

@@ -6,3 +6,7 @@ __pycache__/
 node_modules/
 **/node_modules/
 /venv
+.env
+
+# phase 1 trace artifacts: JSON + multi-MB .npy residual sidecars
+/backend/traces/
