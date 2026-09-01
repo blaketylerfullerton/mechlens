@@ -63,12 +63,20 @@ def _token_text(model: HookedTransformer, token_id: int) -> str:
     return model.tokenizer.decode([token_id])
 
 
-def _logit_summary(
+def logit_summary(
     model: HookedTransformer,
     logits_row: torch.Tensor,  # [d_vocab] for a single position
     top_k: int,
     chosen_id: int | None,
 ) -> LogitSummary:
+    """Summarise one position's next-token distribution.
+
+    Public because the logit lens (phase 4) calls it too: a lens summary and a
+    capture summary have to be built the same way for the last layer's lens to
+    be comparable against the model's real output, which is the lens's whole
+    correctness test. Two parallel softmax-and-topk implementations would make
+    that test prove nothing.
+    """
     # float32 for the softmax: entropy over 256k bf16 entries loses real
     # precision in the tail, and the tail is most of the entropy.
     row = logits_row.float()
@@ -146,7 +154,7 @@ def generate_trace(
         # Every position predicts a next token. For positions inside the
         # sequence the "chosen" token is simply whatever sits at position+1.
         for pos in range(filled, seq - 1):
-            summaries[pos] = _logit_summary(
+            summaries[pos] = logit_summary(
                 model, logits[0, pos], top_k, chosen_id=int(tokens[0, pos + 1])
             )
         filled = seq
@@ -162,10 +170,10 @@ def generate_trace(
         if at_budget or hit_eos:
             if hit_eos:
                 stop_reason = "eos"
-            summaries[seq - 1] = _logit_summary(model, last_logits, top_k, chosen_id=None)
+            summaries[seq - 1] = logit_summary(model, last_logits, top_k, chosen_id=None)
             break
 
-        summaries[seq - 1] = _logit_summary(model, last_logits, top_k, chosen_id=next_id)
+        summaries[seq - 1] = logit_summary(model, last_logits, top_k, chosen_id=next_id)
         tokens = torch.cat([tokens, last_logits.new_tensor([[next_id]], dtype=tokens.dtype)], dim=1)
 
     elapsed = time.time() - t0

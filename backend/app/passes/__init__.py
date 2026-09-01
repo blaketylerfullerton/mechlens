@@ -8,9 +8,14 @@ the trace in place, and hand back a record of what it did:
         name: str
         def run(self, trace: Trace, residuals: np.ndarray) -> PassRecord: ...
 
-Because the residuals live on disk next to the trace, a pass never needs the
-model. Re-running the SAE encoder on a saved trace costs no generation and no
-6-second gemma load, which is what makes iterating on this code bearable.
+Because the residuals live on disk next to the trace, most passes never need
+the model. Re-running the SAE encoder on a saved trace costs no generation and
+no 6-second gemma load, which is what makes iterating on this code bearable.
+
+The logit lens is the exception: `W_U` is 2304 x 256_000, far too big to sit in
+a sidecar beside every trace, so it takes the model handle instead. It is
+optional on the pass (`LogitLensPass.model`) and resolved from `model_cache` if
+absent, so the signature above still holds.
 """
 
 from __future__ import annotations

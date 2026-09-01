@@ -4,10 +4,14 @@
     python -m app.cli trace -p "2 + 2 =" -n 8 --sae        # capture and encode
     python -m app.cli enrich traces/<id>.json --sae        # encode a saved trace
     python -m app.cli enrich traces/<id>.json --labels     # attach Neuronpedia labels
+    python -m app.cli enrich traces/<id>.json --lens       # decode every layer
     python -m app.cli show traces/<id>.json --layer 20
+    python -m app.cli show traces/<id>.json --lens --token 12
 
-`enrich` is the loop you actually iterate in: it reads the residual sidecar and
-never loads gemma, so re-running the SAE pass on a saved trace costs seconds.
+`enrich` is the loop you actually iterate in: it reads the residual sidecar, so
+re-running the SAE pass on a saved trace costs seconds. `--sae` and `--labels`
+never touch gemma at all; `--lens` is the exception, because W_U is
+2304 x 256_000 and has to come from the model.
 """
 
 from __future__ import annotations
@@ -22,6 +26,8 @@ from .model_cache import MODEL_NAME, get_model
 from .passes import apply
 from .labels import DEFAULT_DB_PATH, feature_url
 from .passes.labels import LabelsPass
+from .passes.lens import DEFAULT_TOP_K as LENS_TOP_K
+from .passes.lens import LogitLensPass
 from .passes.sae import DEFAULT_TOP_K as SAE_TOP_K
 from .passes.sae import SAEPass
 from .sae_cache import DEFAULT_WIDTH
@@ -116,6 +122,83 @@ def print_sae_summary(trace: Trace, layer: int | None = None, position: int | No
         print(f"\n  {feature_url(layer, top.index)}")
 
 
+def print_lens_summary(trace: Trace, position: int | None = None) -> None:
+    """The phase-4 payoff: one token's answer forming as you go down the stack.
+
+    Printed as a full column rather than a summary because that shape is the
+    whole point — a mean over layers hides the crystallisation it is meant to
+    show.
+    """
+    record = trace.pass_record("lens")
+    if record is None:
+        print("no logit lens pass has been run on this trace")
+        return
+
+    agreement = record.stats.get("final_layer_agreement")
+    print(
+        f"\nlogit lens | top-1 agreement with the final answer "
+        f"{record.stats['agreement_first_layer']:.0%} -> "
+        f"{record.stats['agreement_last_layer']:.0%} "
+        f"| crossover at layer {record.stats['crossover_layer']:.0f} "
+        f"| {record.elapsed_s:.1f}s"
+    )
+    last = trace.n_layers - 1
+    if agreement is None:
+        print(f"  layer {last} was not decoded — no correctness check on this trace")
+    elif agreement == 1.0:
+        # The claim that makes the rest of the column trustworthy: the last
+        # layer is not an approximation of the model's output, it is the
+        # model's output, and it came back identical.
+        ties = int(record.stats["final_layer_argmax_ties"])
+        # Called out rather than hidden: a tie means two logits landed on the
+        # same bf16 value and topk picked between them arbitrarily. The
+        # distribution matched; only the coin flip differed.
+        note = f" ({ties} resolved by an argmax tie)" if ties else ""
+        print(
+            f"  layer {last} reproduces the model's own output on all "
+            f"{len(trace.steps)} positions{note} "
+            f"— max prob delta {record.stats['final_layer_max_prob_delta']:.1e}, "
+            f"max entropy delta {record.stats['final_layer_max_entropy_delta']:.1e}"
+        )
+    else:
+        print(
+            f"  ⚠ layer {last} reproduces the model on only {agreement:.1%} of "
+            f"positions — softcap or norm is wrong, see phase4.md"
+        )
+
+    # Default to the last position: the one the model was actually answering.
+    pos = position if position is not None else len(trace.steps) - 1
+    step = trace.steps[pos]
+    answer = step.logits.top_k[0]
+    print(
+        f"\n  token {pos} {step.token.text!r} — the model answers "
+        f"{answer.text!r} {answer.prob:.1%}"
+    )
+
+    print("   ◀ = the model's final answer   · = an echo of the current token\n")
+
+    for state in step.layers:
+        lens = state.logit_lens
+        if lens is None:
+            continue
+        top = lens.top_k[0]
+        # Two markers, because the naive reading of this column is wrong.
+        # "◀" is the crystallisation: the depth where it starts and never stops
+        # is where the answer was decided. "·" is the early-layer artifact —
+        # residuals near the embedding decode back to the token already sitting
+        # here, so a confident-looking L4 is often just reading itself.
+        if top.token_id == answer.token_id:
+            mark = "◀"
+        elif top.token_id == step.token.token_id:
+            mark = "·"
+        else:
+            mark = " "
+        print(
+            f"   L{state.layer:<3} {top.text[:14]!r:<16} {top.prob:6.2%}  "
+            f"H {lens.entropy:5.2f}  {mark} {'█' * round(top.prob * 20)}"
+        )
+
+
 def print_label_summary(trace: Trace) -> None:
     record = trace.pass_record("labels")
     if record is None:
@@ -151,16 +234,26 @@ def cmd_trace(args: argparse.Namespace) -> None:
             result.trace,
             result.residuals,
         )
+    if args.lens:
+        # The model is already resident here, so the lens costs no extra load.
+        layers = parse_layers(args.layers, result.trace.n_layers)
+        apply(
+            LogitLensPass(top_k=args.lens_top_k, layers=layers, model=model, verbose=False),
+            result.trace,
+            result.residuals,
+        )
     if args.labels:
         apply(_labels_pass(args), result.trace, result.residuals)
 
-    if args.sae or args.labels:
+    if args.sae or args.labels or args.lens:
         update_trace(result.trace, json_path)
         # Same as `enrich`: report once every pass has run, so the feature list
         # is printed with its labels rather than as bare integers.
         if args.sae:
             print_sae_summary(result.trace)
         print_label_summary(result.trace)
+        if args.lens:
+            print_lens_summary(result.trace)
 
 
 def cmd_enrich(args: argparse.Namespace) -> None:
@@ -170,13 +263,23 @@ def cmd_enrich(args: argparse.Namespace) -> None:
         f"({trace.model}, schema {trace.schema_version})"
     )
 
-    if not (args.sae or args.labels):
-        raise SystemExit("nothing to do — pass --sae and/or --labels")
+    if not (args.sae or args.labels or args.lens):
+        raise SystemExit("nothing to do — pass --sae, --labels and/or --lens")
 
     if args.sae:
         layers = parse_layers(args.layers, trace.n_layers)
         apply(
             SAEPass(width=args.width, top_k=args.sae_top_k, layers=layers, device=args.device),
+            trace,
+            residuals,
+        )
+
+    if args.lens:
+        layers = parse_layers(args.layers, trace.n_layers)
+        # Unlike the other two, this one loads gemma — W_U has to come from
+        # somewhere. Left to the pass so `enrich --sae` stays model-free.
+        apply(
+            LogitLensPass(top_k=args.lens_top_k, layers=layers, verbose=False),
             trace,
             residuals,
         )
@@ -189,6 +292,8 @@ def cmd_enrich(args: argparse.Namespace) -> None:
     if args.sae:
         print_sae_summary(trace)
     print_label_summary(trace)
+    if args.lens:
+        print_lens_summary(trace)
 
     update_trace(trace, args.trace)
     print(f"\nupdated {args.trace}")
@@ -208,6 +313,11 @@ def cmd_show(args: argparse.Namespace) -> None:
     print(f"  {trace.prompt!r} -> {trace.completion!r}")
     print(f"  residuals {tuple(trace.residuals.shape)} {trace.residuals.dtype} ({trace.residuals.hook})")
     print(f"  passes: {[p.name for p in trace.passes] or 'none'}")
+
+    if args.lens or (trace.pass_record("lens") and not trace.pass_record("sae")):
+        print_lens_summary(trace, args.token)
+        return
+
     if trace.pass_record("sae"):
         print_sae_summary(trace, args.layer, args.token)
         print_label_summary(trace)
@@ -225,6 +335,14 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--sae-top-k", type=int, default=SAE_TOP_K, help="features kept per layer")
         sp.add_argument("--layers", help="subset to encode, e.g. '0-5,20' (default: all)")
         sp.add_argument("--device", help="cuda / cpu (default: cuda when available)")
+
+    def add_lens_flags(sp: argparse.ArgumentParser) -> None:
+        sp.add_argument(
+            "--lens",
+            action="store_true",
+            help="decode every layer through ln_final + W_U (loads the model)",
+        )
+        sp.add_argument("--lens-top-k", type=int, default=LENS_TOP_K)
 
     def add_label_flags(sp: argparse.ArgumentParser) -> None:
         sp.add_argument("--labels", action="store_true", help="attach Neuronpedia labels")
@@ -245,13 +363,15 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--no-stop-at-eos", action="store_true")
     t.add_argument("--sae", action="store_true", help="also run the SAE pass")
     add_sae_flags(t)
+    add_lens_flags(t)
     add_label_flags(t)
     t.set_defaults(func=cmd_trace)
 
-    e = sub.add_parser("enrich", help="run passes over a saved trace (no model load)")
+    e = sub.add_parser("enrich", help="run passes over a saved trace")
     e.add_argument("trace", type=Path)
     e.add_argument("--sae", action="store_true", help="run the SAE pass")
     add_sae_flags(e)
+    add_lens_flags(e)
     add_label_flags(e)
     e.set_defaults(func=cmd_enrich)
 
@@ -259,6 +379,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("trace", type=Path)
     s.add_argument("--layer", type=int, help="layer to show features for (default: middle)")
     s.add_argument("--token", type=int, help="token position to show (default: the last one)")
+    s.add_argument("--lens", action="store_true", help="show the per-layer logit lens instead")
     s.set_defaults(func=cmd_show)
 
     return p
