@@ -95,6 +95,25 @@ def feature_url(layer: int, feature: int, width: str = DEFAULT_WIDTH) -> str:
     return URL_TEMPLATE.format(model_id=model_id, source_set=source_set, feature=feature)
 
 
+def source_set_template(n_layers: int = 26, width: str = DEFAULT_WIDTH) -> str | None:
+    """"{layer}-gemmascope-res-16k", if every layer really follows that shape.
+
+    Lets a trace record the whole per-layer mapping as one string instead of 26
+    entries. Returns None rather than guessing if any layer breaks the pattern,
+    because a frontend building URLs off a wrong template links every feature
+    to the wrong page.
+    """
+    template: str | None = None
+    for layer in range(n_layers):
+        _, source_set = neuronpedia_id(layer, width)
+        candidate = source_set.replace(str(layer), "{layer}", 1)
+        if template is None:
+            template = candidate
+        elif template != candidate:
+            return None
+    return template
+
+
 def url_template(layer: int = 0, width: str = DEFAULT_WIDTH) -> str:
     """The template itself, for a PassRecord to record once per trace.
 

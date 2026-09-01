@@ -3,6 +3,7 @@
     python -m app.cli trace -p "The Golden Gate Bridge is in the city of" -n 20
     python -m app.cli trace -p "2 + 2 =" -n 8 --sae        # capture and encode
     python -m app.cli enrich traces/<id>.json --sae        # encode a saved trace
+    python -m app.cli enrich traces/<id>.json --labels     # attach Neuronpedia labels
     python -m app.cli show traces/<id>.json --layer 20
 
 `enrich` is the loop you actually iterate in: it reads the residual sidecar and
@@ -19,6 +20,8 @@ import numpy as np
 from .capture import DEFAULT_MAX_NEW_TOKENS, DEFAULT_TOP_K, generate_trace
 from .model_cache import MODEL_NAME, get_model
 from .passes import apply
+from .labels import DEFAULT_DB_PATH, feature_url
+from .passes.labels import LabelsPass
 from .passes.sae import DEFAULT_TOP_K as SAE_TOP_K
 from .passes.sae import SAEPass
 from .sae_cache import DEFAULT_WIDTH
@@ -88,9 +91,33 @@ def print_sae_summary(trace: Trace, layer: int | None = None, position: int | No
     step = trace.steps[pos]
     state = step.layers[layer]
     print(f"\nlayer {layer}, token {pos} {step.token.text!r}  (l0={state.l0})")
+
+    labelled = bool(trace.labels)
     for f in state.features[:8]:
-        bar = "█" * max(1, round(f.activation / state.features[0].activation * 24))
-        print(f"  #{f.index:<6} {f.activation:7.2f}  {bar}")
+        bar = "█" * max(1, round(f.activation / state.features[0].activation * 12))
+        line = f"  #{f.index:<6} {f.activation:7.2f}  {bar:<12}"
+        if labelled:
+            label = trace.label(layer, f.index)
+            line += f"  {label.text[:58] if label else '—'}"
+        print(line)
+
+    if labelled:
+        # One worked link, so the trace is verifiable by hand rather than
+        # taken on faith — click through and the activating examples should
+        # look like the label says they will.
+        top = state.features[0]
+        print(f"\n  {feature_url(layer, top.index)}")
+
+
+def print_label_summary(trace: Trace) -> None:
+    record = trace.pass_record("labels")
+    if record is None:
+        return
+    print(
+        f"\nlabels {record.stats['features_labelled']:.0f}/"
+        f"{record.stats['features_wanted']:.0f} distinct features "
+        f"({record.stats['coverage']:.1%}) | {record.params['explainers']}"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -120,6 +147,11 @@ def cmd_trace(args: argparse.Namespace) -> None:
         update_trace(result.trace, json_path)
         print_sae_summary(result.trace)
 
+    if args.labels:
+        apply(_labels_pass(args), result.trace, result.residuals)
+        update_trace(result.trace, json_path)
+        print_label_summary(result.trace)
+
 
 def cmd_enrich(args: argparse.Namespace) -> None:
     trace, residuals = load(args.trace, mmap=True)
@@ -128,18 +160,36 @@ def cmd_enrich(args: argparse.Namespace) -> None:
         f"({trace.model}, schema {trace.schema_version})"
     )
 
-    if not args.sae:
-        raise SystemExit("nothing to do — pass --sae")
+    if not (args.sae or args.labels):
+        raise SystemExit("nothing to do — pass --sae and/or --labels")
 
-    layers = parse_layers(args.layers, trace.n_layers)
-    apply(
-        SAEPass(width=args.width, top_k=args.sae_top_k, layers=layers, device=args.device),
-        trace,
-        residuals,
-    )
+    if args.sae:
+        layers = parse_layers(args.layers, trace.n_layers)
+        apply(
+            SAEPass(width=args.width, top_k=args.sae_top_k, layers=layers, device=args.device),
+            trace,
+            residuals,
+        )
+
+    if args.labels:
+        apply(_labels_pass(args), trace, residuals)
+
+    # Reported only once every pass has run: the feature list is worth far more
+    # with the labels beside it, and printing it mid-way shows bare integers.
+    if args.sae:
+        print_sae_summary(trace)
+    print_label_summary(trace)
+
     update_trace(trace, args.trace)
-    print_sae_summary(trace)
     print(f"\nupdated {args.trace}")
+
+
+def _labels_pass(args: argparse.Namespace) -> LabelsPass:
+    return LabelsPass(
+        width=args.width,
+        db_path=args.labels_db,
+        fetch_missing=args.fetch_missing,
+    )
 
 
 def cmd_show(args: argparse.Namespace) -> None:
@@ -150,6 +200,7 @@ def cmd_show(args: argparse.Namespace) -> None:
     print(f"  passes: {[p.name for p in trace.passes] or 'none'}")
     if trace.pass_record("sae"):
         print_sae_summary(trace, args.layer, args.token)
+        print_label_summary(trace)
     else:
         norms = np.array([[l.resid_norm for l in s.layers] for s in trace.steps])
         print(f"  resid norms: L0 {norms[:, 0].mean():.0f} -> L{trace.n_layers - 1} {norms[:, -1].mean():.0f}")
@@ -165,6 +216,15 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--layers", help="subset to encode, e.g. '0-5,20' (default: all)")
         sp.add_argument("--device", help="cuda / cpu (default: cuda when available)")
 
+    def add_label_flags(sp: argparse.ArgumentParser) -> None:
+        sp.add_argument("--labels", action="store_true", help="attach Neuronpedia labels")
+        sp.add_argument("--labels-db", type=Path, default=DEFAULT_DB_PATH)
+        sp.add_argument(
+            "--fetch-missing",
+            action="store_true",
+            help="ask neuronpedia.org about features the local DB has never seen",
+        )
+
     t = sub.add_parser("trace", help="generate and capture a new trace")
     t.add_argument("-p", "--prompt", default=PROMPT)
     t.add_argument("-n", "--max-new-tokens", type=int, default=DEFAULT_MAX_NEW_TOKENS)
@@ -175,12 +235,14 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--no-stop-at-eos", action="store_true")
     t.add_argument("--sae", action="store_true", help="also run the SAE pass")
     add_sae_flags(t)
+    add_label_flags(t)
     t.set_defaults(func=cmd_trace)
 
     e = sub.add_parser("enrich", help="run passes over a saved trace (no model load)")
     e.add_argument("trace", type=Path)
     e.add_argument("--sae", action="store_true", help="run the SAE pass")
     add_sae_flags(e)
+    add_label_flags(e)
     e.set_defaults(func=cmd_enrich)
 
     s = sub.add_parser("show", help="summarise a saved trace")

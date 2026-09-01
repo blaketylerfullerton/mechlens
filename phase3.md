@@ -177,7 +177,40 @@ is unclaimed.)
 
 ---
 
-## Built so far
+### The export has duplicate features, and the winner must not be arbitrary
+
+Coverage came out at 101.4% on some layers, which is how the next problem announced itself: a few
+thousand features carry **more than one** explanation in the export — a stray
+`claude-3-5-sonnet`, `o3-mini` or `deepseek-r1` alongside the bulk explainer. Imported naively they
+arrive as duplicate primary keys and the last writer wins, so the label for those features depends on
+the order S3 happened to list the batches in. The importer now collapses them through the same
+`pick_explanation` ladder the API fallback uses, which makes bulk and fallback agree and re-running
+the import stable. After the fix every layer is at or below 100% and the mix collapses to the two
+real explainers.
+
+Full import: **425,679 labels across 26 layers in 51s**, ~50MB without embeddings.
+
+## Done
+
+    python -m app.cli enrich traces/golden-gate.json --labels
+
+    labelled 6234/6234 distinct features across 26 layers in 1.47s
+    labels 6234/6234 distinct features (100.0%) | gpt-4o-mini:5106, gemini-2.5-flash-lite:1128
+
+    layer 20, token 30 ' The'  (l0=80)
+      #6631     84.75  ████████████  The Future
+      #1370     81.21  ███████████   bridge and crossing
+      #14537    69.56  ██████████    following "the"
+      #2885     46.38  ███████       the + noun
+      #12411    35.58  █████         main topic introductory phrase
+      #3124     29.10  ████          San Francisco, Oakland, Bay Area
+      https://www.neuronpedia.org/gemma-2-2b/20-gemmascope-res-16k/6631
+
+100% of the trace's distinct features labelled, in 1.5s, with no network. `bridge and crossing` and
+`San Francisco, Oakland, Bay Area` on a Golden Gate trace is also the cheapest end-to-end check the
+pipeline has: capture, SAE and label mapping would all have to be wrong together to produce that.
+
+## Built
 
 - `app/sae_cache.py` — `neuronpedia_id(layer, width)`, the single place our SAE maps to Neuronpedia's
   `(model_id, source_set)`, read from SAELens' registry.
@@ -191,5 +224,15 @@ is unclaimed.)
 Verified end to end: the real layer-20 export loads in 0.7s and answers
 `get_many(20, range(16384))` with 16,336 labels.
 
-Still to do: `scripts/import_neuronpedia.py` (step 3) and `app/passes/labels.py` wired as
-`enrich <trace> --labels` (step 4).
+- `scripts/import_neuronpedia.py` — S3 export -> SQLite. Lists the bucket rather than probing
+  batch-0, batch-1, ... until a 404, because the batch count differs between source sets and a probe
+  loop stops early on a transient error and imports a partial dictionary. 6 parallel fetches; 16 got
+  throttled into XML error bodies that gunzip refuses.
+- `app/passes/labels.py` — the pass. Looks up distinct `(layer, feature)` pairs only (6,234 rather
+  than 12,800 for golden-gate) and records the explainer mix in its `PassRecord`.
+- `app/cli.py` — `--labels` / `--fetch-missing` on both `trace` and `enrich`; `show` prints the label
+  beside each feature and one clickable URL.
+- `tests/test_labels_pass.py` — 8 more tests. **51 passed, 1 skipped.**
+
+Remaining, if wanted: embeddings are not imported by default (`--embeddings`, ~2GB), and nothing yet
+consumes them. That is the feature-map work, not phase 3.
