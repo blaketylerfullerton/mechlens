@@ -4,72 +4,20 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
-from capture import CaptureResult
-from schema import (
+from app.schema import (
     SCHEMA_VERSION,
     Edge,
     Feature,
-    LayerState,
+    FeatureLabel,
     LogitLens,
-    LogitSummary,
     NodeRef,
     TokenInfo,
-    TokenStep,
     TopToken,
     Trace,
+    label_key,
 )
-from store import load, load_residuals, load_trace, save_trace
-
-N_TOKENS, N_LAYERS, D_MODEL = 4, 3, 8
-
-
-def make_result(seed: int = 0) -> CaptureResult:
-    rng = np.random.default_rng(seed)
-    residuals = rng.standard_normal((N_TOKENS, N_LAYERS, D_MODEL), dtype=np.float32)
-
-    steps = [
-        TokenStep(
-            step=pos,
-            token=TokenInfo(
-                position=pos,
-                token_id=100 + pos,
-                text=f" t{pos}",
-                source="prompt" if pos < 2 else "generated",
-            ),
-            logits=LogitSummary(
-                top_k=[TopToken(token_id=100 + pos + 1, text=" next", logit=1.0, prob=0.5)],
-                entropy=1.23,
-                chosen=(
-                    None
-                    if pos == N_TOKENS - 1
-                    else TopToken(token_id=100 + pos + 1, text=" next", logit=1.0, prob=0.5)
-                ),
-            ),
-            layers=[
-                LayerState(
-                    layer=layer,
-                    resid_norm=float(np.linalg.norm(residuals[pos, layer])),
-                )
-                for layer in range(N_LAYERS)
-            ],
-        )
-        for pos in range(N_TOKENS)
-    ]
-
-    trace = Trace(
-        trace_id="test0001",
-        model="test-model",
-        device="cpu",
-        dtype="torch.float32",
-        n_layers=N_LAYERS,
-        d_model=D_MODEL,
-        prompt=" t0 t1",
-        completion=" t2 t3",
-        n_prompt_tokens=2,
-        n_generated_tokens=2,
-        steps=steps,
-    )
-    return CaptureResult(trace=trace, residuals=residuals)
+from app.store import load, load_residuals, load_trace, save_trace
+from factories import D_MODEL, N_LAYERS, N_TOKENS, make_result
 
 
 def test_roundtrip_preserves_trace_and_residuals(tmp_path):
@@ -126,7 +74,10 @@ def test_later_phases_can_enrich_a_saved_trace(tmp_path):
     trace = load(json_path)[0]
 
     layer = trace.steps[2].layers[1]
-    layer.features = [Feature(index=4023, activation=7.5, label="golden gate bridge")]
+    layer.features = [Feature(index=4023, activation=7.5)]
+    trace.labels[label_key(1, 4023)] = FeatureLabel(
+        text="golden gate bridge", explainer="gpt-4o-mini"
+    )
     layer.logit_lens = LogitLens(
         top_k=[TopToken(token_id=7, text=" San", logit=2.0, prob=0.8)], entropy=0.4
     )
@@ -134,7 +85,8 @@ def test_later_phases_can_enrich_a_saved_trace(tmp_path):
 
     reread = Trace.model_validate_json(trace.model_dump_json())
     enriched = reread.steps[2].layers[1]
-    assert enriched.features[0].label == "golden gate bridge"
+    assert enriched.features[0].index == 4023
+    assert reread.label(1, 4023).text == "golden gate bridge"
     assert enriched.logit_lens.top_k[0].text == " San"
     assert enriched.edges[0].source.feature == 12
     # untouched layers keep their empty defaults

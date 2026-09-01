@@ -4,13 +4,14 @@ Shape:
 
     Trace
       ├── passes: [PassRecord]        which enrichment passes have been run
+      ├── labels: {"L/F": FeatureLabel}  Neuronpedia text  (phase 3)
       └── steps: [TokenStep]          one per token in the final sequence
             ├── token:  TokenInfo     what this position holds
             ├── logits: LogitSummary  what the model predicts *after* it
             └── layers: [LayerState]  one per transformer layer (26 for gemma-2-2b)
                   ├── resid_norm      filled by the capture      (phase 1)
                   ├── features, l0    filled by the SAE encoder  (phase 2)
-                  ├── logit_lens      filled by the logit lens   (phase 3)
+                  ├── logit_lens      filled by the logit lens   (unclaimed)
                   └── edges           filled by the attribution pass (phase 4)
 
 Everything after phase 1 *adds to* this structure rather than reshaping it, so
@@ -34,7 +35,8 @@ from pydantic import BaseModel, Field
 
 # Bump on any breaking change to the models below. Readers should check it.
 #   1.1  LayerState.l0, Trace.passes
-SCHEMA_VERSION = "1.1"
+#   1.2  Trace.labels (side table); Feature.label removed
+SCHEMA_VERSION = "1.2"
 
 
 def _utcnow() -> datetime:
@@ -82,15 +84,20 @@ class LogitSummary(BaseModel):
 
 
 class Feature(BaseModel):
-    """An active SAE feature at this layer/position (phase 2)."""
+    """An active SAE feature at this layer/position (phase 2).
+
+    Deliberately just an index and a number. The human-readable label lives in
+    `Trace.labels`, keyed by "layer/index" — a feature recurs across positions
+    (~2x on the traces measured so far), so a label stored here would be the
+    same string written out thousands of times.
+    """
 
     index: int
     activation: float
-    label: str | None = None  # e.g. from Neuronpedia
 
 
 class LogitLens(BaseModel):
-    """This layer's residual stream decoded through the unembed (phase 3)."""
+    """This layer's residual stream decoded through the unembed."""
 
     top_k: list[TopToken]
     entropy: float
@@ -135,6 +142,28 @@ class LayerState(BaseModel):
     l0: int | None = None
 
     edges: list[Edge] = Field(default_factory=list)
+
+
+class FeatureLabel(BaseModel):
+    """What Neuronpedia says a feature means (phase 3).
+
+    Held in `Trace.labels` under "layer/index" rather than on every Feature.
+
+    No URL field: the link is a pure function of (model_id, source_set, index),
+    and the labels pass records that mapping once in its PassRecord.params. Six
+    thousand copies of the same f-string is not data.
+
+    `explainer` is not decoration. Neuronpedia's export does not use one
+    explainer throughout — for gemma-2-2b/16k, layers 16, 18, 20, 22 and 24
+    carry gemini-2.5-flash-lite explanations while the other 21 layers carry
+    gpt-4o-mini, and the two write in visibly different styles. Anything that
+    compares labels across layers has to be able to see that split.
+    """
+
+    text: str
+    explainer: str | None = None  # e.g. "gpt-4o-mini"
+    explanation_type: str | None = None  # e.g. "oai_token-act-pair"
+    score: float | None = None  # usually absent; Neuronpedia scores few labels
 
 
 # --------------------------------------------------------------------------
@@ -205,6 +234,11 @@ class Trace(BaseModel):
 
     residuals: ResidualRef | None = None
     passes: list[PassRecord] = Field(default_factory=list)
+
+    # "layer/index" -> label, for every feature appearing anywhere in `steps`.
+    # Flat and string-keyed so it survives a JSON round trip unchanged.
+    labels: dict[str, FeatureLabel] = Field(default_factory=dict)
+
     steps: list[TokenStep] = Field(default_factory=list)
 
     @property
@@ -213,3 +247,11 @@ class Trace(BaseModel):
 
     def pass_record(self, name: str) -> PassRecord | None:
         return next((p for p in self.passes if p.name == name), None)
+
+    def label(self, layer: int, feature: int) -> FeatureLabel | None:
+        return self.labels.get(label_key(layer, feature))
+
+
+def label_key(layer: int, feature: int) -> str:
+    """The one place the `Trace.labels` key format is written down."""
+    return f"{layer}/{feature}"

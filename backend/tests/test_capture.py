@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 import torch
 
-from capture import RESID_HOOK, generate_trace
+from app.capture import RESID_HOOK, generate_trace
 
 TEST_MODEL = "tiny-stories-1M"
 PROMPT = "Once upon a time there was a"

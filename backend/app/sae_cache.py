@@ -38,6 +38,29 @@ def pick_device() -> str:
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
+@lru_cache(maxsize=None)
+def neuronpedia_id(layer: int, width: str = DEFAULT_WIDTH) -> tuple[str, str]:
+    """Our SAE -> Neuronpedia's (model_id, source_set), e.g. layer 20 at 16k:
+
+        ("gemma-2-2b", "20-gemmascope-res-16k")
+
+    Read from SAELens' registry rather than built by hand. The canonical L0
+    pick and the Neuronpedia source set come from the same yaml entry, so the
+    two cannot drift apart, and this stays correct at 65k or on a
+    non-canonical variant. Building the string ourselves is how you end up
+    labelling features from a dictionary we did not load.
+
+    Verified empirically — see scripts/verify_neuronpedia_mapping.py.
+    """
+    from sae_lens.loading.pretrained_saes_directory import get_pretrained_saes_directory
+
+    full = get_pretrained_saes_directory()[RELEASE].neuronpedia_id[sae_id(layer, width)]
+    if full is None:
+        raise KeyError(f"SAELens has no Neuronpedia id for {sae_id(layer, width)}")
+    model_id, source_set = full.split("/", 1)
+    return model_id, source_set
+
+
 @lru_cache(maxsize=32)
 def get_sae(layer: int, width: str = DEFAULT_WIDTH, device: str | None = None) -> SAE:
     """Load one layer's SAE; later calls with the same args reuse it.

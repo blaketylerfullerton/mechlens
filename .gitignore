@@ -10,3 +10,6 @@ node_modules/
 
 # phase 1 trace artifacts: JSON + multi-MB .npy residual sidecars
 /backend/traces/
+
+# Neuronpedia label cache (rebuildable from the S3 export)
+backend/data/

@@ -1,6 +1,7 @@
 torch>=2.3
 transformers>=4.43
 transformer-lens>=2.0
+sae-lens>=6.0
 accelerate>=0.30
 numpy>=1.26
 pydantic>=2.7
@@ -9,4 +10,5 @@ protobuf
 fastapi>=0.111
 uvicorn[standard]>=0.30
 python-dotenv>=1.0
+requests>=2.31
 pytest>=8.0
