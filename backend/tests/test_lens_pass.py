@@ -102,9 +102,16 @@ def test_an_argmax_tie_counts_as_agreement_and_is_reported():
     tied = torch.zeros(N_TOKENS, D_VOCAB)
     tied[:, 2] = tied[:, 9] = 5.0  # exactly equal, so the order is arbitrary
 
+    # Which of the two topk actually picks is itself arbitrary and can differ
+    # by torch version, so ask it rather than hardcoding one — then force the
+    # capture side to record the *other* one, guaranteeing the mismatch this
+    # test exists to check rather than hoping the two calls happen to disagree.
+    lens_pick = int(torch.topk(tied[0], 5).indices[0])
+    other = 9 if lens_pick == 2 else 2
+
     for step in result.trace.steps:  # the capture picked the other one
-        step.logits.top_k[0].token_id = 9
-        step.logits.top_k[0].prob = float(torch.softmax(tied[0], dim=-1)[9])
+        step.logits.top_k[0].token_id = other
+        step.logits.top_k[0].prob = float(torch.softmax(tied[0], dim=-1)[other])
         step.logits.entropy = float(
             -(torch.softmax(tied[0], 0) * torch.log(torch.softmax(tied[0], 0))).sum()
         )
@@ -113,7 +120,7 @@ def test_an_argmax_tie_counts_as_agreement_and_is_reported():
         LogitLensPass(model=FakeModel(tied), verbose=False), result.trace, result.residuals
     )
 
-    assert result.trace.steps[0].layers[N_LAYERS - 1].logit_lens.top_k[0].token_id == 2
+    assert result.trace.steps[0].layers[N_LAYERS - 1].logit_lens.top_k[0].token_id == lens_pick
     assert record.stats["final_layer_agreement"] == 1.0
     assert record.stats["final_layer_exact_top1"] == 0.0
     assert record.stats["final_layer_argmax_ties"] == N_TOKENS
