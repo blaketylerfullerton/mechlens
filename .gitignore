@@ -13,3 +13,6 @@ node_modules/
 
 # Neuronpedia label cache (rebuildable from the S3 export)
 backend/data/
+
+# frontend node modules
+frontend/node_modules/
