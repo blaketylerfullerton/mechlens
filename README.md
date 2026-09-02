@@ -4,12 +4,12 @@
 Mechanistic-interpretability tracing for `gemma-2-2b` under TransformerLens.
 
 Generate token by token, capture the residual stream at every layer, then run
-enrichment passes over the saved trace — SAE features, Neuronpedia labels and
-the logit lens now, attribution next.
+enrichment passes over the saved trace — SAE features, Neuronpedia labels, the
+logit lens, and now attribution.
 
 ## Status
 
-Phases 0–4 are done; the trace schema is at **1.2**.
+Phases 0–5 are done; the trace schema is at **1.2**.
 
 | phase | what | state |
 | --- | --- | --- |
@@ -18,7 +18,8 @@ Phases 0–4 are done; the trace schema is at **1.2**.
 | 2 | SAE encoding — Gemma Scope 16k, top-k features per (token, layer) | done |
 | 3 | Neuronpedia labels — human-readable text and links for those features | done |
 | 4 | logit lens — every layer decoded through `ln_final` + `W_U` | done |
-| 5 | attribution — `LayerState.edges` defined and empty | next |
+| 5 | attribution — exact resid/attn/mlp decomposition of every layer | done |
+| 6 | feature-level attribution — `kind="sae"` edges, deferred from phase 5 | next |
 
 Measured on the traces in `backend/traces/`:
 
@@ -30,7 +31,8 @@ Measured on the traces in `backend/traces/`:
 | label table | **425,679** explanations, 26 layers, imported in **51s** |
 | mapping check | **10/10** features matched Neuronpedia's own activations (corr ≥ 0.998) |
 | lens | 26 layers x 31 tokens in **2.3s**; on all five saved traces layer 25 reproduces the model's own output at **every** position, max prob and entropy delta **0.0** |
-| tests | **71 passed, 1 skipped** in ~9s |
+| attribution | 26 layers x 31 tokens in **1.2s**; reconstruction gap **≤1.3e-2** across all five traces (bf16 tail, per-layer mean ~0.004–0.005, flat with depth); attn top-8 coverage **90–98%** |
+| tests | **88 passed, 1 skipped** in ~11s |
 
 Two known gaps, both deliberate. Explanation embeddings are not imported by
 default (`--embeddings`, ~2GB) and nothing consumes them yet. And position 0
@@ -54,15 +56,18 @@ python -m app.cli trace -p "The Golden Gate Bridge is located in the city of" -n
 python -m app.cli enrich traces/<id>.json --sae     # SAE features, no model load
 python -m app.cli enrich traces/<id>.json --labels  # Neuronpedia labels, no network
 python -m app.cli enrich traces/<id>.json --lens    # logit lens, loads the model
+python -m app.cli enrich traces/<id>.json --attribution  # resid/attn/mlp edges, loads the model
 python -m app.cli show traces/<id>.json --layer 20
 python -m app.cli show traces/<id>.json --lens --token 8
-python -m app.cli trace -p "2 + 2 =" -n 8 --sae --labels --lens   # or all at once
+python -m app.cli show traces/<id>.json --attribution --token 8
+python -m app.cli trace -p "2 + 2 =" -n 8 --sae --labels --lens --attribution   # or all at once
 ```
 
-`--sae` and `--labels` never load gemma. `--lens` is the exception: `W_U` is
-2304 x 256,000, too big to sit in a sidecar beside every trace, so it takes the
-model. When you run it as part of `trace` the model is already resident and it
-costs nothing extra.
+`--sae` and `--labels` never load gemma. `--lens` and `--attribution` are the
+exceptions: `W_U` is 2304 x 256,000, too big to sit in a sidecar beside every
+trace, and attention patterns and per-head values aren't in the sidecar at
+all — so both need a fresh pass through the model. When you run them as part
+of `trace` the model is already resident and it costs nothing extra to load.
 
 ## The logit lens
 
@@ -113,6 +118,41 @@ crystallisation curve, `echo_by_layer` says how much of its early portion to
 discount, and `crossover_layer` — the first depth where the answer is already
 in place for half the positions — is the one number to read.
 
+## Attribution
+
+For every layer and position, `resid_post = resid_pre + attn_out + mlp_out` —
+not an approximation but the literal structure of the residual stream, so
+decomposing it into edges needs no gradients or patching, just the model's
+own intermediate tensors:
+
+```
+   L20  resid 340.1  mlp 117.1  attn [pos0=28.7, pos4=14.2, pos20=11.7]
+   L21  resid 387.7  mlp 129.8  attn [pos29=27.5, pos0=26.8, pos30=17.1]
+   L25  resid 624.1  mlp 236.3  attn [pos30=149.3, pos0=27.8, pos4=26.6]
+```
+
+**It is checkable, and it is checked.** `resid_pre + attn_out + mlp_out` should
+equal the captured `resid_post` exactly, the same class of claim as the lens's
+final-layer identity — `reconstruction_max_rel_gap` on the pass record is that
+check. On gemma it reads **≤1.3e-2**, which looks less clean than the lens's
+**0.0** until you notice it is a *max* over 26 layers x 31 positions of bf16
+noise (mean **~0.004–0.005** per layer, flat with depth) rather than a single
+number — a real bug shows up as the mean drifting, not the max's tail.
+
+**Attention needs a per-source decomposition, not a per-head one.** Gemma 2's
+attention output is normalised again before it joins the residual stream (the
+"sandwich norm"), and that normalisation's scale and gain are computed from
+the whole summed output, not per source — so it distributes over a per-source
+split exactly, computed once from the total and applied identically to every
+term. Grouped-query attention adds a second wrinkle: the cached value vectors
+sit at 4 KV-head granularity, not gemma's 8 query heads, and have to be
+expanded to line up with the attention pattern before they mean anything.
+
+Edges are truncated to the top 8 source positions by weight, same as the SAE
+pass truncates features — `attn_topk_coverage` says how much of the real
+total that top-8 keeps, honestly: **90–98%** across the five saved traces,
+lower on longer ones where attention has more positions to spread across.
+
 `--labels` reads a local SQLite table built once from Neuronpedia's public export:
 
 ```bash
@@ -137,8 +177,8 @@ A trace is two files that travel together:
 
 Splitting them is what makes `enrich` cheap: a pass reads the tensor off disk
 instead of regenerating, so iterating on pass code costs seconds. The SAE and
-label passes never touch gemma at all; the lens needs `W_U` and so pays the
-~10s load.
+label passes never touch gemma at all; the lens needs `W_U` and attribution
+needs the attention pattern and per-head values, so both pay the ~10s load.
 
 Neither is committed. `backend/traces/` and `backend/data/` are gitignored — a
 trace is a few MB of JSON plus a multi-MB `.npy`, and the label DB (66MB) is
@@ -166,6 +206,7 @@ roughly double the JSON for no added information.
 | `app/passes/sae.py` | phase 2: Gemma Scope SAE features per (token, layer) |
 | `app/passes/labels.py` | phase 3: Neuronpedia labels for those features |
 | `app/passes/lens.py` | phase 4: every layer decoded through `ln_final` + `W_U` |
+| `app/passes/attribution.py` | phase 5: resid/attn/mlp edges decomposing every layer's residual |
 | `app/labels.py` | the label store — SQLite lookup, offline, with a capped API fallback |
 | `app/passes/__init__.py` | the `Pass` protocol — take a trace + residuals, fill fields |
 | `app/store.py` | save/load: JSON document plus its `.npy` sidecar |
@@ -175,8 +216,12 @@ roughly double the JSON for no added information.
 | `scripts/import_neuronpedia.py` | one-time load of the explanation export into SQLite |
 | `scripts/verify_neuronpedia_mapping.py` | proves our SAE features are the ones Neuronpedia labelled |
 
-`LayerState.edges` is defined and empty — the attribution pass fills it on
-traces that already exist.
+`LayerState.edges` holds `resid`/`attn`/`mlp` contributions once the
+attribution pass has run. `kind="sae"` edges — attributing a feature's own
+activation to upstream contributions, rather than the residual stream as a
+whole — are deferred to a later phase: it needs the SAE encoder's own
+reconstruction error in the loop, a different correctness story than the
+exact decomposition here.
 
 One caveat worth knowing before comparing labels across layers: Neuronpedia's
 export does not use a single explainer. For `gemma-2-2b` at 16k, layers 16, 18,

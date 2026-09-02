@@ -5,14 +5,18 @@
     python -m app.cli enrich traces/<id>.json --sae        # encode a saved trace
     python -m app.cli enrich traces/<id>.json --labels     # attach Neuronpedia labels
     python -m app.cli enrich traces/<id>.json --lens       # decode every layer
+    python -m app.cli enrich traces/<id>.json --attribution # decompose every layer
     python -m app.cli show traces/<id>.json --layer 20
     python -m app.cli show traces/<id>.json --lens --token 12
+    python -m app.cli show traces/<id>.json --attribution --token 12
     python -m app.cli view traces/<id>.json                 # the same thing, in a browser
 
 `enrich` is the loop you actually iterate in: it reads the residual sidecar, so
 re-running the SAE pass on a saved trace costs seconds. `--sae` and `--labels`
-never touch gemma at all; `--lens` is the exception, because W_U is
-2304 x 256_000 and has to come from the model.
+never touch gemma at all; `--lens` and `--attribution` are the exceptions —
+`--lens` because W_U is 2304 x 256_000 and has to come from the model,
+`--attribution` because it needs a fresh forward pass for the attention
+pattern and per-head values, neither of which the residual sidecar holds.
 """
 
 from __future__ import annotations
@@ -26,6 +30,8 @@ from .capture import DEFAULT_MAX_NEW_TOKENS, DEFAULT_TOP_K, generate_trace
 from .model_cache import MODEL_NAME, get_model
 from .passes import apply
 from .labels import DEFAULT_DB_PATH, feature_url
+from .passes.attribution import DEFAULT_TOP_K as ATTRIBUTION_TOP_K
+from .passes.attribution import AttributionPass
 from .passes.labels import LabelsPass
 from .passes.lens import DEFAULT_TOP_K as LENS_TOP_K
 from .passes.lens import LogitLensPass
@@ -212,6 +218,50 @@ def print_label_summary(trace: Trace) -> None:
     )
 
 
+def print_attribution_summary(trace: Trace, position: int | None = None) -> None:
+    """The phase-5 payoff: which upstream edges produced one token's residual
+    at every layer, printed as a column the same way the lens is."""
+    record = trace.pass_record("attribution")
+    if record is None:
+        print("no attribution pass has been run on this trace")
+        return
+
+    gap = record.stats["reconstruction_max_rel_gap"]
+    coverage = record.stats["attn_topk_coverage"]
+    print(
+        f"\nattribution | reconstruction gap {gap:.1e} | "
+        f"attn top-{record.params['top_k']} coverage {coverage:.1%} | "
+        f"{record.elapsed_s:.1f}s"
+    )
+    # This is a max over every (layer, position) — hundreds of samples on a
+    # 26-layer gemma-2-2b trace — so it is the tail of bf16 rounding, not its
+    # typical size: measured on golden-gate.json, the per-layer mean sits at
+    # ~0.004-0.005 with no growth across depth, while the max alone ranges up
+    # to ~0.013. A real bug (missing term, wrong hook) shows up as the mean
+    # itself drifting, not as an occasional spike in the max.
+    if gap >= 5e-2:
+        print("  ⚠ reconstruction gap is far from zero — a hook or a sign is wrong, see design.md")
+
+    pos = position if position is not None else len(trace.steps) - 1
+    step = trace.steps[pos]
+    print(f"\n  token {pos} {step.token.text!r}\n")
+
+    for state in step.layers:
+        by_kind: dict[str, list] = {}
+        for edge in state.edges:
+            by_kind.setdefault(edge.kind, []).append(edge)
+        parts = []
+        if "resid" in by_kind:
+            parts.append(f"resid {by_kind['resid'][0].weight:5.1f}")
+        if "mlp" in by_kind:
+            parts.append(f"mlp {by_kind['mlp'][0].weight:5.1f}")
+        attn = sorted(by_kind.get("attn", []), key=lambda e: e.weight, reverse=True)
+        if attn:
+            top = ", ".join(f"pos{e.source.position}={e.weight:.1f}" for e in attn[:3])
+            parts.append(f"attn [{top}]")
+        print(f"   L{state.layer:<3} " + "  ".join(parts))
+
+
 # --------------------------------------------------------------------------
 # subcommands
 # --------------------------------------------------------------------------
@@ -247,7 +297,19 @@ def cmd_trace(args: argparse.Namespace) -> None:
     if args.labels:
         apply(_labels_pass(args), result.trace, result.residuals)
 
-    if args.sae or args.labels or args.lens:
+    if args.attribution:
+        # Same reasoning as --lens: the model is already resident, so this
+        # costs one extra forward pass, not an extra load.
+        layers = parse_layers(args.layers, result.trace.n_layers)
+        apply(
+            AttributionPass(
+                top_k=args.attribution_top_k, layers=layers, model=model, verbose=False
+            ),
+            result.trace,
+            result.residuals,
+        )
+
+    if args.sae or args.labels or args.lens or args.attribution:
         update_trace(result.trace, json_path)
         # Same as `enrich`: report once every pass has run, so the feature list
         # is printed with its labels rather than as bare integers.
@@ -256,6 +318,8 @@ def cmd_trace(args: argparse.Namespace) -> None:
         print_label_summary(result.trace)
         if args.lens:
             print_lens_summary(result.trace)
+        if args.attribution:
+            print_attribution_summary(result.trace)
 
 
 def cmd_enrich(args: argparse.Namespace) -> None:
@@ -265,8 +329,8 @@ def cmd_enrich(args: argparse.Namespace) -> None:
         f"({trace.model}, schema {trace.schema_version})"
     )
 
-    if not (args.sae or args.labels or args.lens):
-        raise SystemExit("nothing to do — pass --sae, --labels and/or --lens")
+    if not (args.sae or args.labels or args.lens or args.attribution):
+        raise SystemExit("nothing to do — pass --sae, --labels, --lens and/or --attribution")
 
     if args.sae:
         layers = parse_layers(args.layers, trace.n_layers)
@@ -286,6 +350,16 @@ def cmd_enrich(args: argparse.Namespace) -> None:
             residuals,
         )
 
+    if args.attribution:
+        layers = parse_layers(args.layers, trace.n_layers)
+        # Also loads gemma — attention pattern and per-head values are not on
+        # the residual sidecar, so this pays its own forward pass.
+        apply(
+            AttributionPass(top_k=args.attribution_top_k, layers=layers, verbose=False),
+            trace,
+            residuals,
+        )
+
     if args.labels:
         apply(_labels_pass(args), trace, residuals)
 
@@ -296,6 +370,8 @@ def cmd_enrich(args: argparse.Namespace) -> None:
     print_label_summary(trace)
     if args.lens:
         print_lens_summary(trace)
+    if args.attribution:
+        print_attribution_summary(trace)
 
     update_trace(trace, args.trace)
     print(f"\nupdated {args.trace}")
@@ -318,6 +394,10 @@ def cmd_show(args: argparse.Namespace) -> None:
 
     if args.lens or (trace.pass_record("lens") and not trace.pass_record("sae")):
         print_lens_summary(trace, args.token)
+        return
+
+    if args.attribution:
+        print_attribution_summary(trace, args.token)
         return
 
     if trace.pass_record("sae"):
@@ -368,6 +448,16 @@ def build_parser() -> argparse.ArgumentParser:
             help="ask neuronpedia.org about features the local DB has never seen",
         )
 
+    def add_attribution_flags(sp: argparse.ArgumentParser) -> None:
+        sp.add_argument(
+            "--attribution",
+            action="store_true",
+            help="decompose every layer's residual into resid/attn/mlp edges (loads the model)",
+        )
+        sp.add_argument(
+            "--attribution-top-k", type=int, default=ATTRIBUTION_TOP_K, help="attn edges kept per layer/position"
+        )
+
     t = sub.add_parser("trace", help="generate and capture a new trace")
     t.add_argument("-p", "--prompt", default=PROMPT)
     t.add_argument("-n", "--max-new-tokens", type=int, default=DEFAULT_MAX_NEW_TOKENS)
@@ -380,6 +470,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_sae_flags(t)
     add_lens_flags(t)
     add_label_flags(t)
+    add_attribution_flags(t)
     t.set_defaults(func=cmd_trace)
 
     e = sub.add_parser("enrich", help="run passes over a saved trace")
@@ -388,6 +479,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_sae_flags(e)
     add_lens_flags(e)
     add_label_flags(e)
+    add_attribution_flags(e)
     e.set_defaults(func=cmd_enrich)
 
     s = sub.add_parser("show", help="summarise a saved trace")
@@ -395,6 +487,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--layer", type=int, help="layer to show features for (default: middle)")
     s.add_argument("--token", type=int, help="token position to show (default: the last one)")
     s.add_argument("--lens", action="store_true", help="show the per-layer logit lens instead")
+    s.add_argument("--attribution", action="store_true", help="show the per-layer attribution edges instead")
     s.set_defaults(func=cmd_show)
 
     v = sub.add_parser("view", help="open the trace viewer in a browser")
