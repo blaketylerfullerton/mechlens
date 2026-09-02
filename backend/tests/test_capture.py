@@ -122,6 +122,47 @@ def test_generation_is_deterministic(model, result):
     assert again.trace.trace_id != result.trace.trace_id  # ids stay unique
 
 
+def test_intervention_none_matches_current_behavior(model, result):
+    """`intervention=None` is not a new code path — it must be indistinguishable
+    from calling generate_trace before the parameter existed."""
+    again = generate_trace(model, PROMPT, max_new_tokens=6, top_k=5, intervention=None)
+    assert again.trace.completion == result.trace.completion
+    np.testing.assert_array_equal(again.residuals, result.residuals)
+
+
+def test_intervention_hook_is_removed_after_generation(model, result):
+    """A steered call must not leave a hook registered for the next caller."""
+    layer = 0
+
+    def add_one(resid, hook):
+        return resid + 1.0
+
+    generate_trace(model, PROMPT, max_new_tokens=2, intervention=(layer, add_one))
+    assert model.hook_dict[f"blocks.{layer}.hook_resid_post"].fwd_hooks == []
+
+    # and the model behaves unsteered again afterward
+    again = generate_trace(model, PROMPT, max_new_tokens=6, top_k=5)
+    assert again.trace.completion == result.trace.completion
+
+
+def test_intervention_changes_the_targeted_layer_only(model):
+    """A hook on one layer's resid_post should not perturb earlier layers."""
+    layer = model.cfg.n_layers - 1
+
+    def add_one(resid, hook):
+        return resid + 1.0
+
+    baseline = generate_trace(model, PROMPT, max_new_tokens=0)
+    steered = generate_trace(model, PROMPT, max_new_tokens=0, intervention=(layer, add_one))
+
+    np.testing.assert_allclose(
+        steered.residuals[:, :layer], baseline.residuals[:, :layer], rtol=1e-5, atol=1e-5
+    )
+    np.testing.assert_allclose(
+        steered.residuals[:, layer], baseline.residuals[:, layer] + 1.0, rtol=1e-4, atol=1e-4
+    )
+
+
 def test_zero_new_tokens_still_traces_the_prompt(model):
     """The n=0 case is the one the loop is easiest to get wrong."""
     out = generate_trace(model, PROMPT, max_new_tokens=0)

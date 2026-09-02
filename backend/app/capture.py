@@ -17,6 +17,7 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass
+from typing import Callable
 
 import numpy as np
 import torch
@@ -34,6 +35,12 @@ from .schema import (
 # Which residual-stream site we snapshot. resid_post is the layer's output —
 # what the next layer reads and what Gemma Scope's SAEs are trained on.
 RESID_HOOK = "hook_resid_post"
+
+# (layer, hook_fn) — hook_fn has TransformerLens's usual (tensor, HookPoint) ->
+# tensor signature and is registered on that layer's RESID_HOOK for the
+# duration of one generate_trace call. This is the intervention point the
+# module docstring above refers to.
+Intervention = tuple[int, Callable]
 
 DEFAULT_MAX_NEW_TOKENS = 20
 DEFAULT_TOP_K = 10
@@ -113,6 +120,7 @@ def generate_trace(
     top_k: int = DEFAULT_TOP_K,
     stop_at_eos: bool = True,
     trace_id: str | None = None,
+    intervention: Intervention | None = None,
 ) -> CaptureResult:
     """Greedily generate from `prompt`, capturing every layer at every token.
 
@@ -120,6 +128,12 @@ def generate_trace(
     the `[n_tokens, n_layers, d_model]` residual tensor it points at. Positions
     cover the prompt as well as the generation: the prompt's representations
     are where most attribution work ends up pointing.
+
+    `intervention`, when given, is registered on the model for the duration
+    of this call (see `Intervention`), so the residuals captured below —
+    and everything downstream of them, generation included — are the
+    *steered* activations. `None` (the default) is exactly today's
+    unsteered behavior.
     """
     cfg = model.cfg
     n_layers, d_model = cfg.n_layers, cfg.d_model
@@ -138,43 +152,53 @@ def generate_trace(
     stop_reason = "max_tokens"
     t0 = time.time()
 
-    for step in range(max_new_tokens + 1):
-        with torch.no_grad():
-            logits, cache = model.run_with_cache(tokens, names_filter=names_filter)
+    if intervention is not None:
+        layer, hook_fn = intervention
+        model.add_hook(_hook_name(layer), hook_fn)
 
-        seq = tokens.shape[1]
+    try:
+        for step in range(max_new_tokens + 1):
+            with torch.no_grad():
+                logits, cache = model.run_with_cache(tokens, names_filter=names_filter)
 
-        # Causal attention means a position's residual never changes once
-        # computed, so each pass only has to bank what is new: the whole prompt
-        # on the first pass, one token on every pass after it.
-        for layer in range(n_layers):
-            acts = cache[_hook_name(layer)][0]  # [seq, d_model]
-            residuals[filled:seq, layer] = acts[filled:seq].float().cpu().numpy()
+            seq = tokens.shape[1]
 
-        # Every position predicts a next token. For positions inside the
-        # sequence the "chosen" token is simply whatever sits at position+1.
-        for pos in range(filled, seq - 1):
-            summaries[pos] = logit_summary(
-                model, logits[0, pos], top_k, chosen_id=int(tokens[0, pos + 1])
+            # Causal attention means a position's residual never changes once
+            # computed, so each pass only has to bank what is new: the whole prompt
+            # on the first pass, one token on every pass after it.
+            for layer in range(n_layers):
+                acts = cache[_hook_name(layer)][0]  # [seq, d_model]
+                residuals[filled:seq, layer] = acts[filled:seq].float().cpu().numpy()
+
+            # Every position predicts a next token. For positions inside the
+            # sequence the "chosen" token is simply whatever sits at position+1.
+            for pos in range(filled, seq - 1):
+                summaries[pos] = logit_summary(
+                    model, logits[0, pos], top_k, chosen_id=int(tokens[0, pos + 1])
+                )
+            filled = seq
+
+            # The last position is the one actually driving generation, so its
+            # summary waits until we know whether we are appending its argmax.
+            last_logits = logits[0, -1]
+            next_id = int(last_logits.argmax())
+            del cache
+
+            at_budget = step == max_new_tokens
+            hit_eos = stop_at_eos and next_id == eos_id
+            if at_budget or hit_eos:
+                if hit_eos:
+                    stop_reason = "eos"
+                summaries[seq - 1] = logit_summary(model, last_logits, top_k, chosen_id=None)
+                break
+
+            summaries[seq - 1] = logit_summary(model, last_logits, top_k, chosen_id=next_id)
+            tokens = torch.cat(
+                [tokens, last_logits.new_tensor([[next_id]], dtype=tokens.dtype)], dim=1
             )
-        filled = seq
-
-        # The last position is the one actually driving generation, so its
-        # summary waits until we know whether we are appending its argmax.
-        last_logits = logits[0, -1]
-        next_id = int(last_logits.argmax())
-        del cache
-
-        at_budget = step == max_new_tokens
-        hit_eos = stop_at_eos and next_id == eos_id
-        if at_budget or hit_eos:
-            if hit_eos:
-                stop_reason = "eos"
-            summaries[seq - 1] = logit_summary(model, last_logits, top_k, chosen_id=None)
-            break
-
-        summaries[seq - 1] = logit_summary(model, last_logits, top_k, chosen_id=next_id)
-        tokens = torch.cat([tokens, last_logits.new_tensor([[next_id]], dtype=tokens.dtype)], dim=1)
+    finally:
+        if intervention is not None:
+            model.reset_hooks()
 
     elapsed = time.time() - t0
 

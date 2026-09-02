@@ -36,7 +36,8 @@ from pydantic import BaseModel, Field
 # Bump on any breaking change to the models below. Readers should check it.
 #   1.1  LayerState.l0, Trace.passes
 #   1.2  Trace.labels (side table); Feature.label removed
-SCHEMA_VERSION = "1.2"
+#   1.3  Trace.steering
+SCHEMA_VERSION = "1.3"
 
 
 def _utcnow() -> datetime:
@@ -191,6 +192,19 @@ class ResidualRef(BaseModel):
     # overflow on Gemma 2's large late-layer activations
 
 
+class SteeringInfo(BaseModel):
+    """The feature-steering intervention a trace was generated under.
+
+    Recorded on the trace itself, not just the request that produced it —
+    a trace loaded later (from disk, or by a different client) needs to be
+    able to tell it was steered, and with what.
+    """
+
+    layer: int
+    feature_idx: int
+    coefficient: float
+
+
 class PassRecord(BaseModel):
     """One enrichment pass that has been applied to a trace.
 
@@ -234,6 +248,7 @@ class Trace(BaseModel):
 
     residuals: ResidualRef | None = None
     passes: list[PassRecord] = Field(default_factory=list)
+    steering: SteeringInfo | None = None  # None for an ordinary, unsteered trace
 
     # "layer/index" -> label, for every feature appearing anywhere in `steps`.
     # Flat and string-keyed so it survives a JSON round trip unchanged.

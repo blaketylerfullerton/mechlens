@@ -5,11 +5,12 @@ Mechanistic-interpretability tracing for `gemma-2-2b` under TransformerLens.
 
 Generate token by token, capture the residual stream at every layer, then run
 enrichment passes over the saved trace — SAE features, Neuronpedia labels, the
-logit lens, and now attribution.
+logit lens, and now attribution. A FastAPI service now sits in front of all
+of it, so tracing and feature steering are also reachable over HTTP.
 
 ## Status
 
-Phases 0–5 are done; the trace schema is at **1.2**.
+Phases 0–6 are done; the trace schema is at **1.3**.
 
 | phase | what | state |
 | --- | --- | --- |
@@ -19,7 +20,8 @@ Phases 0–5 are done; the trace schema is at **1.2**.
 | 3 | Neuronpedia labels — human-readable text and links for those features | done |
 | 4 | logit lens — every layer decoded through `ln_final` + `W_U` | done |
 | 5 | attribution — exact resid/attn/mlp decomposition of every layer | done |
-| 6 | feature-level attribution — `kind="sae"` edges, deferred from phase 5 | next |
+| 6 | API service — FastAPI `/trace`, `/steer`, `/feature`, job queue, GPU lock | done |
+| 7 | feature-level attribution — `kind="sae"` edges, deferred from phase 5 | next |
 
 Measured on the traces in `backend/traces/`:
 
@@ -32,7 +34,7 @@ Measured on the traces in `backend/traces/`:
 | mapping check | **10/10** features matched Neuronpedia's own activations (corr ≥ 0.998) |
 | lens | 26 layers x 31 tokens in **2.3s**; on all five saved traces layer 25 reproduces the model's own output at **every** position, max prob and entropy delta **0.0** |
 | attribution | 26 layers x 31 tokens in **1.2s**; reconstruction gap **≤1.3e-2** across all five traces (bf16 tail, per-layer mean ~0.004–0.005, flat with depth); attn top-8 coverage **90–98%** |
-| tests | **88 passed, 1 skipped** in ~11s |
+| tests | **118 passed, 1 skipped** in ~17s |
 
 Two known gaps, both deliberate. Explanation embeddings are not imported by
 default (`--embeddings`, ~2GB) and nothing consumes them yet. And position 0
