@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Callable
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from transformer_lens import HookedTransformer
 
 from .. import model_cache
@@ -64,6 +65,15 @@ def create_app(
         yield
 
     app = FastAPI(lifespan=lifespan)
+
+    # Dev-only: lets the Vite frontend (localhost:5173) call this API directly
+    # from the browser instead of going through a same-origin proxy.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     @app.post("/trace", response_model=JobResponse)
     def post_trace(req: TraceRequest) -> JobResponse:
