@@ -41,7 +41,7 @@ import torch
 from transformer_lens import HookedTransformer
 from transformer_lens.utilities.activation_functions import apply_softcap
 
-from ..capture import RESID_HOOK, logit_summary
+from ..capture import RESID_HOOK, ProgressCallback, logit_summary
 from ..schema import LogitLens, PassRecord, Trace
 
 DEFAULT_TOP_K = 5
@@ -61,9 +61,23 @@ class LogitLensPass:
     # already holds instead of going through the cache.
     model: HookedTransformer | None = None
 
+    # Vouches for where the residual array came from, for a caller that holds
+    # the tensor but has no sidecar on disk to point a ResidualRef at (the HTTP
+    # service). Only consulted when `trace.residuals` is absent: a ref
+    # describes bytes that actually landed on disk, so it wins whenever it is
+    # there. Left None -- every existing caller -- the guard below behaves
+    # exactly as it did before this field existed.
+    hook: str | None = None
+
+    # Called with (layers_decoded, layers_to_decode) as each layer finishes.
+    # Unlike the capture loop, this pass really does walk layers one at a time
+    # (~90ms each on gemma-2-2b), so this is the one place a depth sweep can be
+    # reported honestly. Advisory only: nothing in the PassRecord depends on it.
+    on_progress: ProgressCallback | None = None
+
     def run(self, trace: Trace, residuals: np.ndarray) -> PassRecord:
         model = self.model if self.model is not None else _default_model()
-        _check_compatible(trace, model)
+        _check_compatible(trace, model, self.hook)
 
         layers = self.layers if self.layers is not None else list(range(trace.n_layers))
         n_positions = len(trace.steps)
@@ -81,7 +95,7 @@ class LogitLensPass:
         # And what token is sitting *at* each position, for the echo curve.
         current = [step.token.token_id for step in trace.steps]
 
-        for layer in layers:
+        for decoded, layer in enumerate(layers, start=1):
             summaries = self._decode_layer(model, residuals, layer, n_positions)
 
             for pos, summary in enumerate(summaries):
@@ -98,6 +112,9 @@ class LogitLensPass:
                 sum(s.top_k[0].token_id == current[pos] for pos, s in enumerate(summaries))
                 / n_positions
             )
+
+            if self.on_progress is not None:
+                self.on_progress(decoded, len(layers))
 
         elapsed = time.time() - t0
         stats = _crystallisation_stats(
@@ -313,8 +330,20 @@ def _report(trace: Trace, layers: list[int], stats: dict, elapsed: float) -> Non
 # --------------------------------------------------------------------------
 
 
-def _check_compatible(trace: Trace, model: HookedTransformer) -> None:
+def _check_compatible(
+    trace: Trace, model: HookedTransformer, vouched_hook: str | None = None
+) -> None:
     """Refuse the combinations that produce plausible nonsense.
+
+    What this actually needs to establish is that the residuals came from
+    `resid_post`, because the final layer's identity against the model's own
+    output -- the one thing that makes a lens checkable -- holds for no other
+    hook. Where that fact lives depends on the caller. A caller enriching a
+    saved trace *loads the array through* `trace.residuals`, so the ref is the
+    provenance and is checked. A caller holding the array in memory passes it
+    as an argument, so its existence is not in question and only its origin is:
+    `vouched_hook` (from `CaptureResult.hook`) carries that. The ref wins when
+    both are available, since it describes bytes that are actually on disk.
 
     Note what is *not* checked, unlike passes/sae.py: `trace.normalization`.
     LayerNorm folding moves resid_post off the distribution Gemma Scope's SAEs
@@ -322,12 +351,17 @@ def _check_compatible(trace: Trace, model: HookedTransformer) -> None:
     `RMSNormPre(x) @ W_U_folded == RMSNorm(x) @ W_U`, the same arithmetic. The
     lens only needs ln_final and W_U to come from one model, which they do.
     """
-    if trace.residuals is None:
-        raise ValueError(f"trace {trace.trace_id} has no residuals attached")
+    captured_hook = trace.residuals.hook if trace.residuals is not None else vouched_hook
 
-    if trace.residuals.hook != RESID_HOOK:
+    if captured_hook is None:
         raise ValueError(
-            f"trace {trace.trace_id} captured {trace.residuals.hook}; the lens needs "
+            f"trace {trace.trace_id} has no residuals attached — to run the lens on an "
+            f"in-memory capture, pass the hook it was captured at (LogitLensPass(hook=...))"
+        )
+
+    if captured_hook != RESID_HOOK:
+        raise ValueError(
+            f"trace {trace.trace_id} captured {captured_hook}; the lens needs "
             f"{RESID_HOOK} — the final layer's identity against the model's own "
             f"output is what makes it verifiable, and only resid_post has it"
         )

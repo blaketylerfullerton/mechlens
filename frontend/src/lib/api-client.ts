@@ -42,7 +42,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 // POST /trace — starts a trace job, returns immediately with a job id.
-// Poll getTraceJob() until status is "done" or "error".
+// Poll getTraceJob() until status is "done" or "error". `body.passes` picks the
+// enrichment passes the job runs; omitting it is capture-only.
 export function postTrace(body: TraceRequest): Promise<JobResponse> {
   return request<JobResponse>('/trace', { method: 'POST', body: JSON.stringify(body) })
 }

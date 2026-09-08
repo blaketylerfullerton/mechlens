@@ -284,3 +284,188 @@ def test_cors_allows_the_vite_dev_server_on_a_fallback_port(client):
             "/trace", json={"prompt": PROMPT, "max_tokens": 1}, headers={"Origin": origin}
         )
         assert resp.headers["access-control-allow-origin"] == origin
+
+
+# -- POST /trace with enrichment passes ------------------------------------
+
+
+def test_requesting_the_lens_pass_fills_per_layer_readouts(client, tiny_model):
+    """The brain view reads `logit_lens` per (token, layer); it only exists if
+    the trace job ran the pass, since the service writes no sidecar to enrich
+    later."""
+    job_id = client.post(
+        "/trace", json={"prompt": PROMPT, "max_tokens": 3, "passes": ["lens"]}
+    ).json()["job_id"]
+
+    body = _poll(client, job_id).json()
+    assert body["status"] == "done", body.get("error")
+    trace = body["trace"]
+
+    assert [p["name"] for p in trace["passes"]] == ["lens"]
+    for step in trace["steps"]:
+        assert len(step["layers"]) == tiny_model.cfg.n_layers
+        for layer in step["layers"]:
+            assert layer["logit_lens"] is not None
+            assert layer["logit_lens"]["top_k"]
+
+
+def test_the_lens_record_carries_the_crystallisation_stats(client):
+    """`crossover_layer` is what the brain marks, so it has to survive the trip."""
+    job_id = client.post(
+        "/trace", json={"prompt": PROMPT, "max_tokens": 3, "passes": ["lens"]}
+    ).json()["job_id"]
+
+    trace = _poll(client, job_id).json()["trace"]
+    stats = trace["passes"][0]["stats"]
+
+    assert "crossover_layer" in stats
+    assert "top1_agreement_by_layer" in stats
+    assert "final_layer_agreement" in stats
+
+
+def test_a_trace_with_no_passes_is_capture_only(client):
+    """The default must stay exactly what it was before `passes` existed."""
+    job_id = client.post("/trace", json={"prompt": PROMPT, "max_tokens": 3}).json()["job_id"]
+
+    trace = _poll(client, job_id).json()["trace"]
+
+    assert trace["passes"] == []
+    assert all(
+        layer["logit_lens"] is None for step in trace["steps"] for layer in step["layers"]
+    )
+    # capture data is still all there
+    assert trace["steps"][0]["layers"][0]["resid_norm"] > 0
+
+
+def test_an_unknown_pass_is_rejected_without_enqueueing(client):
+    n_jobs_before = len(jobs.JOBS)
+    resp = client.post(
+        "/trace", json={"prompt": PROMPT, "max_tokens": 3, "passes": ["not-a-pass"]}
+    )
+    assert resp.status_code == 422
+    assert len(jobs.JOBS) == n_jobs_before
+
+
+def test_a_failing_pass_fails_the_job_rather_than_returning_a_bare_trace(
+    client, tiny_model, monkeypatch
+):
+    """A capture-only trace returned after a requested pass raised would be
+    indistinguishable from one that never asked for the pass."""
+    from app.service import app as app_module
+
+    class Exploding:
+        name = "lens"
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def run(self, _trace, _residuals):
+            raise RuntimeError("lens exploded")
+
+    monkeypatch.setattr(app_module, "LogitLensPass", Exploding)
+
+    job_id = client.post(
+        "/trace", json={"prompt": PROMPT, "max_tokens": 3, "passes": ["lens"]}
+    ).json()["job_id"]
+
+    body = _poll(client, job_id).json()
+    assert body["status"] == "error"
+    assert "lens exploded" in body["error"]
+    assert body["trace"] is None
+
+
+# -- GET /trace/{id} progress ----------------------------------------------
+
+
+def test_progress_is_absent_for_a_queued_job(client):
+    """"Pending" and "running, at token 0" have to stay distinguishable."""
+    first = client.post("/trace", json={"prompt": PROMPT, "max_tokens": 4}).json()["job_id"]
+    second = client.post("/trace", json={"prompt": PROMPT, "max_tokens": 4}).json()["job_id"]
+
+    body = client.get(f"/trace/{second}").json()
+    if body["status"] == "pending":  # the worker may already have picked it up
+        assert body["progress"] is None
+
+    _poll(client, first)
+    _poll(client, second)
+
+
+def test_progress_reports_both_phases_over_the_life_of_a_job(client, tiny_model):
+    """Polled readings must identify the phase and count that phase's own unit
+    of work: tokens while generating, layers while running the lens."""
+    job_id = client.post(
+        "/trace", json={"prompt": PROMPT, "max_tokens": 4, "passes": ["lens"]}
+    ).json()["job_id"]
+
+    readings: list[tuple[str, int, int]] = []
+    deadline = time.time() + 10.0
+    while time.time() < deadline:
+        body = client.get(f"/trace/{job_id}").json()
+        p = body["progress"]
+        if p is not None:
+            reading = (p["phase"], p["done"], p["total"])
+            if not readings or readings[-1] != reading:
+                readings.append(reading)
+        if body["status"] in ("done", "error"):
+            break
+        time.sleep(0.005)
+
+    assert readings, "no progress was ever reported"
+    phases = [phase for phase, _d, _t in readings]
+    assert "generating" in phases
+    assert "lens" in phases
+    # phases never interleave or go back
+    assert phases == sorted(phases, key=["generating", "lens"].index)
+
+    generating = [(d, t) for phase, d, t in readings if phase == "generating"]
+    assert all(total == 4 for _d, total in generating)
+    assert [d for d, _t in generating] == sorted(d for d, _t in generating)
+
+    lens = [(d, t) for phase, d, t in readings if phase == "lens"]
+    assert all(total == tiny_model.cfg.n_layers for _d, total in lens)
+    assert lens[-1][0] == tiny_model.cfg.n_layers  # the sweep reaches the last layer
+
+
+def test_progress_never_goes_backwards_across_polls(client):
+    job_id = client.post(
+        "/trace", json={"prompt": PROMPT, "max_tokens": 4, "passes": ["lens"]}
+    ).json()["job_id"]
+
+    order = {"generating": 0, "lens": 1}
+    previous: tuple[int, int] | None = None
+    deadline = time.time() + 10.0
+    while time.time() < deadline:
+        body = client.get(f"/trace/{job_id}").json()
+        p = body["progress"]
+        if p is not None:
+            current = (order[p["phase"]], p["done"])
+            if previous is not None:
+                assert current >= previous, f"progress went backwards: {previous} -> {current}"
+            previous = current
+        if body["status"] in ("done", "error"):
+            break
+        time.sleep(0.005)
+
+    assert previous is not None
+
+
+def test_a_finished_job_reports_its_status_without_depending_on_progress(client):
+    job_id = client.post("/trace", json={"prompt": PROMPT, "max_tokens": 2}).json()["job_id"]
+    body = _poll(client, job_id).json()
+
+    assert body["status"] == "done"
+    assert body["trace"] is not None
+    assert "progress" in body  # the field is always present, even if null
+
+
+def test_steer_jobs_still_poll_through_the_same_endpoint(client):
+    """Adding `progress` to the response must not have changed /steer's shape."""
+    job_id = client.post(
+        "/steer",
+        json={"prompt": PROMPT, "max_tokens": 2, "layer": 2, "feature_idx": 5, "coefficient": 1.0},
+    ).json()["job_id"]
+
+    body = _poll(client, job_id).json()
+    assert body["status"] == "done"
+    assert body["trace"]["steering"] == {"layer": 2, "feature_idx": 5, "coefficient": 1.0}
+    assert body["error"] is None

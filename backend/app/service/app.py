@@ -27,6 +27,8 @@ from transformer_lens import HookedTransformer
 from .. import model_cache
 from ..capture import generate_trace
 from ..labels import LabelStore, feature_url
+from ..passes import apply
+from ..passes.lens import LogitLensPass
 from ..sae_cache import DEFAULT_WIDTH, get_sae
 from ..schema import SteeringInfo, Trace
 from . import jobs
@@ -118,10 +120,39 @@ def create_app(
     @app.post("/trace", response_model=JobResponse)
     def post_trace(req: TraceRequest) -> JobResponse:
         m = get_model()
+        # Read off the request now: the job callable runs on the worker thread
+        # long after this handler has returned.
+        wants_lens = "lens" in req.passes
 
-        def run() -> Trace:
+        def run(report: jobs.Reporter) -> Trace:
             with _forward_lock:
-                return generate_trace(m, req.prompt, max_new_tokens=req.max_tokens).trace
+                result = generate_trace(
+                    m,
+                    req.prompt,
+                    max_new_tokens=req.max_tokens,
+                    on_progress=lambda done, total: report("generating", done, total),
+                )
+
+                if wants_lens:
+                    # `residuals` is the array capture just built, still in
+                    # memory -- the service writes no sidecar, so the pass is
+                    # told which hook it came from instead of reading a
+                    # ResidualRef. `apply` is what puts the record on the
+                    # trace, which is how a client can tell the pass ran.
+                    apply(
+                        LogitLensPass(
+                            model=m,
+                            hook=result.hook,
+                            verbose=False,
+                            on_progress=lambda done, total: report("lens", done, total),
+                        ),
+                        result.trace,
+                        result.residuals,
+                    )
+
+            # The residual array falls out of scope with the closure here; it is
+            # ~7MB for a 31-token gemma trace and nothing downstream needs it.
+            return result.trace
 
         return JobResponse(job_id=jobs.submit(run))
 
@@ -130,7 +161,9 @@ def create_app(
         job = jobs.get(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="unknown job id")
-        return JobStatusResponse(status=job.status, trace=job.result, error=job.error)
+        return JobStatusResponse(
+            status=job.status, trace=job.result, error=job.error, progress=job.progress
+        )
 
     @app.post("/steer", response_model=JobResponse)
     def post_steer(req: SteerRequest) -> JobResponse:
@@ -147,7 +180,9 @@ def create_app(
 
         intervention = build_intervention(req.layer, req.feature_idx, req.coefficient, sae=sae)
 
-        def run() -> Trace:
+        # `_report` is unused: steering does not run enrichment passes, and no
+        # client drives a progress indicator off /steer today.
+        def run(_report: jobs.Reporter) -> Trace:
             with _forward_lock:
                 result = generate_trace(
                     m, req.prompt, max_new_tokens=req.max_tokens, intervention=intervention

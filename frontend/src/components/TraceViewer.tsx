@@ -1,13 +1,20 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 
-import type { JobStatus, LayerState, TokenStep, Trace } from '@/lib/api-types'
-
-type Selection = { layer: number; position: number; traceId: string }
+import type { RunState } from '@/hooks/useTrace'
+import type { LayerState, TokenStep, Trace } from '@/lib/api-types'
 
 type TraceViewerProps = {
   trace: Trace | null
-  status: JobStatus | 'idle'
+  status: RunState
   error: string | null
+  /**
+   * The shared selection, resolved by `App` — including the default for a
+   * newly arrived trace. Null only when there is no trace to select in, which
+   * is also when this component renders its empty state.
+   */
+  selection: { layer: number; position: number } | null
+  onSelectCell: (layer: number, position: number) => void
+  onSelectPosition: (position: number) => void
 }
 
 function visibleToken(text: string): string {
@@ -29,10 +36,16 @@ function heatColor(value: number, maximum: number): { backgroundColor: string; c
 
 function StatusCopy({ status, error }: Pick<TraceViewerProps, 'status' | 'error'>) {
   if (error) return <p className="text-sm text-rose-300">Could not load a trace: {error}</p>
-  if (status === 'pending' || status === 'running') {
+  if (status === 'warming' || status === 'pending' || status === 'running') {
+    const copy = {
+      // No job exists yet in this one — the service is still answering 503.
+      warming: 'Loading Gemma — the first load pulls its weights and is slow…',
+      pending: 'Trace queued…',
+      running: 'Running Gemma and capturing every layer…',
+    }[status]
     return (
       <p className="text-sm text-cyan-100/80" role="status">
-        {status === 'pending' ? 'Trace queued…' : 'Running Gemma and capturing every layer…'}
+        {copy}
       </p>
     )
   }
@@ -41,7 +54,7 @@ function StatusCopy({ status, error }: Pick<TraceViewerProps, 'status' | 'error'
 
 function EmptyState({ status, error }: Pick<TraceViewerProps, 'status' | 'error'>) {
   return (
-    <main className="flex min-h-full items-center justify-center px-6 pb-36 pt-16">
+    <main className="flex min-h-full items-center justify-center px-2 py-10">
       <section className="max-w-2xl text-center">
         <p className="mb-4 text-xs font-medium tracking-[0.26em] text-cyan-200/70 uppercase">
           MechLens · Gemma 2 2B
@@ -190,21 +203,24 @@ function SelectedCell({ state, step }: { state: LayerState; step: TokenStep }) {
   )
 }
 
-export function TraceViewer({ trace, status, error }: TraceViewerProps) {
-  const [selection, setSelection] = useState<Selection | null>(null)
-
+export function TraceViewer({
+  trace,
+  status,
+  error,
+  selection,
+  onSelectCell,
+  onSelectPosition,
+}: TraceViewerProps) {
   const maximumResidualNorm = useMemo(() => {
     if (!trace) return 0
     return Math.max(...trace.steps.flatMap((step) => step.layers.map((layer) => layer.resid_norm)))
   }, [trace])
 
-  if (!trace || trace.steps.length === 0) return <EmptyState error={error} status={status} />
+  if (!trace || trace.steps.length === 0 || selection === null) {
+    return <EmptyState error={error} status={status} />
+  }
 
-  const currentSelection =
-    selection?.traceId === trace.trace_id
-      ? selection
-      : { layer: trace.n_layers - 1, position: trace.steps.length - 1, traceId: trace.trace_id }
-
+  const currentSelection = selection
   const selectedStep = trace.steps[currentSelection.position]
   const selectedState = selectedStep?.layers[currentSelection.layer]
   const gridColumns = `4.75rem repeat(${trace.steps.length}, minmax(2.5rem, 1fr))`
@@ -214,8 +230,8 @@ export function TraceViewer({ trace, status, error }: TraceViewerProps) {
   }
 
   return (
-    <main className="min-h-full px-4 pb-36 pt-5 sm:px-6 lg:px-8">
-      <div className="mx-auto max-w-[1600px] space-y-4">
+    <main className="min-h-full">
+      <div className="space-y-4">
         <header className="flex flex-col justify-between gap-3 rounded-2xl border border-white/10 bg-slate-950/60 p-4 backdrop-blur sm:flex-row sm:items-center">
           <div>
             <p className="text-xs font-medium tracking-[0.2em] text-cyan-200/70 uppercase">Trace explorer</p>
@@ -235,13 +251,7 @@ export function TraceViewer({ trace, status, error }: TraceViewerProps) {
             <span className="text-xs text-slate-500">violet = generated</span>
           </div>
           <TokenStrip
-            onSelect={(position) =>
-              setSelection((current) => ({
-                layer: current?.traceId === trace.trace_id ? current.layer : 0,
-                position,
-                traceId: trace.trace_id,
-              }))
-            }
+            onSelect={onSelectPosition}
             selectedPosition={currentSelection.position}
             steps={trace.steps}
           />
@@ -264,13 +274,7 @@ export function TraceViewer({ trace, status, error }: TraceViewerProps) {
                     aria-label={`Select token ${step.step}`}
                     className={`border-b border-white/5 px-1 py-2 font-mono text-[10px] ${step.step === currentSelection.position ? 'bg-cyan-300/10 text-cyan-100' : 'text-slate-500'}`}
                     key={step.step}
-                    onClick={() =>
-                      setSelection((current) => ({
-                        layer: current?.traceId === trace.trace_id ? current.layer : 0,
-                        position: step.step,
-                        traceId: trace.trace_id,
-                      }))
-                    }
+                    onClick={() => onSelectPosition(step.step)}
                     type="button"
                   >
                     {step.step}
@@ -289,7 +293,7 @@ export function TraceViewer({ trace, status, error }: TraceViewerProps) {
                           aria-pressed={isSelected}
                           className={`m-px min-h-8 rounded-sm border transition hover:scale-110 hover:border-white/80 focus-visible:z-20 focus-visible:outline-2 focus-visible:outline-cyan-200 ${isSelected ? 'z-10 border-cyan-100 ring-2 ring-cyan-300/70' : 'border-transparent'}`}
                           key={`${layer}-${step.step}`}
-                          onClick={() => setSelection({ layer, position: step.step, traceId: trace.trace_id })}
+                          onClick={() => onSelectCell(layer, step.step)}
                           style={heatColor(state.resid_norm, maximumResidualNorm)}
                           type="button"
                         >

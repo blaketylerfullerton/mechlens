@@ -114,9 +114,15 @@ export interface Trace {
 
 // -- HTTP request/response shapes (service/models.py) --
 
+// The enrichment passes POST /trace will run as part of the trace job. Mirrors
+// `TracePass` in service/models.py: an unrecognised name is a 422 there, so
+// this union is not cosmetic.
+export type TracePass = 'lens'
+
 export interface TraceRequest {
   prompt: string
   max_tokens: number
+  passes?: TracePass[]
 }
 
 export interface SteerRequest {
@@ -140,10 +146,25 @@ export interface JobResponse {
 
 export type JobStatus = 'pending' | 'running' | 'done' | 'error'
 
+// Which phase of a trace job is executing. `generating` counts tokens and
+// `lens` counts layers, because those are the units each phase can honestly
+// report — the capture loop computes a whole forward pass at once, so there is
+// no moment during it at which one layer is "executing".
+export type JobPhase = 'generating' | 'lens'
+
+export interface JobProgress {
+  phase: JobPhase
+  done: number
+  total: number
+}
+
 export interface JobStatusResponse {
   status: JobStatus
   trace: Trace | null
   error: string | null
+  // null for a queued job, and for a running one that has not reported yet:
+  // "pending" and "running, at token 0" are different answers.
+  progress: JobProgress | null
 }
 
 export interface FeatureResponse {

@@ -175,3 +175,69 @@ def test_zero_new_tokens_still_traces_the_prompt(model):
     # the prompt's final position still carries a prediction, just an unused one
     assert trace.steps[-1].logits.chosen is None
     assert trace.steps[-1].logits.top_k
+
+
+def test_progress_callback_reports_one_reading_per_step(model):
+    """Counts must be monotonic and land on the budget, so a client can drive a
+    progress indicator from them without post-processing."""
+    seen: list[tuple[int, int]] = []
+
+    out = generate_trace(
+        model, PROMPT, max_new_tokens=6, top_k=5, on_progress=lambda d, t: seen.append((d, t))
+    )
+
+    assert seen, "no progress was reported"
+    assert all(total == 6 for _done, total in seen)
+    done = [d for d, _t in seen]
+    assert done == sorted(done)  # never goes backwards
+    assert done[-1] == out.trace.n_generated_tokens == 6
+    # One reading per generated token, plus the final at-budget step's repeat.
+    assert done == [1, 2, 3, 4, 5, 6, 6]
+
+
+def test_progress_callback_reports_the_prompt_only_case(model):
+    """max_new_tokens=0 generates nothing, and must still report a terminal
+    reading rather than leaving a client at "no progress yet" forever."""
+    seen: list[tuple[int, int]] = []
+
+    generate_trace(model, PROMPT, max_new_tokens=0, on_progress=lambda d, t: seen.append((d, t)))
+
+    assert seen == [(0, 0)]
+
+
+def test_progress_callback_is_optional_and_changes_nothing(model, result):
+    """`on_progress=None` is the default and must be indistinguishable from the
+    function before the parameter existed — including under an intervention."""
+    again = generate_trace(model, PROMPT, max_new_tokens=6, top_k=5, on_progress=None)
+    assert again.trace.completion == result.trace.completion
+    np.testing.assert_array_equal(again.residuals, result.residuals)
+
+    # And passing a callback must not perturb the run it is observing.
+    observed = generate_trace(
+        model, PROMPT, max_new_tokens=6, top_k=5, on_progress=lambda _d, _t: None
+    )
+    assert observed.trace.completion == result.trace.completion
+    np.testing.assert_array_equal(observed.residuals, result.residuals)
+
+
+def test_progress_callback_works_alongside_an_intervention(model):
+    """The reporting path and the intervention path both live in the same loop;
+    using one must not disable the other."""
+    layer = 0
+    seen: list[int] = []
+
+    def add_one(resid, hook):
+        return resid + 1.0
+
+    steered = generate_trace(
+        model,
+        PROMPT,
+        max_new_tokens=3,
+        intervention=(layer, add_one),
+        on_progress=lambda d, _t: seen.append(d),
+    )
+    baseline = generate_trace(model, PROMPT, max_new_tokens=3, intervention=(layer, add_one))
+
+    assert seen == [1, 2, 3, 3]
+    assert model.hook_dict[f"blocks.{layer}.hook_resid_post"].fwd_hooks == []
+    np.testing.assert_array_equal(steered.residuals, baseline.residuals)

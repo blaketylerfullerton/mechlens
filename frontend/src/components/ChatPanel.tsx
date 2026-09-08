@@ -1,4 +1,4 @@
-import type { JobStatus } from '@/lib/api-types'
+import type { RunState } from '@/hooks/useTrace'
 import type { ChatStatus } from 'ai'
 import {
   PromptInput,
@@ -19,17 +19,33 @@ const STARTER_PROMPTS = [
 type ChatPanelProps = {
   error: string | null
   onTraceRequest: (prompt: string, maxTokens: number) => void
-  status: JobStatus | 'idle'
+  status: RunState
 }
 
-function inputStatus(status: JobStatus | 'idle', error: string | null): ChatStatus {
+// `warming` counts as busy: no job exists yet, but the service is answering
+// 503 while gemma loads and submitting again would only queue another retry.
+function isRunning(status: RunState): boolean {
+  return status === 'warming' || status === 'pending' || status === 'running'
+}
+
+function inputStatus(status: RunState, error: string | null): ChatStatus {
   if (error) return 'error'
-  if (status === 'pending' || status === 'running') return 'submitted'
+  if (isRunning(status)) return 'submitted'
   return 'ready'
 }
 
+// Says which of the two waits this is. They look identical from the outside —
+// nothing is happening on screen either way — but only one of them is the
+// model actually running the prompt.
+function statusCopy(status: RunState): string {
+  if (status === 'warming') return 'Loading the model — this is slow the first time…'
+  if (status === 'pending') return 'Queued…'
+  if (status === 'running') return 'Capturing the model run…'
+  return 'Run a prompt through the local trace service.'
+}
+
 export function ChatPanel({ error, onTraceRequest, status }: ChatPanelProps) {
-  const isBusy = status === 'pending' || status === 'running'
+  const isBusy = isRunning(status)
 
   const handleSubmit = (message: PromptInputMessage, event: { preventDefault: () => void }) => {
     event.preventDefault()
@@ -42,7 +58,7 @@ export function ChatPanel({ error, onTraceRequest, status }: ChatPanelProps) {
     <div className="pointer-events-none fixed inset-x-0 bottom-5 z-20 flex justify-center px-4">
       <div className="pointer-events-auto w-full max-w-2xl rounded-2xl border border-white/15 bg-slate-950/90 p-3 shadow-2xl shadow-black/40 backdrop-blur">
         <div className="mb-2 flex items-center justify-between gap-3 px-1 text-xs text-slate-400">
-          <span>{isBusy ? 'Capturing the model run…' : 'Run a prompt through the local trace service.'}</span>
+          <span>{statusCopy(status)}</span>
           <span className="font-mono text-[10px] text-cyan-100/70">20 generated tokens</span>
         </div>
         <PromptInput onSubmit={handleSubmit}>

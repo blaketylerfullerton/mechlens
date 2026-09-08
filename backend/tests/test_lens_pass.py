@@ -407,3 +407,117 @@ def test_folded_layernorm_is_accepted_unlike_the_sae_pass():
     apply(LogitLensPass(model=FakeModel(_fake_logits()), verbose=False),
           result.trace, result.residuals)
     assert result.trace.steps[0].layers[0].logit_lens is not None
+
+
+# --------------------------------------------------------------------------
+# progress reporting
+# --------------------------------------------------------------------------
+
+
+def test_progress_reports_one_reading_per_decoded_layer_in_order():
+    seen: list[tuple[int, int]] = []
+    result = _traced()
+
+    apply(
+        LogitLensPass(
+            model=FakeModel(_fake_logits()),
+            verbose=False,
+            on_progress=lambda d, t: seen.append((d, t)),
+        ),
+        result.trace,
+        result.residuals,
+    )
+
+    assert seen == [(layer + 1, N_LAYERS) for layer in range(N_LAYERS)]
+
+
+def test_progress_totals_count_only_the_requested_layers():
+    """`layers=[...]` decodes a subset, so the denominator has to be that subset
+    or a client's progress bar never fills."""
+    seen: list[tuple[int, int]] = []
+    result = _traced()
+
+    apply(
+        LogitLensPass(
+            model=FakeModel(_fake_logits()),
+            layers=[0, 2],
+            verbose=False,
+            on_progress=lambda d, t: seen.append((d, t)),
+        ),
+        result.trace,
+        result.residuals,
+    )
+
+    assert seen == [(1, 2), (2, 2)]
+
+
+def test_progress_callback_does_not_change_the_recorded_stats(lensed, model):
+    """The correctness numbers the pass exists to produce must be identical with
+    and without an observer attached."""
+    _trace, baseline = lensed
+
+    result = generate_trace(model, PROMPT, max_new_tokens=6, top_k=5)
+    result.trace.residuals = ResidualRef(
+        path="x.npy",
+        hook=RESID_HOOK,
+        shape=tuple(result.residuals.shape),
+        dtype="float32",
+    )
+    observed = apply(
+        LogitLensPass(model=model, verbose=False, on_progress=lambda _d, _t: None),
+        result.trace,
+        result.residuals,
+    )
+
+    assert observed.stats["final_layer_agreement"] == baseline.stats["final_layer_agreement"]
+    assert observed.stats["crossover_layer"] == baseline.stats["crossover_layer"]
+    assert observed.stats["top1_agreement_by_layer"] == baseline.stats["top1_agreement_by_layer"]
+    assert observed.stats["echo_by_layer"] == baseline.stats["echo_by_layer"]
+    assert observed.stats["entropy_by_layer"] == baseline.stats["entropy_by_layer"]
+
+
+# --------------------------------------------------------------------------
+# running on an in-memory capture (no sidecar on disk to point a ref at)
+# --------------------------------------------------------------------------
+
+
+def test_a_vouched_hook_lets_the_pass_run_without_a_residual_ref():
+    """The HTTP service holds the array in memory and never writes a sidecar, so
+    there is no honest `ResidualRef.path` for it to attach."""
+    result = make_result()
+    assert result.trace.residuals is None
+
+    record = apply(
+        LogitLensPass(model=FakeModel(_fake_logits()), hook=RESID_HOOK, verbose=False),
+        result.trace,
+        result.residuals,
+    )
+
+    assert record.name == "lens"
+    assert result.trace.steps[0].layers[0].logit_lens is not None
+    assert result.trace.steps[-1].layers[N_LAYERS - 1].logit_lens is not None
+
+
+def test_vouching_for_the_wrong_hook_is_still_refused():
+    """The parameter routes the question to the caller; it does not stop asking."""
+    result = make_result()
+    with pytest.raises(ValueError, match="needs hook_resid_post"):
+        apply(
+            LogitLensPass(
+                model=FakeModel(_fake_logits()), hook="hook_resid_pre", verbose=False
+            ),
+            result.trace,
+            result.residuals,
+        )
+
+
+def test_the_residual_ref_wins_over_a_vouched_hook():
+    """A ref describes bytes that actually landed on disk, so it is the better
+    evidence when both are present — a caller cannot vouch its way past it."""
+    result = _traced(hook="hook_resid_pre")
+    with pytest.raises(ValueError, match="needs hook_resid_post"):
+        apply(
+            LogitLensPass(model=FakeModel(_fake_logits()), hook=RESID_HOOK, verbose=False),
+            result.trace,
+            result.residuals,
+        )

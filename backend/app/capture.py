@@ -42,6 +42,14 @@ RESID_HOOK = "hook_resid_post"
 # module docstring above refers to.
 Intervention = tuple[int, Callable]
 
+# Called once per completed generation step with (tokens_generated, budget),
+# so a caller driving a UI can say how far along a run is. Per *step* and not
+# per layer on purpose: `run_with_cache` below computes the whole forward
+# before the layer loop runs, so there is no point in time during this
+# function at which "layer 14 is executing" is a true statement a caller
+# could observe. See design.md on progress granularity.
+ProgressCallback = Callable[[int, int], None]
+
 DEFAULT_MAX_NEW_TOKENS = 20
 DEFAULT_TOP_K = 10
 
@@ -121,6 +129,7 @@ def generate_trace(
     stop_at_eos: bool = True,
     trace_id: str | None = None,
     intervention: Intervention | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> CaptureResult:
     """Greedily generate from `prompt`, capturing every layer at every token.
 
@@ -134,6 +143,11 @@ def generate_trace(
     and everything downstream of them, generation included — are the
     *steered* activations. `None` (the default) is exactly today's
     unsteered behavior.
+
+    `on_progress`, when given, is called once per completed step with the
+    number of tokens generated so far and the budget (see `ProgressCallback`).
+    It is advisory output only: nothing downstream reads it, and passing
+    `None` leaves the loop byte-for-byte the behaviour it has without it.
     """
     cfg = model.cfg
     n_layers, d_model = cfg.n_layers, cfg.d_model
@@ -190,12 +204,18 @@ def generate_trace(
                 if hit_eos:
                     stop_reason = "eos"
                 summaries[seq - 1] = logit_summary(model, last_logits, top_k, chosen_id=None)
+                if on_progress is not None:
+                    on_progress(step, max_new_tokens)
                 break
 
             summaries[seq - 1] = logit_summary(model, last_logits, top_k, chosen_id=next_id)
             tokens = torch.cat(
                 [tokens, last_logits.new_tensor([[next_id]], dtype=tokens.dtype)], dim=1
             )
+            # Reported after the token is appended, so the count is tokens the
+            # caller could actually read out of the trace, not tokens in flight.
+            if on_progress is not None:
+                on_progress(step + 1, max_new_tokens)
     finally:
         if intervention is not None:
             model.reset_hooks()

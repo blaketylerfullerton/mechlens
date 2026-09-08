@@ -9,14 +9,25 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..schema import Trace
+from .jobs import JobPhase
+
+# The enrichment passes `POST /trace` knows how to run as part of a trace job.
+# A Literal rather than a plain `list[str]`: an unrecognised name has to be a
+# 422 at the boundary, before a job is enqueued, and this is the one place the
+# known set is written down.
+TracePass = Literal["lens"]
 
 
 class TraceRequest(BaseModel):
     prompt: str = Field(min_length=1)
     max_tokens: int = Field(gt=0)
+    # Opt-in, and empty by default: the lens pass roughly doubles a short
+    # trace's wall time, so a client that does not need per-layer readouts
+    # should not pay for them.
+    passes: list[TracePass] = Field(default_factory=list)
 
 
 class SteerRequest(BaseModel):
@@ -40,10 +51,27 @@ class JobResponse(BaseModel):
     job_id: str
 
 
+class JobProgressResponse(BaseModel):
+    """How far through its current phase a running job is.
+
+    `from_attributes` so the route can hand over `JobRecord.progress` (a frozen
+    dataclass on the worker side) without restating its fields here.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    phase: JobPhase
+    done: int
+    total: int
+
+
 class JobStatusResponse(BaseModel):
     status: Literal["pending", "running", "done", "error"]
     trace: Trace | None = None
     error: str | None = None
+    # Absent for a queued job and for a running one that has not reported yet,
+    # so "pending" stays distinguishable from "running, at token 0".
+    progress: JobProgressResponse | None = None
 
 
 class FeatureResponse(BaseModel):
