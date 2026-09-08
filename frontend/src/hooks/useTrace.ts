@@ -27,24 +27,28 @@ export function useTrace(): UseTraceResult {
     [],
   )
 
-  const poll = useCallback((jobId: string, generation: number) => {
-    getTraceJob(jobId)
-      .then((job) => {
-        if (generation !== generationRef.current) return
-        setStatus(job.status)
-        if (job.status === 'done') {
-          setTrace(job.trace)
-        } else if (job.status === 'error') {
-          setError(job.error ?? 'trace job failed')
-        } else {
-          timeoutRef.current = setTimeout(() => poll(jobId, generation), POLL_INTERVAL_MS)
-        }
-      })
-      .catch((err: unknown) => {
-        if (generation !== generationRef.current) return
-        setError(err instanceof Error ? err.message : String(err))
-      })
-  }, [])
+  const poll = useCallback(
+    function poll(jobId: string, generation: number) {
+      getTraceJob(jobId)
+        .then((job) => {
+          if (generation !== generationRef.current) return
+          setStatus(job.status)
+          if (job.status === 'done') {
+            setTrace(job.trace)
+          } else if (job.status === 'error') {
+            setError(job.error ?? 'trace job failed')
+          } else {
+            timeoutRef.current = setTimeout(() => poll(jobId, generation), POLL_INTERVAL_MS)
+          }
+        })
+        .catch((err: unknown) => {
+          if (generation !== generationRef.current) return
+          setError(err instanceof Error ? err.message : String(err))
+          setStatus('error')
+        })
+    },
+    [],
+  )
 
   const run = useCallback(
     (prompt: string, maxTokens: number) => {

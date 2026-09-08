@@ -1,0 +1,201 @@
+# MechLens trace → viewer map
+#
+# A human-readable companion to backend/app/schema.py. This is not a runtime
+# JSON Schema and does not validate API payloads; it answers the product-design
+# question: "what is available to draw, and where does it belong in the UI?"
+#
+# Source of truth: backend/app/schema.py (schema_version: "1.3")
+
+document:
+  name: MechLens Trace Viewer Map
+  schema_version: "1.3"
+  model_scope: gemma-2-2b
+  root_object: Trace
+
+current_delivery:
+  # POST /trace currently returns this level.
+  capture:
+    includes:
+      - trace metadata
+      - prompt and generated completion
+      - token sequence
+      - final next-token summaries
+      - layer-by-token residual norms
+    excludes:
+      - SAE features
+      - feature labels
+      - logit lens
+      - attribution edges
+  enrichment:
+    # Existing backend passes add these fields to the same Trace object.
+    features: "SAE pass"
+    labels: "Labels pass"
+    lens: "LogitLens pass"
+    attribution: "Attribution pass"
+
+trace:
+  type: object
+  identity:
+    trace_id: string
+    schema_version: string
+    created_at: datetime
+    model: string
+    device: string
+    dtype: string
+    n_layers: integer             # 26 for gemma-2-2b
+    d_model: integer              # 2304 for gemma-2-2b
+  run:
+    prompt: string
+    completion: string
+    n_prompt_tokens: integer
+    n_generated_tokens: integer
+    stop_reason: "max_tokens | eos"
+    elapsed_s: number
+  provenance:
+    passes: PassRecord[]
+    steering: SteeringInfo | null
+    residuals: ResidualRef | null # disk sidecar; not needed by a browser
+  labels:
+    type: object
+    key: "{layer}/{feature_index}"
+    value: FeatureLabel
+  steps: TokenStep[]
+
+TokenStep:
+  # There is one step per token in the final prompt + completion sequence.
+  fields:
+    step: integer
+    token: TokenInfo
+    logits: LogitSummary
+    layers: LayerState[]
+
+TokenInfo:
+  fields:
+    position: integer
+    token_id: integer
+    text: string
+    source: "prompt | generated"
+
+LogitSummary:
+  # This is the model's actual next-token distribution at this position.
+  fields:
+    top_k: TopToken[]
+    entropy: number
+    chosen: TopToken | null
+
+LayerState:
+  # There is one LayerState for every (token position, transformer layer).
+  fields:
+    layer: integer
+    resid_norm: number
+    logit_lens: LogitLens | null
+    features: Feature[]
+    l0: integer | null
+    edges: Edge[]
+
+Feature:
+  fields:
+    index: integer
+    activation: number
+  label_lookup: "trace.labels['{LayerState.layer}/{Feature.index}']"
+
+LogitLens:
+  # Same shape as LogitSummary, but decoded from an intermediate layer.
+  fields:
+    top_k: TopToken[]
+    entropy: number
+
+Edge:
+  fields:
+    source:
+      layer: integer
+      position: integer
+      feature: integer | null
+    weight: number
+    kind: "resid | attn | mlp | sae"
+  note: >-
+    Current weights are contribution magnitudes, not signed causal effects on
+    a chosen answer token. Render them as signal flow, not proof of reasoning.
+
+viewer:
+  # The primary visualization should be a transformer-run explorer, not a
+  # map of biological brain regions.
+  layout:
+    primary: "layer × token grid"
+    x_axis: "Trace.steps[].token.position"
+    y_axis: "LayerState.layer (0 at input, n_layers - 1 at output)"
+    selection: "one LayerState at a time"
+
+  panels:
+    run_header:
+      reads:
+        - trace.model
+        - trace.prompt
+        - trace.completion
+        - trace.n_layers
+        - trace.elapsed_s
+      answers: "Which model run am I looking at?"
+
+    token_strip:
+      reads:
+        - trace.steps[].token
+        - trace.steps[].logits.chosen
+      encoding:
+        prompt_tokens: muted
+        generated_tokens: accent
+      answers: "What text did the model receive and generate?"
+
+    residual_heatmap:
+      reads:
+        - trace.steps[].layers[].resid_norm
+      cell_encoding: "colour intensity = residual-stream L2 norm"
+      available_after: capture
+      answers: "Where does representational magnitude change across depth?"
+
+    feature_overlay:
+      reads:
+        - trace.steps[].layers[].l0
+        - trace.steps[].layers[].features[]
+        - trace.labels
+      cell_encoding: "badge = L0; detail drawer = top active labeled features"
+      available_after: features + labels
+      answers: "Which sparse features are active at this token and layer?"
+
+    prediction_timeline:
+      reads:
+        - trace.steps[].logits
+        - trace.steps[].layers[].logit_lens
+      cell_encoding: "top candidate, probability, and entropy by layer"
+      available_after: lens
+      answers: "How does the output-head readout change across depth?"
+      caveat: >-
+        An early logit-lens candidate is a diagnostic readout, not a claim that
+        the model has already formed a final answer.
+
+    signal_flow:
+      reads:
+        - trace.steps[].layers[].edges[]
+      interaction: "open only for a selected grid cell; do not draw every edge at once"
+      available_after: attribution
+      answers: "Which token positions supplied large residual, attention, and MLP signals?"
+
+  progressive_disclosure:
+    initial_screen:
+      - run_header
+      - token_strip
+      - residual_heatmap
+    selected_cell:
+      - feature_overlay
+      - prediction_timeline
+    advanced:
+      - signal_flow
+
+example_paths:
+  selected_cell: "steps[12].layers[20]"
+  selected_token: "steps[12].token.text"
+  residual_intensity: "steps[12].layers[20].resid_norm"
+  strongest_feature: "steps[12].layers[20].features[0]"
+  strongest_feature_label: "labels['20/6631'].text"
+  layer_readout: "steps[12].layers[20].logit_lens.top_k[0]"
+  final_readout: "steps[12].logits.top_k[0]"
+  incoming_edges: "steps[12].layers[20].edges"

@@ -1,112 +1,70 @@
-import { useEffect, useRef, useState } from 'react'
+import type { JobStatus } from '@/lib/api-types'
 import type { ChatStatus } from 'ai'
 import {
   PromptInput,
   PromptInputBody,
-  PromptInputButton,
   PromptInputFooter,
   PromptInputSubmit,
   PromptInputTextarea,
-  PromptInputTools,
   type PromptInputMessage,
 } from '@/components/ai-elements/prompt-input'
 import { Suggestion, Suggestions } from '@/components/ai-elements/suggestion'
-import { BrainIcon } from 'lucide-react'
 
 const STARTER_PROMPTS = [
-  'What does the motor cortex do?',
-  'Highlight the hippocampus',
-  'Explain the limbic system',
+  'The Golden Gate Bridge is located in the city of',
+  'The capital of France is',
+  '2 + 2 =',
 ]
 
-// Mocked chain-of-thought text, streamed word-by-word into the monologue bar
-// while "Think" is on — stands in until this is wired to a real reasoning stream.
-const MOCK_MONOLOGUE =
-  "Parsing the question... locating the relevant cortex region... cross-checking known lobe boundaries... drafting a concise answer."
+type ChatPanelProps = {
+  error: string | null
+  onTraceRequest: (prompt: string, maxTokens: number) => void
+  status: JobStatus | 'idle'
+}
 
-export function ChatPanel() {
-  const [status, setStatus] = useState<ChatStatus>('ready')
-  const [thinkEnabled, setThinkEnabled] = useState(true)
-  const [monologue, setMonologue] = useState('')
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+function inputStatus(status: JobStatus | 'idle', error: string | null): ChatStatus {
+  if (error) return 'error'
+  if (status === 'pending' || status === 'running') return 'submitted'
+  return 'ready'
+}
 
-  useEffect(
-    () => () => {
-      if (timerRef.current) clearInterval(timerRef.current)
-    },
-    [],
-  )
-
-  const streamText = (text: string, onDone: () => void) => {
-    setMonologue('')
-    const words = text.split(' ')
-    let revealed = 0
-    timerRef.current = setInterval(() => {
-      revealed += 1
-      setMonologue(words.slice(0, revealed).join(' '))
-      if (revealed >= words.length) {
-        if (timerRef.current) clearInterval(timerRef.current)
-        onDone()
-      }
-    }, 70)
-  }
-
-  const sendMessage = (text: string) => {
-    const trimmed = text.trim()
-    if (!trimmed || status !== 'ready') return
-    setStatus('submitted')
-
-    // TODO: wire up to the real backend once it streams live reasoning + answers.
-    const answer = `I don't have a live answer yet, but I heard: "${trimmed}"`
-    const finish = () => setStatus('ready')
-
-    if (thinkEnabled) {
-      streamText(MOCK_MONOLOGUE, () => streamText(answer, finish))
-    } else {
-      streamText(answer, finish)
-    }
-  }
+export function ChatPanel({ error, onTraceRequest, status }: ChatPanelProps) {
+  const isBusy = status === 'pending' || status === 'running'
 
   const handleSubmit = (message: PromptInputMessage, event: { preventDefault: () => void }) => {
     event.preventDefault()
-    sendMessage(message.text)
+    const prompt = message.text.trim()
+    if (!prompt || isBusy) return
+    onTraceRequest(prompt, 20)
   }
 
   return (
-    <>
-      <div className="pointer-events-none absolute inset-x-0 top-6 z-10 flex justify-center px-6">
-        <div className="max-w-2xl truncate rounded-full border border-border bg-background/90 px-4 py-2 text-sm text-muted-foreground shadow-lg backdrop-blur">
-          {monologue || "Ask a question to see the model's reasoning stream here."}
+    <div className="pointer-events-none fixed inset-x-0 bottom-5 z-20 flex justify-center px-4">
+      <div className="pointer-events-auto w-full max-w-2xl rounded-2xl border border-white/15 bg-slate-950/90 p-3 shadow-2xl shadow-black/40 backdrop-blur">
+        <div className="mb-2 flex items-center justify-between gap-3 px-1 text-xs text-slate-400">
+          <span>{isBusy ? 'Capturing the model run…' : 'Run a prompt through the local trace service.'}</span>
+          <span className="font-mono text-[10px] text-cyan-100/70">20 generated tokens</span>
         </div>
+        <PromptInput onSubmit={handleSubmit}>
+          <PromptInputBody>
+            <PromptInputTextarea disabled={isBusy} placeholder="Enter a prompt to trace…" />
+          </PromptInputBody>
+          <PromptInputFooter>
+            <span className="px-2 text-[11px] text-slate-500">Gemma 2 2B · residual capture</span>
+            <PromptInputSubmit disabled={isBusy} status={inputStatus(status, error)} />
+          </PromptInputFooter>
+        </PromptInput>
+        <Suggestions className="mt-2">
+          {STARTER_PROMPTS.map((prompt) => (
+            <Suggestion
+              disabled={isBusy}
+              key={prompt}
+              onClick={() => onTraceRequest(prompt, 20)}
+              suggestion={prompt}
+            />
+          ))}
+        </Suggestions>
       </div>
-
-      <div className="pointer-events-none absolute inset-x-0 bottom-6 z-10 flex justify-center px-4">
-        <div className="pointer-events-auto w-full max-w-xl space-y-2 rounded-2xl border border-border bg-background/90 p-3 shadow-lg backdrop-blur">
-          <PromptInput onSubmit={handleSubmit}>
-            <PromptInputBody>
-              <PromptInputTextarea placeholder="Ask about the brain..." />
-            </PromptInputBody>
-            <PromptInputFooter>
-              <PromptInputTools>
-                <PromptInputButton
-                  aria-pressed={thinkEnabled}
-                  variant={thinkEnabled ? 'secondary' : 'ghost'}
-                  onClick={() => setThinkEnabled((prev) => !prev)}
-                >
-                  <BrainIcon className="size-4" />
-                  Think
-                </PromptInputButton>
-              </PromptInputTools>
-              <PromptInputSubmit status={status} />
-            </PromptInputFooter>
-          </PromptInput>
-          <Suggestions>
-            {STARTER_PROMPTS.map((prompt) => (
-              <Suggestion key={prompt} suggestion={prompt} onClick={sendMessage} />
-            ))}
-          </Suggestions>
-        </div>
-      </div>
-    </>
+    </div>
   )
 }
