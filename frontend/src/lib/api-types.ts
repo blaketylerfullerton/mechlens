@@ -127,6 +127,13 @@ export interface SteerRequest {
   coefficient: number
 }
 
+// Mirrors HealthResponse in backend/app/service/models.py: "loading" while the
+// model warms up (the server binds its port first), "error" if the load failed.
+export interface HealthResponse {
+  status: 'loading' | 'ready' | 'error'
+  detail?: string | null
+}
+
 export interface JobResponse {
   job_id: string
 }

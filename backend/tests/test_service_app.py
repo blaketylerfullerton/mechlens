@@ -7,6 +7,7 @@ Gemma Scope one (whose dimensions would not even match the tiny model's).
 
 from __future__ import annotations
 
+import threading
 import time
 
 import pytest
@@ -201,6 +202,16 @@ def test_get_feature_out_of_range_index_is_404(client):
 # -- model loading -----------------------------------------------------
 
 
+def _wait_ready(client, timeout=5.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        status = client.get("/health").json()["status"]
+        if status != "loading":
+            return status
+        time.sleep(0.02)
+    raise AssertionError("model did not become ready in time")
+
+
 def test_model_is_loaded_at_most_once_across_requests(monkeypatch, tiny_model, tmp_path):
     calls = {"n": 0}
 
@@ -213,9 +224,63 @@ def test_model_is_loaded_at_most_once_across_requests(monkeypatch, tiny_model, t
     app = create_app(model=None, label_db_path=tmp_path / "labels.db")
 
     with TestClient(app) as c:
-        assert calls["n"] == 1  # loaded once at startup, by the lifespan handler
+        assert _wait_ready(c) == "ready"  # loaded by the lifespan's warm-up thread
+        assert calls["n"] == 1
         job_id = c.post("/trace", json={"prompt": PROMPT, "max_tokens": 1}).json()["job_id"]
         _poll(c, job_id)
         c.get(f"/trace/{job_id}")
 
     assert calls["n"] == 1
+
+
+def test_health_is_ready_when_a_model_is_injected(client):
+    assert client.get("/health").json() == {"status": "ready", "detail": None}
+
+
+def test_routes_answer_503_while_the_model_is_still_loading(monkeypatch, tmp_path):
+    """The point of loading off-thread: the port is open and the API answers,
+    with a status a client can act on, before the model is in memory."""
+    release = threading.Event()
+
+    def slow_get_model():
+        release.wait(timeout=5)
+        raise AssertionError("test never lets the load finish")
+
+    monkeypatch.setattr("app.service.app.model_cache.get_model", slow_get_model)
+    jobs.JOBS.clear()
+    app = create_app(model=None, label_db_path=tmp_path / "labels.db")
+
+    try:
+        with TestClient(app) as c:
+            assert c.get("/health").json()["status"] == "loading"
+            resp = c.post("/trace", json={"prompt": PROMPT, "max_tokens": 1})
+            assert resp.status_code == 503
+            assert "still loading" in resp.json()["detail"]
+    finally:
+        release.set()
+
+
+def test_health_reports_a_failed_load(monkeypatch, tmp_path):
+    def broken_get_model():
+        raise RuntimeError("no weights on disk")
+
+    monkeypatch.setattr("app.service.app.model_cache.get_model", broken_get_model)
+    jobs.JOBS.clear()
+    app = create_app(model=None, label_db_path=tmp_path / "labels.db")
+
+    with TestClient(app) as c:
+        assert _wait_ready(c) == "error"
+        assert "no weights on disk" in c.get("/health").json()["detail"]
+        resp = c.post("/trace", json={"prompt": PROMPT, "max_tokens": 1})
+        assert resp.status_code == 503
+        assert "failed to load" in resp.json()["detail"]
+
+
+def test_cors_allows_the_vite_dev_server_on_a_fallback_port(client):
+    """vite moves to 5174+ when 5173 is taken; the browser there must not be
+    told "access control checks" by our own middleware."""
+    for origin in ("http://localhost:5173", "http://localhost:5174", "http://127.0.0.1:5175"):
+        resp = client.post(
+            "/trace", json={"prompt": PROMPT, "max_tokens": 1}, headers={"Origin": origin}
+        )
+        assert resp.headers["access-control-allow-origin"] == origin

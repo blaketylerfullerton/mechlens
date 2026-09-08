@@ -4,8 +4,9 @@
 shape as `LogitLensPass.model` / `SAEPass.saes` — a test hands in the tiny CPU
 model and a throwaway label DB instead of paying for gemma's load and the
 69MB Neuronpedia export. Importing this module does not itself load a model;
-the module-level `app` below only does so when the app actually starts
-(`lifespan`) or a route first needs it, whichever comes first.
+the module-level `app` below loads one when it starts (`lifespan`), on a
+warm-up thread so the port binds first — until that finishes, the routes that
+need the model answer 503 and GET /health reports "loading".
 
 Concurrency: exactly one job runs at a time because there is exactly one
 worker thread (`jobs.start_worker`). `_forward_lock` is a defensive guard
@@ -29,7 +30,14 @@ from ..labels import LabelStore, feature_url
 from ..sae_cache import DEFAULT_WIDTH, get_sae
 from ..schema import SteeringInfo, Trace
 from . import jobs
-from .models import FeatureResponse, JobResponse, JobStatusResponse, SteerRequest, TraceRequest
+from .models import (
+    FeatureResponse,
+    HealthResponse,
+    JobResponse,
+    JobStatusResponse,
+    SteerRequest,
+    TraceRequest,
+)
 from .steering import build_intervention
 
 # Structural upper bound on a feature index for a width, without loading the
@@ -47,33 +55,65 @@ def create_app(
     """`sae_provider(layer) -> SAE-like` defaults to `sae_cache.get_sae`; a
     test overrides it with a fake so /steer does not need a real Gemma Scope
     SAE (which would not even match the tiny CPU test model's dimensions)."""
-    state: dict[str, HookedTransformer | None] = {"model": model}
+    state: dict[str, object] = {"model": model, "load_error": None}
     sae_provider = sae_provider or (lambda layer: get_sae(layer))
 
-    def get_model() -> HookedTransformer:
-        if state["model"] is None:
+    def load_model() -> None:
+        """The blocking load, run once on the lifespan's warm-up thread.
+
+        Doing this inline in `lifespan` would keep uvicorn from binding its
+        port until gemma is in memory — which is minutes, not seconds, the
+        first time the weights are fetched from the hub — so a browser calling
+        the API during startup got a connection error rather than an answer.
+        Off-thread, the port is open immediately and `get_model` below can say
+        "still loading" instead.
+        """
+        try:
             state["model"] = model_cache.get_model()
-        return state["model"]
+        except Exception as exc:  # reported by /health and as a 503 per route
+            state["load_error"] = exc
+
+    def get_model() -> HookedTransformer:
+        model_ = state["model"]
+        if model_ is not None:
+            return model_
+        if state["load_error"] is not None:
+            raise HTTPException(
+                status_code=503, detail=f"model failed to load: {state['load_error']}"
+            )
+        raise HTTPException(status_code=503, detail="model is still loading, retry in a moment")
 
     def open_label_store() -> LabelStore:
         return LabelStore(label_db_path) if label_db_path is not None else LabelStore()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        get_model()  # load once, at startup, per model_cache's own doc comment
         jobs.start_worker()
+        if state["model"] is None:  # a test that injected one needs no warm-up
+            threading.Thread(target=load_model, name="model-warmup", daemon=True).start()
         yield
 
     app = FastAPI(lifespan=lifespan)
 
-    # Dev-only: lets the Vite frontend (localhost:5173) call this API directly
-    # from the browser instead of going through a same-origin proxy.
+    # Dev-only: lets the Vite frontend call this API directly from the browser
+    # instead of going through a same-origin proxy. A regex rather than a fixed
+    # 5173 pair because vite walks up to the next free port (5174, 5175, ...)
+    # when 5173 is taken, and the browser on that port would otherwise be
+    # refused by CORS with no hint as to why.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+        allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.get("/health", response_model=HealthResponse)
+    def get_health() -> HealthResponse:
+        """Readiness of the model, so a client can tell "not loaded yet" from
+        "not running at all" — the two look identical from a failed fetch."""
+        if state["load_error"] is not None:
+            return HealthResponse(status="error", detail=str(state["load_error"]))
+        return HealthResponse(status="ready" if state["model"] is not None else "loading")
 
     @app.post("/trace", response_model=JobResponse)
     def post_trace(req: TraceRequest) -> JobResponse:

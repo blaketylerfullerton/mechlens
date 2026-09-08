@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { getTraceJob, postSteer } from '@/lib/api-client'
+import { ApiError, getTraceJob, postSteer } from '@/lib/api-client'
 import type { JobStatus, Trace } from '@/lib/api-types'
 
 const POLL_INTERVAL_MS = 500
+const WARMUP_RETRY_MS = 2000 // see useTrace: 503 until the model finishes loading
 
 export interface SteerParams {
   prompt: string
@@ -54,28 +55,39 @@ export function useSteer(): UseSteerResult {
       })
   }, [])
 
-  const run = useCallback(
-    ({ prompt, maxTokens, layer, featureIdx, coefficient }: SteerParams) => {
-      if (timeoutRef.current) clearTimeout(timeoutRef.current)
-      const generation = ++generationRef.current
-      setTrace(null)
-      setError(null)
-      setStatus('pending')
+  const submit = useCallback(
+    function submit(params: SteerParams, generation: number) {
       postSteer({
-        prompt,
-        max_tokens: maxTokens,
-        layer,
-        feature_idx: featureIdx,
-        coefficient,
+        prompt: params.prompt,
+        max_tokens: params.maxTokens,
+        layer: params.layer,
+        feature_idx: params.featureIdx,
+        coefficient: params.coefficient,
       })
         .then((res) => poll(res.job_id, generation))
         .catch((err: unknown) => {
           if (generation !== generationRef.current) return
+          if (err instanceof ApiError && err.status === 503) {
+            timeoutRef.current = setTimeout(() => submit(params, generation), WARMUP_RETRY_MS)
+            return
+          }
           setError(err instanceof Error ? err.message : String(err))
           setStatus('error')
         })
     },
     [poll],
+  )
+
+  const run = useCallback(
+    (params: SteerParams) => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current)
+      const generation = ++generationRef.current
+      setTrace(null)
+      setError(null)
+      setStatus('pending')
+      submit(params, generation)
+    },
+    [submit],
   )
 
   return { status, trace, error, run }

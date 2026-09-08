@@ -1,8 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { getTraceJob, postTrace } from '@/lib/api-client'
+import { ApiError, getTraceJob, postTrace } from '@/lib/api-client'
 import type { JobStatus, Trace } from '@/lib/api-types'
 
 const POLL_INTERVAL_MS = 500
+// The model loads on a warm-up thread after the server starts, so an early
+// submit gets a 503 rather than a job id. Wait it out instead of making the
+// user press Run again — the first load pulls gemma's weights and is slow.
+const WARMUP_RETRY_MS = 2000
 
 export interface UseTraceResult {
   status: JobStatus | 'idle'
@@ -50,6 +54,26 @@ export function useTrace(): UseTraceResult {
     [],
   )
 
+  const submit = useCallback(
+    function submit(prompt: string, maxTokens: number, generation: number) {
+      postTrace({ prompt, max_tokens: maxTokens })
+        .then((res) => poll(res.job_id, generation))
+        .catch((err: unknown) => {
+          if (generation !== generationRef.current) return
+          if (err instanceof ApiError && err.status === 503) {
+            timeoutRef.current = setTimeout(
+              () => submit(prompt, maxTokens, generation),
+              WARMUP_RETRY_MS,
+            )
+            return
+          }
+          setError(err instanceof Error ? err.message : String(err))
+          setStatus('error')
+        })
+    },
+    [poll],
+  )
+
   const run = useCallback(
     (prompt: string, maxTokens: number) => {
       if (timeoutRef.current) clearTimeout(timeoutRef.current)
@@ -57,15 +81,9 @@ export function useTrace(): UseTraceResult {
       setTrace(null)
       setError(null)
       setStatus('pending')
-      postTrace({ prompt, max_tokens: maxTokens })
-        .then((res) => poll(res.job_id, generation))
-        .catch((err: unknown) => {
-          if (generation !== generationRef.current) return
-          setError(err instanceof Error ? err.message : String(err))
-          setStatus('error')
-        })
+      submit(prompt, maxTokens, generation)
     },
-    [poll],
+    [submit],
   )
 
   return { status, trace, error, run }

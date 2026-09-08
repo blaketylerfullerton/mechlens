@@ -8,6 +8,9 @@ node_modules/
 /venv
 .env
 
+# `make dev` logs and pidfiles
+/.dev/
+
 # phase 1 trace artifacts: JSON + multi-MB .npy residual sidecars
 /backend/traces/
 

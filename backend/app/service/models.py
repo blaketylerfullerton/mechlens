@@ -27,6 +27,15 @@ class SteerRequest(BaseModel):
     coefficient: float
 
 
+class HealthResponse(BaseModel):
+    """`status` is about the model, not the process: the server binds its port
+    before gemma is in memory, so "loading" is a normal answer for the first
+    few seconds (minutes, if the weights are not in the HF cache yet)."""
+
+    status: Literal["loading", "ready", "error"]
+    detail: str | None = None
+
+
 class JobResponse(BaseModel):
     job_id: str
 

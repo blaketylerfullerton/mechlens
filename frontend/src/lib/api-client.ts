@@ -1,5 +1,6 @@
 import type {
   FeatureResponse,
+  HealthResponse,
   JobResponse,
   JobStatusResponse,
   SteerRequest,
@@ -19,10 +20,20 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...init,
-  })
+  let res: Response
+  try {
+    res = await fetch(`${BASE_URL}${path}`, {
+      headers: { 'Content-Type': 'application/json' },
+      ...init,
+    })
+  } catch {
+    // fetch only rejects when the request never got an HTTP reply at all —
+    // backend down, still binding its port, or a different origin than the one
+    // its CORS config allows. The browser's own message for this ("network
+    // connection was lost", "access control checks") points at neither, so say
+    // which URL failed and what to check.
+    throw new ApiError(0, `cannot reach the mechlens API at ${BASE_URL} — is the backend running?`)
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => null)
     throw new ApiError(res.status, body?.detail ?? res.statusText)
@@ -43,6 +54,13 @@ export function getTraceJob(jobId: string): Promise<JobStatusResponse> {
 // POST /steer — same job/poll shape as postTrace, with a feature intervention applied.
 export function postSteer(body: SteerRequest): Promise<JobResponse> {
   return request<JobResponse>('/steer', { method: 'POST', body: JSON.stringify(body) })
+}
+
+// GET /health — is the model loaded? "loading" is normal right after start:
+// the server answers before gemma is in memory, and the model-backed routes
+// return 503 until it is.
+export function getHealth(): Promise<HealthResponse> {
+  return request<HealthResponse>('/health')
 }
 
 // GET /feature/{layer}/{idx} — synchronous, no job/poll needed.
