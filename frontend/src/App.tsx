@@ -67,7 +67,7 @@ function App() {
       {/* Stacks under lg so neither surface gets clipped on a narrow screen;
           the grid keeps its own scroll container either way. */}
       <div className="mx-auto flex min-h-svh max-w-[1800px] flex-col gap-4 px-4 pb-36 pt-5 sm:px-6 lg:flex-row lg:gap-5 lg:px-8">
-        <div className="h-[42svh] shrink-0 overflow-hidden rounded-2xl border border-white/10 bg-slate-950/40 backdrop-blur lg:h-auto lg:w-[36%] lg:min-w-[20rem]">
+        <div className="h-[42svh] shrink-0 overflow-hidden rounded-2xl border border-white/10 bg-slate-950/40 backdrop-blur lg:h-auto lg:w-1/2 lg:min-w-[20rem]">
           <Brain
             onSelectLayer={selectLayer}
             progress={progress}
