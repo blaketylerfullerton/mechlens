@@ -13,3 +13,13 @@ python-dotenv>=1.0
 requests>=2.31
 pytest>=8.0
 httpx>=0.27
+
+# Build-time only: scripts/build_feature_atlas.py imports these and nothing
+# else does. The atlas is a precomputed table, so neither `app.schema` (which
+# imports nothing but pydantic) nor the service needs a projection library to
+# serve it — see test_atlas_deps.py, which asserts that stays true.
+# scikit-learn covers all four of the build's needs: PCA, HDBSCAN (>=1.3),
+# nearest-neighbour search for the preservation check, and adjusted Rand for
+# cross-source agreement. No separate `hdbscan` package.
+scikit-learn>=1.3
+umap-learn>=0.5

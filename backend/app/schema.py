@@ -37,7 +37,8 @@ from pydantic import BaseModel, Field
 #   1.1  LayerState.l0, Trace.passes
 #   1.2  Trace.labels (side table); Feature.label removed
 #   1.3  Trace.steering
-SCHEMA_VERSION = "1.3"
+#   1.4  Trace.layout (side table)
+SCHEMA_VERSION = "1.4"
 
 
 def _utcnow() -> datetime:
@@ -172,6 +173,30 @@ class FeatureLabel(BaseModel):
 # --------------------------------------------------------------------------
 
 
+class NodePosition(BaseModel):
+    """Where one feature sits in the feature atlas (phase 7).
+
+    Held in `Trace.layout` under "layer/index" rather than on every Feature,
+    for exactly the reason `Trace.labels` is: a feature recurs across positions
+    (~2x on the traces measured so far), so three floats copied onto every
+    occurrence would be the same numbers written out thousands of times.
+
+    A position comes from a projection of the feature's SAE decoder direction
+    and is a property of the atlas, not of this trace — which is why the atlas
+    it came from is recorded on the `layout` pass record. Two traces showing
+    the same feature place it identically, or one of them is drawn against a
+    different atlas and the record says so.
+
+    `cluster = -1` means the feature belongs to no cluster. That is a real
+    answer from a density-based clustering, not a missing value.
+    """
+
+    x: float
+    y: float
+    z: float
+    cluster: int = -1
+
+
 class TokenStep(BaseModel):
     """One token position, with the full stack of layer states beneath it."""
 
@@ -254,6 +279,13 @@ class Trace(BaseModel):
     # Flat and string-keyed so it survives a JSON round trip unchanged.
     labels: dict[str, FeatureLabel] = Field(default_factory=dict)
 
+    # "layer/index" -> atlas position, same key format and same reasoning as
+    # `labels`. A feature the atlas cannot place is simply absent here, which
+    # is what lets a consumer tell "unplaced" from "placed at the origin" —
+    # and empty overall means either the layout pass did not run or no atlas
+    # was available, which its pass record distinguishes.
+    layout: dict[str, NodePosition] = Field(default_factory=dict)
+
     steps: list[TokenStep] = Field(default_factory=list)
 
     @property
@@ -265,6 +297,10 @@ class Trace(BaseModel):
 
     def label(self, layer: int, feature: int) -> FeatureLabel | None:
         return self.labels.get(label_key(layer, feature))
+
+    def position(self, layer: int, feature: int) -> NodePosition | None:
+        """Where to draw this feature, or None if the atlas cannot place it."""
+        return self.layout.get(label_key(layer, feature))
 
 
 def label_key(layer: int, feature: int) -> str:

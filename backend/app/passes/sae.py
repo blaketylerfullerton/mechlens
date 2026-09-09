@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import torch
 
-from ..capture import RESID_HOOK
+from ..capture import RESID_HOOK, ProgressCallback
 from ..sae_cache import DEFAULT_WIDTH, RELEASE, SAE_HOOK, load_layers, pick_device
 from ..schema import Feature, PassRecord, Trace
 
@@ -52,8 +52,21 @@ class SAEPass:
     # server that holds them, and for tests that stand in a fake.
     saes: dict[int, object] | None = None
 
+    # Vouches for where the residual array came from, for a caller that holds
+    # the tensor but has no sidecar on disk to point a ResidualRef at (the HTTP
+    # service). Only consulted when `trace.residuals` is absent: a ref
+    # describes bytes that actually landed on disk, so it wins whenever it is
+    # there. Same field, same rule, as LogitLensPass.hook.
+    hook: str | None = None
+
+    # Called with (layers_encoded, layers_to_encode) as each layer finishes.
+    # This pass really does walk layers one at a time, so — like the lens and
+    # unlike the capture loop — it can report a depth sweep honestly. Advisory
+    # only: nothing in the PassRecord depends on it.
+    on_progress: ProgressCallback | None = None
+
     def run(self, trace: Trace, residuals: np.ndarray) -> PassRecord:
-        _check_compatible(trace)
+        _check_compatible(trace, self.hook)
 
         device = self.device or pick_device()
         layers = self.layers if self.layers is not None else list(range(trace.n_layers))
@@ -64,7 +77,7 @@ class SAEPass:
         ev_by_layer: list[float] = []
         t0 = time.time()
 
-        for layer in layers:
+        for encoded, layer in enumerate(layers, start=1):
             sae = saes[layer]
             # [n_tokens, d_model] — one layer's slice for the whole sequence.
             # np.array (a copy) rather than asarray: a memory-mapped trace is
@@ -105,6 +118,9 @@ class SAEPass:
                     flush=True,
                 )
 
+            if self.on_progress is not None:
+                self.on_progress(encoded, len(layers))
+
         return PassRecord(
             name=self.name,
             params={
@@ -114,6 +130,13 @@ class SAEPass:
                 "hook": SAE_HOOK,
                 "device": device,
                 "n_layers": len(layers),
+                # Which layers actually ran, not just how many. A caller may
+                # encode a subset (26 resident 16k SAEs come to ~7.9GB), and a
+                # consumer has to be able to tell a layer that was skipped from
+                # a layer in which nothing fired. Comma-joined for the same
+                # reason LabelsPass joins its explainer mix: `params` values are
+                # scalars. See the `layers` field above.
+                "layers": ",".join(str(layer) for layer in layers),
             },
             stats={
                 "l0_mean": float(np.mean(l0_by_layer)),
@@ -135,7 +158,7 @@ def _explained_variance(x: torch.Tensor, recon: torch.Tensor) -> torch.Tensor:
     return 1.0 - err / total.clamp_min(1e-12)
 
 
-def _check_compatible(trace: Trace) -> None:
+def _check_compatible(trace: Trace, vouched_hook: str | None = None) -> None:
     """Refuse activations these SAEs were not trained on.
 
     Both of these produce features that look perfectly reasonable and mean
@@ -144,16 +167,25 @@ def _check_compatible(trace: Trace) -> None:
       - the wrong hook site (resid_pre / mlp_out instead of resid_post)
       - LayerNorm-folded weights (MECHLENS_PROCESS_WEIGHTS), which shift
         resid_post away from the distribution Gemma Scope was fitted on
+
+    Where the hook site is recorded depends on the caller, exactly as it does
+    for the lens: a caller enriching a saved trace loads the array *through*
+    `trace.residuals`, so the ref is the provenance. A caller holding the array
+    in memory (the HTTP service, which writes no sidecar) passes it as an
+    argument, so only its origin is in question and `vouched_hook` carries
+    that. The ref wins when both are available.
     """
-    if trace.residuals is None:
+    captured_hook = trace.residuals.hook if trace.residuals is not None else vouched_hook
+
+    if captured_hook is None:
         raise ValueError(
-            f"trace {trace.trace_id} has no residuals — the SAE pass reads the "
-            f".npy sidecar, so run the capture first"
+            f"trace {trace.trace_id} has no residuals attached — to encode an "
+            f"in-memory capture, pass the hook it was captured at (SAEPass(hook=...))"
         )
-    if trace.residuals.hook != SAE_HOOK:
+    if captured_hook != SAE_HOOK:
         raise ValueError(
             f"{RELEASE} is trained on {SAE_HOOK}, but this trace captured "
-            f"{trace.residuals.hook!r}. Re-capture with capture.RESID_HOOK = {SAE_HOOK!r}."
+            f"{captured_hook!r}. Re-capture with capture.RESID_HOOK = {SAE_HOOK!r}."
         )
     assert RESID_HOOK == SAE_HOOK, "capture and SAE hook sites have diverged"
 

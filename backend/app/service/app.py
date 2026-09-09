@@ -28,7 +28,9 @@ from .. import model_cache
 from ..capture import generate_trace
 from ..labels import LabelStore, feature_url
 from ..passes import apply
+from ..passes.labels import LabelsPass
 from ..passes.lens import LogitLensPass
+from ..passes.sae import SAEPass
 from ..sae_cache import DEFAULT_WIDTH, get_sae
 from ..schema import SteeringInfo, Trace
 from . import jobs
@@ -123,6 +125,40 @@ def create_app(
         # Read off the request now: the job callable runs on the worker thread
         # long after this handler has returned.
         wants_lens = "lens" in req.passes
+        wants_sae = "sae" in req.passes
+        wants_labels = "labels" in req.passes
+        sae_layers = req.sae_layers
+
+        if wants_sae and sae_layers is not None:
+            over = [layer for layer in sae_layers if layer >= m.cfg.n_layers]
+            if over:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"sae_layers must all be < {m.cfg.n_layers}; got {over}",
+                )
+
+        # Checked here rather than on the worker: a missing label DB is a
+        # deployment fact that is already true at request time, so failing the
+        # job for it would report a runtime error for something knowable now.
+        if wants_labels:
+            try:
+                with open_label_store() as store:
+                    if store.stats().get("labelled", 0) == 0:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                "the label store holds no labels — build it with "
+                                "scripts/import_neuronpedia.py before requesting "
+                                "the 'labels' pass"
+                            ),
+                        )
+            except HTTPException:
+                raise
+            except Exception as exc:  # noqa: BLE001 - surfaced as a 422, not a 500
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"the 'labels' pass needs a label store, which could not be opened: {exc}",
+                ) from exc
 
         def run(report: jobs.Reporter) -> Trace:
             with _forward_lock:
@@ -132,6 +168,36 @@ def create_app(
                     max_new_tokens=req.max_tokens,
                     on_progress=lambda done, total: report("generating", done, total),
                 )
+
+                # Before the lens, so the phases a client observes stay in
+                # `_PHASE_ORDER` — and because the SAE pass reads only the
+                # residual array, which is already in hand.
+                if wants_sae:
+                    # Resolved through `sae_provider` — the same injection point
+                    # /steer uses — rather than `load_layers`. It is
+                    # lru_cached, so the SAEs stay resident across requests
+                    # (a 31-token trace encodes in ~0.3s once they are), and a
+                    # test can stand in a fake for all of them at once.
+                    layers = (
+                        sae_layers if sae_layers is not None else list(range(m.cfg.n_layers))
+                    )
+                    apply(
+                        SAEPass(
+                            layers=layers,
+                            saes={layer: sae_provider(layer) for layer in layers},
+                            # The model's device, not `pick_device()`: the
+                            # residuals are moved onto it to be encoded, so it
+                            # has to be where the SAEs already are. Identical
+                            # on the real box (both cuda); the difference shows
+                            # up when the two disagree.
+                            device=str(m.cfg.device),
+                            hook=result.hook,
+                            verbose=False,
+                            on_progress=lambda done, total: report("sae", done, total),
+                        ),
+                        result.trace,
+                        result.residuals,
+                    )
 
                 if wants_lens:
                     # `residuals` is the array capture just built, still in
@@ -146,6 +212,16 @@ def create_app(
                             verbose=False,
                             on_progress=lambda done, total: report("lens", done, total),
                         ),
+                        result.trace,
+                        result.residuals,
+                    )
+
+            # Outside the forward lock: a lookup against SQLite, no GPU work,
+            # so it must not hold the guard the forward passes share.
+            if wants_labels:
+                with open_label_store() as store:
+                    apply(
+                        LabelsPass(store=store, verbose=False),
                         result.trace,
                         result.residuals,
                     )

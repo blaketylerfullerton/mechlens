@@ -200,6 +200,47 @@ def test_progress_never_goes_backwards_within_a_phase():
     ]
 
 
+def test_the_sae_phase_sits_between_generating_and_lens():
+    """A trace job runs the SAE pass before the lens, so a reading from either
+    neighbour must not displace the phase the job has actually reached."""
+    seen: list[tuple[str, int, int]] = []
+    release = threading.Event()
+
+    def reports(report):
+        report("generating", 4, 20)
+        seen.append(_reading(job_id))
+        report("sae", 3, 26)
+        seen.append(_reading(job_id))
+        report("generating", 20, 20)  # behind sae: ignored
+        seen.append(_reading(job_id))
+        report("lens", 1, 26)
+        seen.append(_reading(job_id))
+        report("sae", 26, 26)  # behind lens: ignored
+        seen.append(_reading(job_id))
+        release.wait(timeout=2)
+        return "done"
+
+    job_id = jobs.submit(reports)
+    release.set()
+    _wait_for(job_id)
+
+    assert seen == [
+        ("generating", 4, 20),
+        ("sae", 3, 26),
+        ("sae", 3, 26),
+        ("lens", 1, 26),
+        ("lens", 1, 26),
+    ]
+
+
+def test_phase_order_lists_every_phase():
+    """A phase missing from _PHASE_ORDER raises ValueError inside the reporter,
+    on the worker thread, where it would surface as a failed job."""
+    from typing import get_args
+
+    assert set(get_args(jobs.JobPhase)) == set(jobs._PHASE_ORDER)
+
+
 def test_a_queued_job_reports_no_running_phase_until_the_first_finishes():
     """Progress reporting must not have loosened the single-worker guarantee:
     only one job can be mid-phase at a time."""

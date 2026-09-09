@@ -22,8 +22,32 @@ PROMPT = "Once upon a time there was a"
 
 
 class FakeSAE:
+    """Stands in for a Gemma Scope SAE for both /steer and the SAE pass.
+
+    `W_dec` is all /steer needs. `encode` fires a deterministic three features
+    per token position — enough for the pass's bookkeeping (top-k, l0) to be
+    asserted exactly, and sparse the way a real JumpReLU SAE is, without the
+    302MB.
+    """
+
     def __init__(self, n_features: int, d_model: int):
+        self.n_features = n_features
         self.W_dec = torch.zeros(n_features, d_model)
+
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
+        acts = torch.zeros(x.shape[0], self.n_features)
+        for token in range(x.shape[0]):
+            for offset, value in enumerate((3.0, 2.0, 1.0)):
+                acts[token, (token * 3 + offset) % self.n_features] = value
+        return acts
+
+    def decode(self, a: torch.Tensor) -> torch.Tensor:
+        return torch.zeros(a.shape[0], self.W_dec.shape[1])
+
+
+# The features FakeSAE.encode fires at a given position, strongest first.
+def expected_features(token: int, n_features: int = 16) -> list[int]:
+    return [(token * 3 + offset) % n_features for offset in range(3)]
 
 
 @pytest.fixture(scope="module")
@@ -31,7 +55,12 @@ def tiny_model():
     from transformer_lens import HookedTransformer
 
     try:
-        m = HookedTransformer.from_pretrained("tiny-stories-1M", device="cpu")
+        # `_no_processing` for the same reason model_cache uses it: plain
+        # `from_pretrained` folds LayerNorm into the weights, which moves
+        # resid_post off the distribution the SAEs were fitted on — and the SAE
+        # pass rightly refuses such a trace. The service's real captures are
+        # unfolded, so the stand-in has to be too.
+        m = HookedTransformer.from_pretrained_no_processing("tiny-stories-1M", device="cpu")
     except Exception as exc:  # no network and nothing cached
         pytest.skip(f"tiny-stories-1M unavailable: {exc}")
     m.eval()
@@ -97,6 +126,156 @@ def test_get_trace_reaches_done_with_a_full_trace(client):
 def test_get_trace_unknown_id_is_404(client):
     resp = client.get("/trace/does-not-exist")
     assert resp.status_code == 404
+
+
+# -- the sae and labels passes -------------------------------------------
+
+
+def _seed_labels(db_path, n_layers, features=range(16)):
+    """A label for every (layer, feature) the fake SAE can fire — all 16 of
+    them, since which ones fire depends on how many token positions there are."""
+    from app.sae_cache import neuronpedia_id
+
+    with LabelStore(db_path) as store:
+        for layer in range(n_layers):
+            _, source_set = neuronpedia_id(layer, store.width)
+            store.upsert(
+                [
+                    LabelRow(
+                        source_set=source_set,
+                        feature=feature,
+                        text=f"stand-in label for L{layer} #{feature}",
+                        explainer="gpt-4o-mini",
+                    )
+                    for feature in features
+                ]
+            )
+
+
+def test_trace_with_the_sae_pass_carries_features_on_every_layer(client, tiny_model):
+    job_id = client.post(
+        "/trace", json={"prompt": PROMPT, "max_tokens": 2, "passes": ["sae"]}
+    ).json()["job_id"]
+    trace = _poll(client, job_id).json()["trace"]
+
+    assert [p["name"] for p in trace["passes"]] == ["sae"]
+    for step in trace["steps"]:
+        assert len(step["layers"]) == tiny_model.cfg.n_layers
+        for state in step["layers"]:
+            assert state["l0"] == 3
+            assert [f["index"] for f in state["features"]] == expected_features(step["step"])
+            assert [f["activation"] for f in state["features"]] == [3.0, 2.0, 1.0]
+
+
+def test_trace_records_which_layers_the_sae_pass_ran(client, tiny_model):
+    job_id = client.post(
+        "/trace", json={"prompt": PROMPT, "max_tokens": 1, "passes": ["sae"]}
+    ).json()["job_id"]
+    trace = _poll(client, job_id).json()["trace"]
+
+    record = next(p for p in trace["passes"] if p["name"] == "sae")
+    assert record["params"]["layers"] == ",".join(str(l) for l in range(tiny_model.cfg.n_layers))
+    assert record["params"]["n_layers"] == tiny_model.cfg.n_layers
+
+
+def test_trace_can_ask_for_a_subset_of_layers(client, tiny_model):
+    """26 resident 16k SAEs are ~7.9GB, so a smaller deployment must be able to
+    ask for fewer — and a skipped layer has to stay distinguishable from a
+    layer in which nothing fired."""
+    job_id = client.post(
+        "/trace", json={"prompt": PROMPT, "max_tokens": 1, "passes": ["sae"], "sae_layers": [1]}
+    ).json()["job_id"]
+    trace = _poll(client, job_id).json()["trace"]
+
+    record = next(p for p in trace["passes"] if p["name"] == "sae")
+    assert record["params"]["layers"] == "1"
+
+    for step in trace["steps"]:
+        assert step["layers"][1]["features"]
+        assert step["layers"][1]["l0"] == 3
+        for layer in range(tiny_model.cfg.n_layers):
+            if layer != 1:
+                assert step["layers"][layer]["features"] == []
+                assert step["layers"][layer]["l0"] is None
+
+
+def test_trace_rejects_sae_layers_past_the_model(client, tiny_model):
+    n_jobs_before = len(jobs.JOBS)
+    resp = client.post(
+        "/trace",
+        json={
+            "prompt": PROMPT,
+            "max_tokens": 1,
+            "passes": ["sae"],
+            "sae_layers": [tiny_model.cfg.n_layers],
+        },
+    )
+    assert resp.status_code == 422
+    assert len(jobs.JOBS) == n_jobs_before
+
+
+def test_trace_with_the_labels_pass_carries_labels(client, tiny_model, tmp_path):
+    _seed_labels(tmp_path / "labels.db", tiny_model.cfg.n_layers)
+
+    job_id = client.post(
+        "/trace", json={"prompt": PROMPT, "max_tokens": 2, "passes": ["sae", "labels"]}
+    ).json()["job_id"]
+    trace = _poll(client, job_id).json()["trace"]
+
+    assert {p["name"] for p in trace["passes"]} == {"sae", "labels"}
+    assert trace["labels"], "the labels pass recorded nothing"
+    for step in trace["steps"]:
+        for state in step["layers"]:
+            for feature in state["features"]:
+                key = f"{state['layer']}/{feature['index']}"
+                assert trace["labels"][key]["text"].startswith("stand-in label")
+
+
+def test_trace_rejects_labels_without_the_sae_pass(client):
+    """The labels pass labels the features the SAE pass records, so without it
+    it would raise on the worker — a 500-shaped failure for a request that was
+    already wrong when it arrived."""
+    n_jobs_before = len(jobs.JOBS)
+    resp = client.post("/trace", json={"prompt": PROMPT, "max_tokens": 1, "passes": ["labels"]})
+    assert resp.status_code == 422
+    assert "sae" in resp.text
+    assert len(jobs.JOBS) == n_jobs_before
+
+
+def test_trace_rejects_labels_when_the_store_holds_none(client):
+    """The client fixture's label DB is empty, so this is the unseeded case."""
+    n_jobs_before = len(jobs.JOBS)
+    resp = client.post(
+        "/trace", json={"prompt": PROMPT, "max_tokens": 1, "passes": ["sae", "labels"]}
+    )
+    assert resp.status_code == 422
+    assert "label store" in resp.text
+    assert len(jobs.JOBS) == n_jobs_before
+
+
+def test_trace_reports_the_sae_phase_while_running(client, tiny_model):
+    """The SAE pass genuinely walks layers, so — unlike generating — it can
+    report a depth sweep."""
+    seen: list[dict] = []
+    job_id = client.post(
+        "/trace", json={"prompt": PROMPT, "max_tokens": 4, "passes": ["sae"]}
+    ).json()["job_id"]
+
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        body = client.get(f"/trace/{job_id}").json()
+        if body["progress"] is not None:
+            seen.append(body["progress"])
+        if body["status"] in ("done", "error"):
+            break
+
+    phases = [p["phase"] for p in seen]
+    assert "sae" in phases, f"no sae reading among {phases}"
+    for reading in (p for p in seen if p["phase"] == "sae"):
+        assert reading["total"] == tiny_model.cfg.n_layers
+        assert 1 <= reading["done"] <= reading["total"]
+    # generating precedes sae; a reading never moves back to an earlier phase.
+    assert phases == sorted(phases, key=lambda p: ("generating", "sae", "lens").index(p))
 
 
 # -- POST /steer -----------------------------------------------------------

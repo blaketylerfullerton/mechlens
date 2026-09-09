@@ -10,6 +10,7 @@ from app.schema import (
     Feature,
     FeatureLabel,
     LogitLens,
+    NodePosition,
     NodeRef,
     TokenInfo,
     TopToken,
@@ -96,3 +97,62 @@ def test_later_phases_can_enrich_a_saved_trace(tmp_path):
 def test_token_source_is_constrained():
     with pytest.raises(ValidationError):
         TokenInfo(position=0, token_id=1, text="x", source="hallucinated")
+
+
+# -- 1.4: the atlas layout side table ------------------------------------
+
+
+def test_the_layout_is_a_side_table_keyed_like_labels(tmp_path):
+    """Same key format as `labels`, and for the same reason: a feature recurs
+    across positions, so three floats per occurrence would be the same numbers
+    written thousands of times."""
+    result = make_result()
+    result.trace.layout[label_key(11, 4023)] = NodePosition(x=0.1, y=-0.2, z=0.3, cluster=7)
+    json_path = save_trace(result, tmp_path)
+
+    trace = load_trace(json_path)
+    position = trace.position(11, 4023)
+    assert (position.x, position.y, position.z, position.cluster) == (0.1, -0.2, 0.3, 7)
+
+
+def test_an_unplaced_feature_reads_as_none_not_as_the_origin(tmp_path):
+    result = make_result()
+    result.trace.layout[label_key(0, 1)] = NodePosition(x=0.0, y=0.0, z=0.0)
+    trace = load_trace(save_trace(result, tmp_path))
+
+    assert trace.position(0, 1) is not None, "a feature really at the origin"
+    assert trace.position(0, 2) is None, "a feature the atlas cannot place"
+
+
+def test_no_cluster_defaults_to_minus_one():
+    """A density-based clustering's 'belongs to nothing' is a real answer."""
+    assert NodePosition(x=0.0, y=0.0, z=0.0).cluster == -1
+
+
+def test_a_trace_without_a_layout_is_valid():
+    """Additive, like every schema change since 1.1: a 1.3 trace loads as one
+    with no layout rather than failing validation."""
+    assert make_result().trace.layout == {}
+
+
+def test_a_13_trace_still_loads(tmp_path):
+    """The forward-compatibility claim, exercised on a document that predates
+    the field rather than asserted in a comment."""
+    result = make_result()
+    payload = result.trace.model_dump(mode="json")
+    payload["schema_version"] = "1.3"
+    del payload["layout"]
+
+    trace = Trace.model_validate(payload)
+    assert trace.schema_version == "1.3"
+    assert trace.layout == {}
+    assert trace.position(0, 0) is None
+
+
+def test_the_layout_survives_a_json_round_trip():
+    """Flat and string-keyed for exactly this reason."""
+    trace = make_result().trace
+    trace.layout[label_key(3, 9)] = NodePosition(x=1.5, y=-0.25, z=0.75, cluster=2)
+
+    restored = Trace.model_validate(trace.model_dump(mode="json"))
+    assert restored.layout == trace.layout

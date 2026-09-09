@@ -17,7 +17,7 @@ from factories import make_result
 
 
 def test_trace_request_round_trips():
-    payload = {"prompt": "hello", "max_tokens": 10, "passes": ["lens"]}
+    payload = {"prompt": "hello", "max_tokens": 10, "passes": ["lens"], "sae_layers": None}
     model = TraceRequest.model_validate(payload)
     assert model.model_dump() == payload
 
@@ -27,12 +27,48 @@ def test_trace_request_defaults_to_no_passes():
     must not start paying for the lens."""
     model = TraceRequest.model_validate({"prompt": "hello", "max_tokens": 10})
     assert model.passes == []
-    assert model.model_dump() == {"prompt": "hello", "max_tokens": 10, "passes": []}
+    assert model.model_dump() == {
+        "prompt": "hello",
+        "max_tokens": 10,
+        "passes": [],
+        "sae_layers": None,
+    }
 
 
 def test_trace_request_rejects_an_unknown_pass():
     with pytest.raises(ValidationError):
         TraceRequest.model_validate({"prompt": "hello", "max_tokens": 10, "passes": ["nope"]})
+
+
+@pytest.mark.parametrize("passes", [["sae"], ["labels", "sae"], ["sae", "labels", "lens"]])
+def test_trace_request_accepts_the_sae_and_label_passes(passes):
+    assert TraceRequest.model_validate(
+        {"prompt": "hello", "max_tokens": 10, "passes": passes}
+    ).passes == passes
+
+
+def test_trace_request_rejects_labels_without_sae():
+    """The labels pass reads the features the SAE pass records, so the
+    dependency is a boundary check, not a worker-thread surprise."""
+    with pytest.raises(ValidationError, match="sae"):
+        TraceRequest.model_validate(
+            {"prompt": "hello", "max_tokens": 10, "passes": ["labels"]}
+        )
+
+
+@pytest.mark.parametrize("sae_layers", [[], [-1], [0, 0]])
+def test_trace_request_rejects_a_malformed_layer_subset(sae_layers):
+    with pytest.raises(ValidationError):
+        TraceRequest.model_validate(
+            {"prompt": "hello", "max_tokens": 10, "passes": ["sae"], "sae_layers": sae_layers}
+        )
+
+
+def test_trace_request_accepts_a_layer_subset():
+    model = TraceRequest.model_validate(
+        {"prompt": "hello", "max_tokens": 10, "passes": ["sae"], "sae_layers": [0, 5, 20]}
+    )
+    assert model.sae_layers == [0, 5, 20]
 
 
 def test_steer_request_round_trips():

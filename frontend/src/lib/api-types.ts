@@ -117,12 +117,19 @@ export interface Trace {
 // The enrichment passes POST /trace will run as part of the trace job. Mirrors
 // `TracePass` in service/models.py: an unrecognised name is a 422 there, so
 // this union is not cosmetic.
-export type TracePass = 'lens'
+export type TracePass = 'lens' | 'sae' | 'labels'
 
 export interface TraceRequest {
   prompt: string
   max_tokens: number
+  // `labels` without `sae` is a 422: the label pass labels the features the
+  // SAE pass records, so it cannot run on its own.
   passes?: TracePass[]
+  // Which layers the SAE pass encodes; omit for every layer. The subset exists
+  // because 26 resident 16k SAEs come to ~7.9GB — fine on a unified-memory
+  // box, not fine on a 16GB discrete GPU. Ignored unless `passes` includes
+  // `sae`, and a layer at or past `n_layers` is a 422.
+  sae_layers?: number[] | null
 }
 
 export interface SteerRequest {
@@ -146,11 +153,13 @@ export interface JobResponse {
 
 export type JobStatus = 'pending' | 'running' | 'done' | 'error'
 
-// Which phase of a trace job is executing. `generating` counts tokens and
-// `lens` counts layers, because those are the units each phase can honestly
-// report — the capture loop computes a whole forward pass at once, so there is
-// no moment during it at which one layer is "executing".
-export type JobPhase = 'generating' | 'lens'
+// Which phase of a trace job is executing, in the order a job reaches them.
+// `generating` counts tokens; `sae` and `lens` count layers, because those are
+// the units each phase can honestly report — the capture loop computes a whole
+// forward pass at once, so there is no moment during it at which one layer is
+// "executing", while both later passes genuinely walk depth one layer at a
+// time. A reading never moves back to a phase the job has already left.
+export type JobPhase = 'generating' | 'sae' | 'lens'
 
 export interface JobProgress {
   phase: JobPhase

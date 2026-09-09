@@ -18,6 +18,14 @@ import {
   hasLensData,
 } from '@/lib/lens'
 import type { JobProgress, Trace } from '@/lib/api-types'
+import type { Atlas } from '@/lib/atlas'
+import {
+  atlasLayers,
+  loadAtlas,
+  namedAreaCount,
+  positionBuffer,
+  sourceClaim,
+} from '@/lib/atlas'
 import type { RunState } from '@/hooks/useTrace'
 
 // Deterministic lattice hash + trilinear interpolation ("value noise").
@@ -385,6 +393,51 @@ export interface BrainProps {
   onSelectLayer?: (layer: number) => void
 }
 
+// --------------------------------------------------------------------------
+// the node cloud
+// --------------------------------------------------------------------------
+
+/**
+ * How a node is drawn when nothing has lit it.
+ *
+ * Dim enough to read as texture rather than as data — an inactive node says
+ * "a feature exists here", and the brain is full of them before any prompt is
+ * sent. Activation lighting is layered on top of this, so this is the floor
+ * and never the whole story.
+ */
+const NODE_IDLE_COLOR = new THREE.Color(0x7f9bc4)
+const NODE_IDLE_OPACITY = 0.5
+const NODE_SIZE = 0.016
+
+/**
+ * The point cloud, as one `THREE.Points` in one draw call.
+ *
+ * `sizeAttenuation` so nodes shrink with depth and the cloud reads as a
+ * volume rather than a flat spray. Additive blending against the black
+ * background, and `depthWrite: false` so the translucent shell in front of a
+ * node does not punch a hole in it.
+ */
+function buildNodeCloud(atlas: Atlas): THREE.Points {
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.BufferAttribute(positionBuffer(atlas.nodes), 3))
+
+  const material = new THREE.PointsMaterial({
+    color: NODE_IDLE_COLOR,
+    size: NODE_SIZE,
+    sizeAttenuation: true,
+    transparent: true,
+    opacity: NODE_IDLE_OPACITY,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  })
+
+  const points = new THREE.Points(geometry, material)
+  // The cloud fills the shell's own volume, so it must never be culled by a
+  // bounding sphere computed before the shell rotates into place.
+  points.frustumCulled = false
+  return points
+}
+
 /** Mutable three.js handles, built once and reused across prop changes. */
 interface SceneHandles {
   renderer: THREE.WebGLRenderer
@@ -398,6 +451,8 @@ interface SceneHandles {
   material: THREE.MeshPhysicalMaterial
   lobeBoundaries: THREE.Group
   bandRings: THREE.Group
+  /** The atlas's node cloud, once an atlas has loaded. Null until then. */
+  nodeCloud: THREE.Points | null
   front: number
   back: number
   vertexBands: Uint8Array
@@ -414,6 +469,22 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
   const containerRef = useRef<HTMLDivElement>(null)
   const handlesRef = useRef<SceneHandles | null>(null)
   const [hoveredBand, setHoveredBand] = useState<number | null>(null)
+
+  // The atlas is a fixed table fetched once, not derived from the trace.
+  // `undefined` while the fetch is in flight, `null` when there is no atlas to
+  // be had — the two are different states and the legend distinguishes them,
+  // because "loading" and "this deployment has no atlas" are different answers.
+  const [atlas, setAtlas] = useState<Atlas | null | undefined>(undefined)
+
+  useEffect(() => {
+    let cancelled = false
+    loadAtlas().then((loaded) => {
+      if (!cancelled) setAtlas(loaded)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   // Read by the animation loop every frame. A ref rather than state so a new
   // progress reading never restarts the loop or rebuilds the scene.
@@ -591,6 +662,7 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
       material,
       lobeBoundaries,
       bandRings,
+      nodeCloud: null,
       front,
       back,
       vertexBands: new Uint8Array(0),
@@ -647,6 +719,23 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
       handlesRef.current = null
     }
   }, [])
+
+  // -- the node cloud: built once per atlas, never per selection ----------
+  useEffect(() => {
+    const handles = handlesRef.current
+    if (!handles || !atlas) return
+
+    const cloud = buildNodeCloud(atlas)
+    handles.brainGroup.add(cloud)
+    handles.nodeCloud = cloud
+
+    return () => {
+      handles.brainGroup.remove(cloud)
+      cloud.geometry.dispose()
+      ;(cloud.material as THREE.Material).dispose()
+      handles.nodeCloud = null
+    }
+  }, [atlas])
 
   // -- paint: runs on every data change, rebuilds nothing expensive --------
   useEffect(() => {
@@ -771,6 +860,7 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
       <div className="h-full w-full" ref={containerRef} />
 
       <BrainLegend
+        atlas={atlas}
         bandViews={bandViews}
         lensAvailable={lensAvailable}
         trace={trace}
@@ -806,11 +896,13 @@ const CLASS_COPY: Record<string, string> = {
  * computes.
  */
 function BrainLegend({
+  atlas,
   bandViews,
   lensAvailable,
   trace,
   onSelectLayer,
 }: {
+  atlas: Atlas | null | undefined
   bandViews: BandView[]
   lensAvailable: boolean
   trace: Trace | null
@@ -818,6 +910,7 @@ function BrainLegend({
 }) {
   return (
     <div className="pointer-events-none absolute left-3 top-3 max-w-[15rem] space-y-2 text-[11px]">
+      <AtlasNote atlas={atlas} />
       <p className="font-medium tracking-[0.18em] text-cyan-200/70 uppercase">Layer bands</p>
 
       {trace === null ? (
@@ -862,6 +955,98 @@ function BrainLegend({
       <p className="leading-4 text-slate-500">
         A band is a range of transformer layers, front to back. It is not a brain region — no
         anatomical area computes any of this.
+      </p>
+    </div>
+  )
+}
+
+/**
+ * What the node cloud is, and what it is not allowed to claim.
+ *
+ * Every clause here is load-bearing. A node is a feature, not a place. Nearby
+ * nodes really are similar and distant ones mean nothing, because UMAP
+ * preserves neighbourhoods and distorts global distance — so the view offers
+ * no axes, no coordinates and no scale, and the copy has to say why rather
+ * than leave the absence to be noticed. And the sample is stated as a sample:
+ * this file carries 20,000 of the atlas's features so the brain has structure
+ * before a prompt, and it is not the set a trace's activations are read
+ * against.
+ */
+function AtlasNote({ atlas }: { atlas: Atlas | null | undefined }) {
+  if (atlas === undefined) {
+    return <p className="leading-4 text-slate-500">Loading the feature atlas…</p>
+  }
+
+  if (atlas === null) {
+    return (
+      <div className="space-y-1">
+        <p className="font-medium tracking-[0.18em] text-amber-200/70 uppercase">Feature nodes</p>
+        <p className="leading-4 text-amber-200/80">
+          No feature atlas is available, so no nodes are drawn. Build one with{' '}
+          <span className="font-mono">scripts/build_feature_atlas.py</span>.
+        </p>
+      </div>
+    )
+  }
+
+  const layers = atlasLayers(atlas)
+  const named = namedAreaCount(atlas)
+
+  return (
+    <div className="space-y-1">
+      <p className="font-medium tracking-[0.18em] text-cyan-200/70 uppercase">Feature nodes</p>
+      <p className="leading-4 text-slate-400">
+        {atlas.nodes.length.toLocaleString()} of {atlas.total.toLocaleString()} SAE features,
+        sampled — one dot per feature, across layers {layers.join(', ')}.
+      </p>
+
+      {/* What "near" means, which depends on the atlas's source. Stated rather
+          than left to be inferred: the two sources support different claims and
+          reading one as the other is the mistake worth preventing. */}
+      <p className="leading-4 text-slate-500">
+        <span className="text-slate-300">{sourceClaim(atlas.source)}</span>.{' '}
+        {atlas.source === 'labels'
+          ? 'That is a map of how features were described, not of what the model computes.'
+          : 'That is the model’s own geometry.'}
+      </p>
+
+      {/* The layout's fidelity as a number. A picture nobody measured is
+          decoration, so the measurement is on screen rather than in a log. */}
+      {atlas.knnPreservation !== null ? (
+        <p className="leading-4 text-slate-500">
+          Of a feature&apos;s {atlas.knnK ?? 20} nearest neighbours,{' '}
+          <span className="font-mono text-slate-300">
+            {(atlas.knnPreservation * 100).toFixed(0)}%
+          </span>{' '}
+          survive the flattening to three dimensions. Distance beyond a
+          neighbourhood is meaningless, which is why there is no scale to read.
+        </p>
+      ) : (
+        <p className="leading-4 text-slate-500">
+          This atlas records no fidelity measurement, so how much of the original
+          structure survived is unknown.
+        </p>
+      )}
+
+      <p className="leading-4 text-slate-500">
+        {atlas.areas.length} clusters, {named === 0 ? 'none named' : `${named} named`} — a cluster
+        earns a name only when its features&apos; own labels agree more than a random group of the
+        same size.
+        {atlas.explainerAmi !== null && atlas.source === 'labels' ? (
+          <>
+            {' '}
+            Explainer influence{' '}
+            <span className="font-mono text-slate-300">{atlas.explainerAmi.toFixed(3)}</span>: the
+            areas are not an artifact of which model wrote the labels.
+          </>
+        ) : null}
+      </p>
+
+      <p className="leading-4 text-slate-500">
+        A dot is a feature, not a place. No named brain region computes any of this.
+      </p>
+      <p className="font-mono text-[10px] leading-4 text-slate-600">
+        atlas {atlas.version} · {atlas.source}
       </p>
     </div>
   )

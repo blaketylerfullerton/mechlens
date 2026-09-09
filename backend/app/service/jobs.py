@@ -32,10 +32,10 @@ JobStatus = Literal["pending", "running", "done", "error"]
 
 # The phases a trace job passes through, in order. `generating` counts tokens
 # because that is the granularity a client can actually observe — one forward
-# pass per token. `lens` counts layers because the lens pass genuinely walks
-# them one at a time. See design.md on progress granularity for why the
+# pass per token. `lens` and `sae` count layers because both passes genuinely
+# walk them one at a time. See design.md on progress granularity for why the
 # generating phase does not report a layer.
-JobPhase = Literal["generating", "lens"]
+JobPhase = Literal["generating", "sae", "lens"]
 
 
 @dataclass(frozen=True)
@@ -59,8 +59,11 @@ Reporter = Callable[[JobPhase, int, int], None]
 JobFn = Callable[[Reporter], object]
 
 # Phase order, used to reject a stale reading from an earlier phase. Adding a
-# phase means adding it here, in the order jobs reach it.
-_PHASE_ORDER: tuple[JobPhase, ...] = ("generating", "lens")
+# phase means adding it here, in the order jobs reach it. `sae` precedes `lens`
+# because the trace job runs the passes in that order — the SAE encoder reads
+# only the residual array, so it finishes before the lens starts its per-layer
+# unembed and a client watching progress never sees the phase move backwards.
+_PHASE_ORDER: tuple[JobPhase, ...] = ("generating", "sae", "lens")
 
 
 @dataclass

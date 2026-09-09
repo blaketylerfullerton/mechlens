@@ -47,6 +47,7 @@ back with several explanations and one has to be chosen deterministically.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from collections.abc import Iterable, Iterator
@@ -85,6 +86,63 @@ CREATE TABLE IF NOT EXISTS labels (
     embedding        BLOB,             -- float32 vector of the text, or NULL
     fetched_at       TEXT    NOT NULL,
     PRIMARY KEY (source_set, feature)
+) WITHOUT ROWID;
+
+-- The feature atlas: one position per (layer, feature), keyed by layer rather
+-- than by source_set. A position comes from the SAE's own decoder direction,
+-- which is a property of the release and the width -- not of Neuronpedia's
+-- naming -- so `atlas_version` is what scopes a row, and several atlases can
+-- sit side by side while one is compared against another.
+CREATE TABLE IF NOT EXISTS atlas_layout (
+    atlas_version TEXT    NOT NULL,
+    layer         INTEGER NOT NULL,
+    feature       INTEGER NOT NULL,
+    x             REAL    NOT NULL,
+    y             REAL    NOT NULL,
+    z             REAL    NOT NULL,
+    -- HDBSCAN's noise label (-1) is a real answer: this feature belongs to no
+    -- cluster. Stored as -1 rather than NULL so "no cluster" and "not yet
+    -- clustered" stay distinguishable.
+    cluster       INTEGER NOT NULL DEFAULT -1,
+    PRIMARY KEY (atlas_version, layer, feature)
+) WITHOUT ROWID;
+
+-- One row per atlas: how it was built, and every number that says how much to
+-- trust it. `metrics_json` holds the measurements (kNN preservation and its
+-- neighbourhood size, cross-source agreement, ...) so a new diagnostic does
+-- not need a migration; `positions_sha256` is the determinism check.
+CREATE TABLE IF NOT EXISTS atlas_record (
+    atlas_version    TEXT NOT NULL PRIMARY KEY,
+    release          TEXT NOT NULL,
+    width            TEXT NOT NULL,
+    seed             INTEGER NOT NULL,
+    params_json      TEXT NOT NULL,
+    metrics_json     TEXT NOT NULL,
+    positions_sha256 TEXT NOT NULL,
+    n_features       INTEGER NOT NULL,
+    n_clusters       INTEGER NOT NULL,
+    built_at         TEXT NOT NULL
+) WITHOUT ROWID;
+
+-- One row per cluster. A name is present only when the build measured its
+-- members' label coherence above threshold; below it, `name` is NULL and
+-- `coherence` still records what was measured, so an unnamed cluster is
+-- unnamed for a stated reason rather than for no reason.
+CREATE TABLE IF NOT EXISTS atlas_cluster (
+    atlas_version     TEXT    NOT NULL,
+    cluster           INTEGER NOT NULL,
+    name              TEXT,             -- NULL: coherence below threshold
+    name_source_layer INTEGER,          -- the medoid member the name came from
+    name_source_feature INTEGER,
+    coherence         REAL,             -- NULL: no embeddings to measure with
+    baseline_coherence REAL,
+    n_members         INTEGER NOT NULL,
+    explainers        TEXT    NOT NULL DEFAULT '',
+    centroid_x        REAL    NOT NULL,
+    centroid_y        REAL    NOT NULL,
+    centroid_z        REAL    NOT NULL,
+    spread            REAL    NOT NULL,
+    PRIMARY KEY (atlas_version, cluster)
 ) WITHOUT ROWID;
 """
 
@@ -159,6 +217,63 @@ class LabelRow:
             blob,
             datetime.now(timezone.utc).isoformat(timespec="seconds"),
         )
+
+
+@dataclass(frozen=True)
+class LayoutRow:
+    """One feature's place in an atlas."""
+
+    layer: int
+    feature: int
+    x: float
+    y: float
+    z: float
+    # -1 means "belongs to no cluster" — HDBSCAN's noise label, a real answer.
+    cluster: int = -1
+
+
+@dataclass(frozen=True)
+class ClusterRow:
+    """One atlas cluster, and whether its name was earned.
+
+    `name is None` with a non-None `coherence` is the interesting case: the
+    build measured the members' label agreement and it came in below the
+    threshold, so the cluster is deliberately unnamed. `coherence is None`
+    means there were no explanation embeddings to measure with at all. The two
+    are different facts and a consumer has to be able to tell them apart.
+    """
+
+    cluster: int
+    n_members: int
+    centroid: tuple[float, float, float]
+    spread: float
+    name: str | None = None
+    name_source: tuple[int, int] | None = None  # (layer, feature) of the medoid
+    coherence: float | None = None
+    baseline_coherence: float | None = None
+    explainers: str = ""
+
+
+@dataclass(frozen=True)
+class AtlasRecord:
+    """How an atlas was built, and how much of the original geometry survived.
+
+    `metrics` is the honest headline: `knn_preservation` is this table's peer
+    to the SAE pass's `explained_variance` and the lens's
+    `final_layer_agreement` — 3 dimensions out of 2304 lose a great deal, and
+    the point is that how much is measured rather than assumed.
+    """
+
+    atlas_version: str
+    release: str
+    width: str
+    seed: int
+    params: dict
+    metrics: dict
+    positions_sha256: str
+    n_features: int
+    n_clusters: int
+    built_at: str = ""
 
 
 def pick_explanation(explanations: list[dict]) -> dict | None:
@@ -319,6 +434,181 @@ class LabelStore:
         )
         self.conn.commit()
         return len(params)
+
+    # -- the atlas ---------------------------------------------------------
+    #
+    # Kept on the label store rather than in a store of its own because the two
+    # are looked up together on every request that draws a feature: a node
+    # needs a position and the text that says what it is. One SQLite file, one
+    # connection, one thing to build and one thing to delete.
+
+    def put_layout(self, atlas_version: str, rows: Iterable[LayoutRow]) -> int:
+        """Bulk insert-or-replace positions for one atlas."""
+        params = [
+            (atlas_version, r.layer, r.feature, r.x, r.y, r.z, r.cluster) for r in rows
+        ]
+        if not params:
+            return 0
+        self.conn.executemany(
+            "INSERT INTO atlas_layout "
+            "(atlas_version, layer, feature, x, y, z, cluster) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(atlas_version, layer, feature) DO UPDATE SET "
+            "  x = excluded.x, y = excluded.y, z = excluded.z, "
+            "  cluster = excluded.cluster",
+            params,
+        )
+        self.conn.commit()
+        return len(params)
+
+    def layout(
+        self, atlas_version: str, pairs: Iterable[tuple[int, int]]
+    ) -> dict[tuple[int, int], LayoutRow]:
+        """Positions for the (layer, feature) pairs asked for, and only those.
+
+        A pair with no row is simply absent from the result. That is the whole
+        point: a caller has to be able to tell a feature the atlas cannot place
+        from one it places at the origin, and inventing a position for the
+        former is exactly the failure this shape prevents.
+        """
+        out: dict[tuple[int, int], LayoutRow] = {}
+        wanted = list(pairs)
+        for chunk in _chunked(wanted, 400):
+            placeholders = ",".join("(?, ?)" for _ in chunk)
+            flat = [value for pair in chunk for value in pair]
+            for row in self.conn.execute(
+                f"SELECT layer, feature, x, y, z, cluster FROM atlas_layout "
+                f"WHERE atlas_version = ? AND (layer, feature) IN ({placeholders})",
+                (atlas_version, *flat),
+            ):
+                out[(row["layer"], row["feature"])] = LayoutRow(
+                    layer=row["layer"],
+                    feature=row["feature"],
+                    x=row["x"],
+                    y=row["y"],
+                    z=row["z"],
+                    cluster=row["cluster"],
+                )
+        return out
+
+    def put_atlas_record(self, record: AtlasRecord) -> None:
+        self.conn.execute(
+            "INSERT INTO atlas_record "
+            "(atlas_version, release, width, seed, params_json, metrics_json, "
+            " positions_sha256, n_features, n_clusters, built_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(atlas_version) DO UPDATE SET "
+            "  release = excluded.release, width = excluded.width, "
+            "  seed = excluded.seed, params_json = excluded.params_json, "
+            "  metrics_json = excluded.metrics_json, "
+            "  positions_sha256 = excluded.positions_sha256, "
+            "  n_features = excluded.n_features, n_clusters = excluded.n_clusters, "
+            "  built_at = excluded.built_at",
+            (
+                record.atlas_version,
+                record.release,
+                record.width,
+                record.seed,
+                json.dumps(record.params, sort_keys=True),
+                json.dumps(record.metrics, sort_keys=True),
+                record.positions_sha256,
+                record.n_features,
+                record.n_clusters,
+                record.built_at
+                or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            ),
+        )
+        self.conn.commit()
+
+    def atlas_record(self, atlas_version: str | None = None) -> AtlasRecord | None:
+        """One atlas's record, or the most recently built one. None if there is
+        no atlas — which is a different answer from an atlas with no features,
+        and callers are expected to distinguish them."""
+        if atlas_version is None:
+            row = self.conn.execute(
+                "SELECT * FROM atlas_record ORDER BY built_at DESC LIMIT 1"
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                "SELECT * FROM atlas_record WHERE atlas_version = ?", (atlas_version,)
+            ).fetchone()
+        if row is None:
+            return None
+        return AtlasRecord(
+            atlas_version=row["atlas_version"],
+            release=row["release"],
+            width=row["width"],
+            seed=row["seed"],
+            params=json.loads(row["params_json"]),
+            metrics=json.loads(row["metrics_json"]),
+            positions_sha256=row["positions_sha256"],
+            n_features=row["n_features"],
+            n_clusters=row["n_clusters"],
+            built_at=row["built_at"],
+        )
+
+    def put_clusters(self, atlas_version: str, rows: Iterable[ClusterRow]) -> int:
+        params = [
+            (
+                atlas_version,
+                r.cluster,
+                r.name,
+                r.name_source[0] if r.name_source else None,
+                r.name_source[1] if r.name_source else None,
+                r.coherence,
+                r.baseline_coherence,
+                r.n_members,
+                r.explainers,
+                r.centroid[0],
+                r.centroid[1],
+                r.centroid[2],
+                r.spread,
+            )
+            for r in rows
+        ]
+        if not params:
+            return 0
+        self.conn.executemany(
+            "INSERT INTO atlas_cluster "
+            "(atlas_version, cluster, name, name_source_layer, name_source_feature, "
+            " coherence, baseline_coherence, n_members, explainers, "
+            " centroid_x, centroid_y, centroid_z, spread) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(atlas_version, cluster) DO UPDATE SET "
+            "  name = excluded.name, name_source_layer = excluded.name_source_layer, "
+            "  name_source_feature = excluded.name_source_feature, "
+            "  coherence = excluded.coherence, "
+            "  baseline_coherence = excluded.baseline_coherence, "
+            "  n_members = excluded.n_members, explainers = excluded.explainers, "
+            "  centroid_x = excluded.centroid_x, centroid_y = excluded.centroid_y, "
+            "  centroid_z = excluded.centroid_z, spread = excluded.spread",
+            params,
+        )
+        self.conn.commit()
+        return len(params)
+
+    def clusters(self, atlas_version: str) -> list[ClusterRow]:
+        return [
+            ClusterRow(
+                cluster=row["cluster"],
+                n_members=row["n_members"],
+                centroid=(row["centroid_x"], row["centroid_y"], row["centroid_z"]),
+                spread=row["spread"],
+                name=row["name"],
+                name_source=(
+                    (row["name_source_layer"], row["name_source_feature"])
+                    if row["name_source_layer"] is not None
+                    else None
+                ),
+                coherence=row["coherence"],
+                baseline_coherence=row["baseline_coherence"],
+                explainers=row["explainers"],
+            )
+            for row in self.conn.execute(
+                "SELECT * FROM atlas_cluster WHERE atlas_version = ? ORDER BY cluster",
+                (atlas_version,),
+            )
+        ]
 
     # -- the API fallback --------------------------------------------------
 
