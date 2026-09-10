@@ -66,7 +66,7 @@ function App() {
     <div className="text-text-primary bg-bg-base min-h-svh">
       {/* Stacks under lg so neither surface gets clipped on a narrow screen;
           the grid keeps its own scroll container either way. */}
-      <div className="mx-auto flex min-h-svh max-w-[1800px] flex-col gap-4 px-4 pt-5 pb-36 sm:px-6 lg:flex-row lg:gap-5 lg:px-8">
+      <div className="mx-auto flex min-h-svh max-w-[1800px] flex-col gap-4 px-4 pt-5 pb-8 sm:px-6 lg:flex-row lg:gap-5 lg:px-8">
         {/* The one frame treatment, used here and on the residual map: an outer
             frame holding an inner surface, hairline on both, 4px gap, radii
             concentric (16 − 4 = 12). It wraps what the reader looks *into* and
@@ -84,7 +84,12 @@ function App() {
         </div>
 
         <div className="min-w-0 flex-1">
+          {/* The composer lives inside the empty state, under the facts
+              block — so it is there when there is nothing to look at, and
+              gone the moment a prompt is submitted and the trace takes the
+              page over. */}
           <TraceViewer
+            composer={<ChatPanel error={error} onTraceRequest={run} status={status} />}
             error={error}
             onSelectCell={selectCell}
             onSelectPosition={selectPosition}
@@ -94,8 +99,6 @@ function App() {
           />
         </div>
       </div>
-
-      <ChatPanel error={error} onTraceRequest={run} status={status} />
     </div>
   )
 }

@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, type ReactNode } from 'react'
 
 import {
   CodeBlock,
@@ -23,6 +23,13 @@ type TraceViewerProps = {
   selection: { layer: number; position: number } | null
   onSelectCell: (layer: number, position: number) => void
   onSelectPosition: (position: number) => void
+  /**
+   * The prompt composer, rendered inside the empty state directly under the
+   * facts block. Passed in rather than imported so this component keeps
+   * knowing nothing about how a run is started — and so it goes away with the
+   * empty state the moment a trace exists.
+   */
+  composer?: ReactNode
 }
 
 function visibleToken(text: string): string {
@@ -151,7 +158,11 @@ function GridSkeleton() {
  * actually be copied and run. No illustration, no fabricated dashboard, and no
  * claim the page cannot currently back with data.
  */
-function EmptyState({ status, error }: Pick<TraceViewerProps, 'status' | 'error'>) {
+function EmptyState({
+  status,
+  error,
+  composer,
+}: Pick<TraceViewerProps, 'status' | 'error' | 'composer'>) {
   const isWorking = status === 'warming' || status === 'pending' || status === 'running'
 
   return (
@@ -180,6 +191,8 @@ function EmptyState({ status, error }: Pick<TraceViewerProps, 'status' | 'error'
             ]}
           />
         </div>
+
+        {composer ? <div className="mt-6">{composer}</div> : null}
 
         {/* Reserved either way, so the block below never pushes the page when a
             status arrives. */}
@@ -359,6 +372,7 @@ export function TraceViewer({
   selection,
   onSelectCell,
   onSelectPosition,
+  composer,
 }: TraceViewerProps) {
   const maximumResidualNorm = useMemo(() => {
     if (!trace) return 0
@@ -371,7 +385,7 @@ export function TraceViewer({
   }, [trace])
 
   if (!trace || trace.steps.length === 0 || selection === null) {
-    return <EmptyState error={error} status={status} />
+    return <EmptyState composer={composer} error={error} status={status} />
   }
 
   const currentSelection = selection
@@ -380,7 +394,13 @@ export function TraceViewer({
   const gridColumns = `4rem repeat(${trace.steps.length}, minmax(2rem, 1fr))`
 
   if (!selectedStep || !selectedState) {
-    return <EmptyState error="The selected trace state is unavailable." status="error" />
+    return (
+      <EmptyState
+        composer={composer}
+        error="The selected trace state is unavailable."
+        status="error"
+      />
+    )
   }
 
   return (

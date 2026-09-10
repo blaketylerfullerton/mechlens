@@ -66,46 +66,43 @@ export function ChatPanel({ error, onTraceRequest, status }: ChatPanelProps) {
   }
 
   return (
-    <div className="pointer-events-none fixed inset-x-0 bottom-5 z-20 flex justify-center px-4">
-      {/* The highest layer, so it is lighter than what it sits over and edged
-          with the strong hairline. No shadow: on #0A0B0D a shadow is either
-          invisible or reads as grime. */}
-      <div className="border-border-strong bg-bg-elevated pointer-events-auto w-full max-w-2xl rounded-[16px] border p-3">
-        <div className="text-text-tertiary mb-2 flex items-center justify-between gap-3 px-1 text-[12px]">
-          <span className="flex min-w-0 items-center gap-2">
-            <span
-              aria-hidden="true"
-              className={`size-1.5 shrink-0 rounded-full ${statusTone(status, error)}`}
-            />
-            <span className="truncate">{statusCopy(status)}</span>
-          </span>
-          <span className="shrink-0 font-mono text-[11px] tabular-nums">
-            max_tokens={MAX_TOKENS}
-          </span>
-        </div>
-        <PromptInput onSubmit={handleSubmit}>
-          <PromptInputBody>
-            <PromptInputTextarea disabled={isBusy} placeholder="Enter a prompt to trace…" />
-          </PromptInputBody>
-          <PromptInputFooter>
-            <span className="text-text-tertiary px-2 text-[11px]">
-              <span className="font-mono">gemma-2-2b</span> · residual capture
-            </span>
-            <PromptInputSubmit disabled={isBusy} status={inputStatus(status, error)} />
-          </PromptInputFooter>
-        </PromptInput>
-        <Suggestions className="mt-2">
-          {STARTER_PROMPTS.map((prompt) => (
-            <Suggestion
-              className="border-border-subtle text-text-secondary hover:border-border-strong hover:text-text-primary rounded-md px-3 font-sans"
-              disabled={isBusy}
-              key={prompt}
-              onClick={() => onTraceRequest(prompt, MAX_TOKENS)}
-              suggestion={prompt}
-            />
-          ))}
-        </Suggestions>
+    // Sits inline under the facts block, in the flow of the empty state — the
+    // page owns the position, this owns the card. The highest layer, so it is
+    // lighter than what it sits over and edged with the strong hairline. No
+    // shadow: on #0A0B0D a shadow is either invisible or reads as grime.
+    <div className="border-border-strong bg-bg-elevated w-full rounded-[16px] border p-3">
+      <div className="text-text-tertiary mb-2 flex items-center justify-between gap-3 px-1 text-[12px]">
+        <span className="flex min-w-0 items-center gap-2">
+          <span
+            aria-hidden="true"
+            className={`size-1.5 shrink-0 rounded-full ${statusTone(status, error)}`}
+          />
+          <span className="truncate">{statusCopy(status)}</span>
+        </span>
+        <span className="shrink-0 font-mono text-[11px] tabular-nums">max_tokens={MAX_TOKENS}</span>
       </div>
+      <PromptInput onSubmit={handleSubmit}>
+        <PromptInputBody>
+          <PromptInputTextarea disabled={isBusy} placeholder="Enter a prompt to trace…" />
+        </PromptInputBody>
+        <PromptInputFooter>
+          <span className="text-text-tertiary px-2 text-[11px]">
+            <span className="font-mono">gemma-2-2b</span> · residual capture
+          </span>
+          <PromptInputSubmit disabled={isBusy} status={inputStatus(status, error)} />
+        </PromptInputFooter>
+      </PromptInput>
+      <Suggestions className="mt-2">
+        {STARTER_PROMPTS.map((prompt) => (
+          <Suggestion
+            className="border-border-subtle text-text-secondary hover:border-border-strong hover:text-text-primary rounded-md px-3 font-sans"
+            disabled={isBusy}
+            key={prompt}
+            onClick={() => onTraceRequest(prompt, MAX_TOKENS)}
+            suggestion={prompt}
+          />
+        ))}
+      </Suggestions>
     </div>
   )
 }
