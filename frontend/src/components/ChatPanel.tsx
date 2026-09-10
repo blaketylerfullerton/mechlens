@@ -16,6 +16,8 @@ const STARTER_PROMPTS = [
   '2 + 2 =',
 ]
 
+const MAX_TOKENS = 20
+
 type ChatPanelProps = {
   error: string | null
   onTraceRequest: (prompt: string, maxTokens: number) => void
@@ -38,10 +40,19 @@ function inputStatus(status: RunState, error: string | null): ChatStatus {
 // nothing is happening on screen either way — but only one of them is the
 // model actually running the prompt.
 function statusCopy(status: RunState): string {
-  if (status === 'warming') return 'Loading the model — this is slow the first time…'
-  if (status === 'pending') return 'Queued…'
-  if (status === 'running') return 'Capturing the model run…'
-  return 'Run a prompt through the local trace service.'
+  if (status === 'warming') return 'Loading the model — this is slow the first time'
+  if (status === 'pending') return 'Queued'
+  if (status === 'running') return 'Capturing the model run'
+  return 'Run a prompt through the local trace service'
+}
+
+// Colour never carries the state on its own: the dot always sits beside the
+// word it is colouring.
+function statusTone(status: RunState, error: string | null): string {
+  if (error) return 'bg-err'
+  if (status === 'running') return 'bg-fn'
+  if (isRunning(status)) return 'bg-const'
+  return 'bg-rule'
 }
 
 export function ChatPanel({ error, onTraceRequest, status }: ChatPanelProps) {
@@ -51,31 +62,45 @@ export function ChatPanel({ error, onTraceRequest, status }: ChatPanelProps) {
     event.preventDefault()
     const prompt = message.text.trim()
     if (!prompt || isBusy) return
-    onTraceRequest(prompt, 20)
+    onTraceRequest(prompt, MAX_TOKENS)
   }
 
   return (
     <div className="pointer-events-none fixed inset-x-0 bottom-5 z-20 flex justify-center px-4">
-      <div className="pointer-events-auto w-full max-w-2xl rounded-2xl border border-white/15 bg-slate-950/90 p-3 shadow-2xl shadow-black/40 backdrop-blur">
-        <div className="mb-2 flex items-center justify-between gap-3 px-1 text-xs text-slate-400">
-          <span>{statusCopy(status)}</span>
-          <span className="font-mono text-[10px] text-cyan-100/70">20 generated tokens</span>
+      {/* The highest layer, so it is lighter than what it sits over and edged
+          with the strong hairline. No shadow: on #0A0B0D a shadow is either
+          invisible or reads as grime. */}
+      <div className="border-border-strong bg-bg-elevated pointer-events-auto w-full max-w-2xl rounded-[16px] border p-3">
+        <div className="text-text-tertiary mb-2 flex items-center justify-between gap-3 px-1 text-[12px]">
+          <span className="flex min-w-0 items-center gap-2">
+            <span
+              aria-hidden="true"
+              className={`size-1.5 shrink-0 rounded-full ${statusTone(status, error)}`}
+            />
+            <span className="truncate">{statusCopy(status)}</span>
+          </span>
+          <span className="shrink-0 font-mono text-[11px] tabular-nums">
+            max_tokens={MAX_TOKENS}
+          </span>
         </div>
         <PromptInput onSubmit={handleSubmit}>
           <PromptInputBody>
             <PromptInputTextarea disabled={isBusy} placeholder="Enter a prompt to trace…" />
           </PromptInputBody>
           <PromptInputFooter>
-            <span className="px-2 text-[11px] text-slate-500">Gemma 2 2B · residual capture</span>
+            <span className="text-text-tertiary px-2 text-[11px]">
+              <span className="font-mono">gemma-2-2b</span> · residual capture
+            </span>
             <PromptInputSubmit disabled={isBusy} status={inputStatus(status, error)} />
           </PromptInputFooter>
         </PromptInput>
         <Suggestions className="mt-2">
           {STARTER_PROMPTS.map((prompt) => (
             <Suggestion
+              className="border-border-subtle text-text-secondary hover:border-border-strong hover:text-text-primary rounded-md px-3 font-sans"
               disabled={isBusy}
               key={prompt}
-              onClick={() => onTraceRequest(prompt, 20)}
+              onClick={() => onTraceRequest(prompt, MAX_TOKENS)}
               suggestion={prompt}
             />
           ))}

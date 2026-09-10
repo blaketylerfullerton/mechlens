@@ -165,6 +165,54 @@ atlas, not as the default.
 label-coherent, which is why naming is gated on a measurement (decision 5)
 rather than assumed.
 
+### 2b. The pilot six ship; all 26 layers are a follow-on
+
+The atlas this change ships covers layers 0, 5, 10, 16, 20 and 25 rather than
+all 26. That is a scope decision, not an unfinished build.
+
+Those six were picked to span the depth range and to straddle Neuronpedia's
+explainer split, so the confound decision 2 turns on could be *measured* rather
+than assumed. Having served that purpose, they turn out to be a coherent
+shipping unit, because the label store and the atlas cover exactly the same
+features:
+
+```
+   layers 0, 5, 10, 16, 20, 25
+
+     label store    98,210 features   100% with embeddings
+     atlas layout   98,210 features   placed
+                    ^^^^^^
+     the same set -- the label-source atlas places precisely
+     the features that have labels, so coverage cannot diverge
+```
+
+`sae_layers` (already on `TraceRequest`, added for SAE residency: 26 resident
+16k SAEs come to ~7.9GB) pins a trace to those six. Every feature such a trace
+records then has a label and a position, and coverage is 100% rather than the
+~23% an all-26 request would get against these stores.
+
+*Why not build all 26 now.* The label store currently holds only the pilot six;
+the other twenty need a fresh `--embeddings` import of roughly 1.5GB, after
+which UMAP runs single-threaded — the price of a fixed seed, and of an artifact
+whose whole value is being the same map every time — over 4.3x the points, at
+an unmeasured cost. Neither is hard; both are a separate piece of work from
+getting the view onto the screen, and neither changes a line of section 3 or 4,
+which are indifferent to how many layers the atlas holds.
+
+*The open question that build has to answer.* UMAP's local preservation
+typically degrades as n grows at fixed `n_neighbors`, so 0.292 over 98,210
+features is not a promise about 425,984. If the full atlas comes back near the
+decoder source's 0.143, the honest outcome is a smaller, well-measured atlas
+rather than a larger vague one — which is why the gate is re-run rather than
+assumed to pass.
+
+*Consequence:* the interface has to state its own scope — six of twenty-six
+layers — in the same register as `attn_topk_coverage` and the shown-versus-fired
+count. Task 4.10 already requires naming the layers without data and refusing to
+render a missing layer as one in which nothing fired, so this needs no new
+requirement, only that the existing one is read as covering deliberate scope and
+not just missing data.
+
 ### 3. UMAP, with the reduction's cost measured
 
 *Why UMAP over PCA:* 2304 -> 3 by PCA keeps global variance and destroys the

@@ -24,17 +24,23 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from transformer_lens import HookedTransformer
 
-from .. import model_cache
+import numpy as np
+
+from .. import atlas, model_cache
 from ..capture import generate_trace
 from ..labels import LabelStore, feature_url
 from ..passes import apply
 from ..passes.labels import LabelsPass
+from ..passes.layout import DEFAULT_ATLAS_SOURCE, LayoutPass
 from ..passes.lens import LogitLensPass
 from ..passes.sae import SAEPass
 from ..sae_cache import DEFAULT_WIDTH, get_sae
 from ..schema import SteeringInfo, Trace
 from . import jobs
 from .models import (
+    AtlasArea,
+    AtlasNodes,
+    AtlasResponse,
     FeatureResponse,
     HealthResponse,
     JobResponse,
@@ -55,10 +61,18 @@ def create_app(
     model: HookedTransformer | None = None,
     label_db_path: Path | str | None = None,
     sae_provider: Callable[[int], object] | None = None,
+    atlas_version: str | None = None,
+    atlas_source: str | None = DEFAULT_ATLAS_SOURCE,
 ) -> FastAPI:
     """`sae_provider(layer) -> SAE-like` defaults to `sae_cache.get_sae`; a
     test overrides it with a fake so /steer does not need a real Gemma Scope
-    SAE (which would not even match the tiny CPU test model's dimensions)."""
+    SAE (which would not even match the tiny CPU test model's dimensions).
+
+    `atlas_version` pins one atlas; `atlas_source` (the default) picks the most
+    recent build from one source representation. Several atlases coexist by
+    design, so serving "whichever was built last" would hand clients a
+    different map depending on the order the builds happened to run in.
+    """
     state: dict[str, object] = {"model": model, "load_error": None}
     sae_provider = sae_provider or (lambda layer: get_sae(layer))
 
@@ -226,6 +240,24 @@ def create_app(
                         result.residuals,
                     )
 
+            # Not a requestable pass: positions are what makes the features
+            # drawable, so a client asking for features wants them placed. It
+            # runs whenever the SAE pass did, and reports the atlas's absence
+            # rather than failing when none has been built — an unbuilt atlas
+            # is a deployment state, not an error, and the record says which.
+            if wants_sae:
+                with open_label_store() as store:
+                    apply(
+                        LayoutPass(
+                            store=store,
+                            atlas_version=atlas_version,
+                            source=atlas_source,
+                            verbose=False,
+                        ),
+                        result.trace,
+                        result.residuals,
+                    )
+
             # The residual array falls out of scope with the closure here; it is
             # ~7MB for a 31-token gemma trace and nothing downstream needs it.
             return result.trace
@@ -269,6 +301,86 @@ def create_app(
             return result.trace
 
         return JobResponse(job_id=jobs.submit(run))
+
+    @app.get("/atlas", response_model=AtlasResponse)
+    def get_atlas(sample: int | None = None, version: str | None = None) -> AtlasResponse:
+        """The atlas, whole or sampled — positions, clusters, names, record.
+
+        Deliberately not behind `get_model()`: the atlas is a precomputed table
+        in SQLite, so this answers while gemma is still loading and on a
+        deployment with no GPU at all. That is a requirement, not an
+        optimisation — the brain draws its node cloud before any trace exists.
+
+        `sample` caps the node count using the same deterministic subsample the
+        idle asset is cut with, so a client asking twice gets the same nodes.
+        """
+        with open_label_store() as store:
+            record = store.atlas_record(version or atlas_version, source=atlas_source)
+            # 404 rather than an empty atlas: "no atlas has been built" and "an
+            # atlas that placed nothing" are different facts, and a client that
+            # cannot tell them apart will render one as the other.
+            if record is None:
+                asked = version or atlas_version
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        f"no atlas has been built"
+                        + (f" for version {asked}" if asked else "")
+                        + (f" from source '{atlas_source}'" if atlas_source and not asked else "")
+                        + " — build one with scripts/build_feature_atlas.py"
+                    ),
+                )
+            rows = store.layout_all(record.atlas_version)
+            clusters = store.clusters(record.atlas_version)
+
+        n_total = len(rows)
+        if sample is not None and 0 < sample < n_total:
+            picks = atlas.subsample_indices(n_total, sample, seed=record.seed)
+            rows = [rows[i] for i in picks]
+
+        positions = np.array([(r.x, r.y, r.z) for r in rows], dtype=np.float64).reshape(-1, 3)
+        quantised, extent = atlas.quantise_positions(positions)
+
+        metrics = record.metrics
+        return AtlasResponse(
+            atlas_version=record.atlas_version,
+            source=str(record.params.get("source", "")),
+            note=(
+                "The feature atlas: one fixed position per SAE feature. Near means "
+                "similar; far means nothing, because the projection preserves local "
+                "neighbourhoods and distorts larger distances."
+            ),
+            knn_preservation=metrics.get("knn_preservation"),
+            knn_k=metrics.get("knn_k"),
+            explainer_ami=metrics.get("explainer_ami"),
+            positions_sha256=record.positions_sha256,
+            release=record.release,
+            width=record.width,
+            seed=record.seed,
+            layers=str(record.params.get("layers", "")),
+            extent=extent,
+            n_sampled=len(rows),
+            n_total=n_total,
+            nodes=AtlasNodes(
+                layer=[r.layer for r in rows],
+                feature=[r.feature for r in rows],
+                cluster=[r.cluster for r in rows],
+                xyz=quantised.reshape(-1).tolist(),
+            ),
+            areas=[
+                AtlasArea(
+                    cluster=c.cluster,
+                    name=c.name,
+                    n_members=c.n_members,
+                    centroid=c.centroid,
+                    spread=c.spread,
+                    coherence=c.coherence,
+                    baseline_coherence=c.baseline_coherence,
+                    explainers=c.explainers,
+                )
+                for c in clusters
+            ],
+        )
 
     @app.get("/feature/{layer}/{idx}", response_model=FeatureResponse)
     def get_feature(layer: int, idx: int) -> FeatureResponse:

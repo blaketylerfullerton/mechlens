@@ -158,7 +158,10 @@ def test_trace_with_the_sae_pass_carries_features_on_every_layer(client, tiny_mo
     ).json()["job_id"]
     trace = _poll(client, job_id).json()["trace"]
 
-    assert [p["name"] for p in trace["passes"]] == ["sae"]
+    # `layout` rides along with `sae` unasked: positions are what make the
+    # features drawable, and its record states the atlas's absence here rather
+    # than being omitted. See test_a_trace_with_no_atlas_states_the_absence.
+    assert [p["name"] for p in trace["passes"]] == ["sae", "layout"]
     for step in trace["steps"]:
         assert len(step["layers"]) == tiny_model.cfg.n_layers
         for state in step["layers"]:
@@ -222,7 +225,7 @@ def test_trace_with_the_labels_pass_carries_labels(client, tiny_model, tmp_path)
     ).json()["job_id"]
     trace = _poll(client, job_id).json()["trace"]
 
-    assert {p["name"] for p in trace["passes"]} == {"sae", "labels"}
+    assert {p["name"] for p in trace["passes"]} == {"sae", "labels", "layout"}
     assert trace["labels"], "the labels pass recorded nothing"
     for step in trace["steps"]:
         for state in step["layers"]:
@@ -251,6 +254,290 @@ def test_trace_rejects_labels_when_the_store_holds_none(client):
     assert resp.status_code == 422
     assert "label store" in resp.text
     assert len(jobs.JOBS) == n_jobs_before
+
+
+# -- the layout ------------------------------------------------------------
+
+
+ATLAS = "test-atlas-v1"
+
+
+def _seed_atlas(db_path, pairs, atlas_version=ATLAS, source="labels", **record):
+    """An atlas placing exactly `pairs`, so what it cannot place is controlled.
+
+    Positions are derived from the pair so a test can assert a feature got
+    *its own* position rather than merely some position.
+    """
+    from app.labels import AtlasRecord, LayoutRow
+
+    with LabelStore(db_path) as store:
+        store.put_layout(
+            atlas_version,
+            [
+                LayoutRow(
+                    layer=layer, feature=feature, x=float(layer), y=float(feature), z=0.5,
+                    cluster=layer,
+                )
+                for layer, feature in pairs
+            ],
+        )
+        defaults = dict(
+            atlas_version=atlas_version,
+            release="gemma-scope-2b-pt-res-canonical",
+            width="16k",
+            seed=0,
+            params={"source": source, "layers": "0,1"},
+            metrics={"knn_preservation": 0.292, "knn_k": 20},
+            positions_sha256="c" * 64,
+            n_features=len(pairs),
+            n_clusters=2,
+        )
+        store.put_atlas_record(AtlasRecord(**{**defaults, **record}))
+
+
+def _traced_with_features(client, max_tokens=2):
+    job_id = client.post(
+        "/trace", json={"prompt": PROMPT, "max_tokens": max_tokens, "passes": ["sae"]}
+    ).json()["job_id"]
+    return _poll(client, job_id).json()["trace"]
+
+
+def _reported_pairs(trace):
+    return {
+        (state["layer"], feature["index"])
+        for step in trace["steps"]
+        for state in step["layers"]
+        for feature in state["features"]
+    }
+
+
+def test_trace_carries_a_position_for_every_feature_the_atlas_places(client, tmp_path):
+    """3.2: features, an available atlas, and the atlas's identity alongside."""
+    trace = _traced_with_features(client)
+    pairs = _reported_pairs(trace)
+    _seed_atlas(tmp_path / "labels.db", pairs)
+
+    trace = _traced_with_features(client)
+    assert _reported_pairs(trace) == pairs
+
+    assert set(trace["layout"]) == {f"{layer}/{feature}" for layer, feature in pairs}
+    for layer, feature in pairs:
+        position = trace["layout"][f"{layer}/{feature}"]
+        assert (position["x"], position["y"], position["cluster"]) == (
+            float(layer),
+            float(feature),
+            layer,
+        )
+
+    record = next(p for p in trace["passes"] if p["name"] == "layout")
+    assert record["params"]["atlas_available"] is True
+    assert record["params"]["atlas_version"] == ATLAS
+    assert record["params"]["positions_sha256"] == "c" * 64
+    assert record["params"]["source"] == "labels"
+    assert record["stats"]["features_placed"] == len(pairs)
+    assert record["stats"]["features_unplaced"] == 0
+    assert record["stats"]["knn_preservation"] == pytest.approx(0.292)
+
+
+def test_a_feature_the_atlas_cannot_place_is_absent_rather_than_zeroed(client, tmp_path):
+    """3.3: unplaced has to stay distinguishable from placed at the origin."""
+    trace = _traced_with_features(client)
+    pairs = sorted(_reported_pairs(trace))
+    placed, unplaced = pairs[:-1], pairs[-1:]
+    _seed_atlas(tmp_path / "labels.db", placed)
+
+    trace = _traced_with_features(client)
+
+    # Still reported as a feature — it fired, the atlas just has no row for it.
+    assert unplaced[0] in _reported_pairs(trace)
+    layer, feature = unplaced[0]
+    assert f"{layer}/{feature}" not in trace["layout"]
+    assert set(trace["layout"]) == {f"{l}/{f}" for l, f in placed}
+
+    record = next(p for p in trace["passes"] if p["name"] == "layout")
+    assert record["stats"]["features_placed"] == len(placed)
+    assert record["stats"]["features_unplaced"] == len(unplaced)
+    assert record["stats"]["coverage"] == pytest.approx(len(placed) / len(pairs))
+
+
+def test_a_trace_with_no_atlas_states_the_absence(client):
+    """3.4: the client fixture's DB has no atlas — features, no positions, and
+    a record saying why, rather than a layout full of zeroes."""
+    trace = _traced_with_features(client)
+
+    assert _reported_pairs(trace), "the SAE pass recorded nothing to place"
+    assert trace["layout"] == {}
+
+    record = next(p for p in trace["passes"] if p["name"] == "layout")
+    assert record["params"]["atlas_available"] is False
+    assert "atlas_version" not in record["params"]
+    assert record["stats"]["features_placed"] == 0
+    assert record["stats"]["features_unplaced"] == record["stats"]["features_wanted"]
+
+
+def test_a_trace_without_the_sae_pass_has_no_layout_and_no_layout_record(client, tmp_path):
+    """There are no features to position, so the pass does not run at all —
+    which is a different fact from running and placing nothing."""
+    _seed_atlas(tmp_path / "labels.db", [(0, 0), (1, 1)])
+
+    job_id = client.post("/trace", json={"prompt": PROMPT, "max_tokens": 1}).json()["job_id"]
+    trace = _poll(client, job_id).json()["trace"]
+
+    assert trace["layout"] == {}
+    assert [p["name"] for p in trace["passes"]] == []
+
+
+def test_the_layout_pass_picks_its_atlas_by_source_not_by_recency(client, tmp_path):
+    """Both sources are retained by design, so "most recently built" is not a
+    statement about which map anyone wants — the decoder atlas built last must
+    not displace the label one the interface shows."""
+    trace = _traced_with_features(client)
+    pairs = sorted(_reported_pairs(trace))
+
+    _seed_atlas(
+        tmp_path / "labels.db", pairs, atlas_version="labels-atlas", source="labels",
+        built_at="2026-01-01T00:00:00+00:00",
+    )
+    _seed_atlas(
+        tmp_path / "labels.db", pairs, atlas_version="decoder-atlas", source="decoder",
+        built_at="2026-06-01T00:00:00+00:00",
+    )
+
+    trace = _traced_with_features(client)
+    record = next(p for p in trace["passes"] if p["name"] == "layout")
+    assert record["params"]["atlas_version"] == "labels-atlas"
+    assert record["params"]["source"] == "labels"
+
+
+# -- GET /atlas ------------------------------------------------------------
+
+
+def _seed_areas(db_path, rows, atlas_version=ATLAS):
+    from app.labels import ClusterRow
+
+    with LabelStore(db_path) as store:
+        store.put_clusters(atlas_version, rows)
+
+
+def test_get_atlas_serves_positions_clusters_and_the_record(client, tmp_path):
+    """3.5: everything a client needs to draw the atlas, in one call."""
+    from app.labels import ClusterRow
+
+    pairs = [(0, 1), (0, 2), (1, 3)]
+    _seed_atlas(tmp_path / "labels.db", pairs)
+    _seed_areas(
+        tmp_path / "labels.db",
+        [
+            ClusterRow(
+                cluster=0, n_members=2, centroid=(0.1, 0.2, 0.3), spread=0.4,
+                name="URLs and web links", name_source=(0, 1),
+                coherence=0.47, baseline_coherence=0.23, explainers="gpt-4o-mini:2",
+            ),
+            ClusterRow(
+                cluster=1, n_members=1, centroid=(0.0, 0.0, 0.0), spread=0.0,
+                coherence=0.24, baseline_coherence=0.23,
+            ),
+        ],
+    )
+
+    body = client.get("/atlas").json()
+
+    assert body["atlas_version"] == ATLAS
+    assert body["source"] == "labels"
+    assert body["n_total"] == len(pairs) and body["n_sampled"] == len(pairs)
+
+    # The record's identity and its published fidelity travel with the nodes.
+    assert body["positions_sha256"] == "c" * 64
+    assert body["knn_preservation"] == pytest.approx(0.292)
+    assert body["knn_k"] == 20
+
+    nodes = body["nodes"]
+    assert list(zip(nodes["layer"], nodes["feature"])) == pairs
+    assert nodes["cluster"] == [0, 0, 1]
+    assert len(nodes["xyz"]) == 3 * len(pairs)
+
+    # int16 over `extent` round-trips to the seeded positions.
+    extent = body["extent"]
+    restored = [v / 32767 * extent for v in nodes["xyz"]]
+    for i, (layer, feature) in enumerate(pairs):
+        assert restored[i * 3] == pytest.approx(float(layer), abs=1e-3)
+        assert restored[i * 3 + 1] == pytest.approx(float(feature), abs=1e-3)
+
+    named, unnamed = body["areas"]
+    assert named["name"] == "URLs and web links"
+    assert named["coherence"] == pytest.approx(0.47)
+    assert unnamed["name"] is None, "an unearned name must not be synthesised"
+    assert unnamed["coherence"] == pytest.approx(0.24)
+
+
+def test_get_atlas_answers_without_the_model(monkeypatch, tmp_path):
+    """3.5: the atlas is a precomputed table, so it must answer while gemma is
+    still loading — the brain draws its node cloud before any trace exists."""
+    release = threading.Event()
+
+    def slow_get_model():
+        release.wait(timeout=5)
+        raise AssertionError("test never lets the load finish")
+
+    monkeypatch.setattr("app.service.app.model_cache.get_model", slow_get_model)
+    jobs.JOBS.clear()
+    _seed_atlas(tmp_path / "labels.db", [(0, 1)])
+    app = create_app(model=None, label_db_path=tmp_path / "labels.db")
+
+    try:
+        with TestClient(app) as c:
+            assert c.get("/health").json()["status"] == "loading"
+            # The routes that need gemma are 503 right now; this one is not.
+            assert c.post("/trace", json={"prompt": PROMPT, "max_tokens": 1}).status_code == 503
+
+            resp = c.get("/atlas")
+            assert resp.status_code == 200
+            assert resp.json()["atlas_version"] == ATLAS
+    finally:
+        release.set()
+
+
+def test_get_atlas_reports_absence_rather_than_an_empty_layout(client):
+    """3.6: the client fixture's DB has no atlas at all."""
+    resp = client.get("/atlas")
+    assert resp.status_code == 404
+    assert "no atlas has been built" in resp.text
+
+
+def test_an_atlas_that_placed_nothing_is_not_a_missing_atlas(client, tmp_path):
+    """3.6: the two cases a client has to tell apart. An atlas exists and holds
+    no positions — that is a 200 with an empty node list, not a 404."""
+    _seed_atlas(tmp_path / "labels.db", [], n_features=0, n_clusters=0)
+
+    resp = client.get("/atlas")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["atlas_version"] == ATLAS
+    assert body["n_total"] == 0
+    assert body["nodes"]["layer"] == [] and body["nodes"]["xyz"] == []
+
+
+def test_get_atlas_sample_is_a_deterministic_subset(client, tmp_path):
+    pairs = [(layer, feature) for layer in range(2) for feature in range(40)]
+    _seed_atlas(tmp_path / "labels.db", pairs)
+
+    first = client.get("/atlas", params={"sample": 10}).json()
+    second = client.get("/atlas", params={"sample": 10}).json()
+
+    assert first["n_sampled"] == 10 and first["n_total"] == len(pairs)
+    assert first["nodes"] == second["nodes"], "the same request returned different nodes"
+    served = set(zip(first["nodes"]["layer"], first["nodes"]["feature"]))
+    assert served < set(pairs), "the sample must be a strict subset of the atlas"
+
+
+def test_get_atlas_can_ask_for_a_named_version(client, tmp_path):
+    _seed_atlas(tmp_path / "labels.db", [(0, 1)], atlas_version="labels-atlas", source="labels")
+    _seed_atlas(tmp_path / "labels.db", [(0, 2)], atlas_version="decoder-atlas", source="decoder")
+
+    assert client.get("/atlas").json()["atlas_version"] == "labels-atlas"
+    picked = client.get("/atlas", params={"version": "decoder-atlas"}).json()
+    assert picked["atlas_version"] == "decoder-atlas"
+    assert picked["source"] == "decoder"
 
 
 def test_trace_reports_the_sae_phase_while_running(client, tiny_model):

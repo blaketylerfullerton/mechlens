@@ -63,18 +63,24 @@ function App() {
   )
 
   return (
-    <div className="min-h-svh bg-[radial-gradient(circle_at_top,_#17304a_0%,_#0a1220_34%,_#060912_72%)] text-slate-100">
+    <div className="text-text-primary bg-bg-base min-h-svh">
       {/* Stacks under lg so neither surface gets clipped on a narrow screen;
           the grid keeps its own scroll container either way. */}
-      <div className="mx-auto flex min-h-svh max-w-[1800px] flex-col gap-4 px-4 pb-36 pt-5 sm:px-6 lg:flex-row lg:gap-5 lg:px-8">
-        <div className="h-[42svh] shrink-0 overflow-hidden rounded-2xl border border-white/10 bg-slate-950/40 backdrop-blur lg:h-auto lg:w-1/2 lg:min-w-[20rem]">
-          <Brain
-            onSelectLayer={selectLayer}
-            progress={progress}
-            selection={currentSelection}
-            status={status}
-            trace={trace}
-          />
+      <div className="mx-auto flex min-h-svh max-w-[1800px] flex-col gap-4 px-4 pt-5 pb-36 sm:px-6 lg:flex-row lg:gap-5 lg:px-8">
+        {/* The one frame treatment, used here and on the residual map: an outer
+            frame holding an inner surface, hairline on both, 4px gap, radii
+            concentric (16 − 4 = 12). It wraps what the reader looks *into* and
+            nothing else. */}
+        <div className="border-border-subtle flex h-[42svh] shrink-0 rounded-[16px] border bg-[#0D0E11] p-1 lg:h-auto lg:w-1/2 lg:min-w-[20rem]">
+          <div className="border-border-subtle bg-bg-surface min-w-0 flex-1 overflow-hidden rounded-[12px] border">
+            <Brain
+              onSelectLayer={selectLayer}
+              progress={progress}
+              selection={currentSelection}
+              status={status}
+              trace={trace}
+            />
+          </div>
         </div>
 
         <div className="min-w-0 flex-1">

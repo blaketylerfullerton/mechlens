@@ -23,7 +23,13 @@ implements the UMAP layout `backend/app/labels.py` already anticipates by name.
 ## What Changes
 
 **A feature atlas, built once and shipped.** One node per (layer, feature) —
-26 x 16,384 = 425,984 for `gemma-2-2b` at 16k. Positions come from a UMAP
+26 x 16,384 = 425,984 for `gemma-2-2b` at 16k. **This change ships the pilot
+six layers of that — 0, 5, 10, 16, 20 and 25, some 98,210 features — and defers
+the remaining twenty to a follow-on change.** The six span the depth range and
+straddle Neuronpedia's explainer split, and the label store covers exactly the
+same set, so a trace pinned to them via `sae_layers` gets a label and a position
+for every feature it records. All 26 layers remain the goal; see design decision
+2b for why they are not the POC. Positions come from a UMAP
 projection of the SAE decoder rows `W_dec[layer][f]` into 3D, then warped
 through the brain shell's existing `shapeEllipsoid` so the cloud fills the
 rendered brain. The projection is deterministic (fixed seed) and versioned; a
@@ -103,9 +109,10 @@ a query over the model's own concepts.
 - `app/service/app.py` — runs the two passes, attaches the layout.
 - `app/labels.py` — a `layout` table beside `labels`; `embeddings()` gains its
   first caller.
-- `scripts/build_feature_atlas.py` — new. Needs all 26 SAEs resident
-  (~7.9GB at 16k) once, and the label DB with `--embeddings` (~2GB) for naming
-  and validation.
+- `scripts/build_feature_atlas.py` — new. Defaults to all 26 layers, which
+  needs every SAE resident (~7.9GB at 16k) once and the label DB with
+  `--embeddings` (~2GB). The POC builds the pilot six instead: ~1.8GB of SAEs
+  and the ~458MB label DB already on disk.
 - New dependencies: `umap-learn` and a density clusterer, build-time only —
   neither is imported by the service or by `schema.py`.
 

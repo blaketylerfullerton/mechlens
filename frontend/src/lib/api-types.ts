@@ -109,7 +109,27 @@ export interface Trace {
   passes: PassRecord[]
   steering: SteeringInfo | null
   labels: Record<string, FeatureLabel>
+  // Schema 1.4. Keyed "layer/index" exactly as `labels` is, and for the same
+  // reason: a feature recurs across token positions, so three floats copied
+  // onto every occurrence would be the same numbers thousands of times.
+  //
+  // A feature the atlas cannot place is simply *absent* here — that is what
+  // lets a reader tell "unplaced" from "placed at the origin", and it is why
+  // nothing in the view may substitute a default position. Empty overall means
+  // either no atlas was available or the layout pass did not run; the `layout`
+  // pass record is what distinguishes those two.
+  layout: Record<string, NodePosition>
   steps: TokenStep[]
+}
+
+// Where one feature sits in the atlas (schema 1.4, `Trace.layout`).
+export interface NodePosition {
+  x: number
+  y: number
+  z: number
+  // -1 means the feature belongs to no cluster: a real answer from a
+  // density-based clustering, not a missing value.
+  cluster: number
 }
 
 // -- HTTP request/response shapes (service/models.py) --
@@ -184,4 +204,65 @@ export interface FeatureResponse {
   explanation_type: string | null
   score: number | null
   url: string
+}
+
+// -- GET /atlas ------------------------------------------------------------
+//
+// The same wire shape `build_feature_atlas.py` writes for the static idle
+// asset, deliberately: `parseAtlas` in lib/atlas.ts reads both, so the brain
+// has one parser rather than two that can drift. The extra fields here over
+// the asset's are the atlas record's — identity and provenance, which the
+// endpoint can afford to carry and a 571KB static file need not.
+//
+// 404 rather than an empty atlas means no atlas has been built. An atlas that
+// placed *nothing* is a 200 with empty node arrays — different facts, and a
+// client that conflates them renders one as the other.
+
+// Column-wise, not a list of node objects: it is the same four values repeated
+// ~98,000 times, and per-object key names would dominate the payload. `xyz` is
+// flat int16 triples over `extent` (position = value / 32767 * extent).
+export interface AtlasNodesPayload {
+  layer: number[]
+  feature: number[]
+  cluster: number[]
+  xyz: number[]
+}
+
+export interface AtlasResponse {
+  atlas_version: string
+  source: string
+  note: string
+  // The layout's own measured fidelity. null means not measured — never 0
+  // standing in for it.
+  knn_preservation: number | null
+  knn_k: number | null
+  explainer_ami: number | null
+  // Identity, so a trace drawn against a different atlas is detectable rather
+  // than silently misplaced.
+  positions_sha256: string
+  release: string
+  width: string
+  seed: number
+  // Which layers this atlas covers, e.g. "0,5,10,16,20,25". The view states
+  // its own scope from this rather than implying it covers the whole model.
+  layers: string
+  extent: number
+  quantisation: string
+  n_sampled: number
+  n_total: number
+  nodes: AtlasNodesPayload
+  areas: AtlasAreaPayload[]
+}
+
+// One cluster. `name` is null whenever the naming was not earned — a
+// measurement outcome to show, never a field to fill in.
+export interface AtlasAreaPayload {
+  cluster: number
+  name: string | null
+  n_members: number
+  centroid: [number, number, number]
+  spread: number
+  coherence: number | null
+  baseline_coherence: number | null
+  explainers: string
 }

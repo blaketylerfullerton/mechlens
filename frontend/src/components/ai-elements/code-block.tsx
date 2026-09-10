@@ -28,6 +28,7 @@ import type {
   ThemedToken,
 } from "shiki";
 import { createHighlighter } from "shiki";
+import { TERMINAL_DARK_THEME_NAME, terminalDark } from "@/lib/shiki-theme";
 
 // Shiki uses bitflags for font styles: 1=italic, 2=bold, 4=underline
 // oxlint-disable-next-line eslint(no-bitwise)
@@ -60,7 +61,6 @@ const addKeysToTokens = (lines: ThemedToken[][]): KeyedLine[] =>
 // Token rendering component
 const TokenSpan = ({ token }: { token: ThemedToken }) => (
   <span
-    className="dark:!bg-[var(--shiki-dark-bg)] dark:!text-[var(--shiki-dark)]"
     style={
       {
         backgroundColor: token.bgColor,
@@ -82,10 +82,10 @@ const LINE_NUMBER_CLASSES = cn(
   "before:content-[counter(line)]",
   "before:inline-block",
   "before:[counter-increment:line]",
-  "before:w-8",
+  "before:w-6",
   "before:mr-4",
   "before:text-right",
-  "before:text-muted-foreground/50",
+  "before:text-text-disabled",
   "before:font-mono",
   "before:select-none"
 );
@@ -155,10 +155,13 @@ const getHighlighter = (
     return cached;
   }
 
+  // One theme, not a light/dark pair: this interface is dark-first and has no
+  // light mode to derive, and the pair is what pulls github-dark's own
+  // background and accent set onto the page next to the palette.
   const highlighterPromise = createHighlighter({
     langs: [language],
-    themes: ["github-light", "github-dark"],
-  });
+    themes: [terminalDark],
+  }) as Promise<HighlighterGeneric<BundledLanguage, BundledTheme>>;
 
   highlighterCache.set(language, highlighterPromise);
   return highlighterPromise;
@@ -212,10 +215,7 @@ export const highlightCode = (
 
       const result = highlighter.codeToTokens(code, {
         lang: langToUse,
-        themes: {
-          dark: "github-dark",
-          light: "github-light",
-        },
+        theme: TERMINAL_DARK_THEME_NAME,
       });
 
       const tokenized: TokenizedCode = {
@@ -271,14 +271,16 @@ const CodeBlockBody = memo(
     return (
       <pre
         className={cn(
-          "dark:!bg-[var(--shiki-dark-bg)] dark:!text-[var(--shiki-dark)] m-0 p-4 text-sm",
+          // 13px at leading-1.6, dropping one step on narrow screens. Never
+          // leading-tight: dense text needs the vertical air.
+          "m-0 p-3 font-mono text-[12px] leading-[1.6] sm:text-[13px]",
           className
         )}
         style={preStyle}
       >
         <code
           className={cn(
-            "font-mono text-sm",
+            "font-mono",
             showLineNumbers && "[counter-increment:line_0] [counter-reset:line]"
           )}
         >
@@ -309,7 +311,7 @@ export const CodeBlockContainer = ({
 }: HTMLAttributes<HTMLDivElement> & { language: string }) => (
   <div
     className={cn(
-      "group relative w-full overflow-hidden rounded-md border bg-background text-foreground",
+      "group border-border-subtle bg-bg-surface text-text-primary relative w-full overflow-hidden rounded-[12px] border",
       className
     )}
     data-language={language}
@@ -329,7 +331,7 @@ export const CodeBlockHeader = ({
 }: HTMLAttributes<HTMLDivElement>) => (
   <div
     className={cn(
-      "flex items-center justify-between border-b bg-muted/80 px-3 py-2 text-muted-foreground text-xs",
+      "border-border-subtle text-text-tertiary flex items-center justify-between border-b px-3 py-2 text-[12px]",
       className
     )}
     {...props}
@@ -419,7 +421,10 @@ export const CodeBlockContent = ({
   const tokenized = asyncTokens ?? syncTokens;
 
   return (
-    <div className="relative overflow-auto">
+    // Code never soft-wraps: wrapping changes indentation and reads as broken.
+    // It scrolls inside the frame, with a right-edge mask so the scroll is
+    // visible rather than a hard cut.
+    <div className="mask-fade-r relative overflow-x-auto [-webkit-overflow-scrolling:touch]">
       <CodeBlockBody showLineNumbers={showLineNumbers} tokenized={tokenized} />
     </div>
   );
@@ -499,13 +504,20 @@ export const CodeBlockCopyButton = ({
 
   return (
     <Button
-      className={cn("shrink-0", className)}
+      aria-label={isCopied ? "Copied" : "Copy code"}
+      className={cn(
+        "text-text-tertiary hover:text-text-secondary size-9 shrink-0 transition-colors duration-150",
+        className
+      )}
       onClick={copyToClipboard}
       size="icon"
       variant="ghost"
       {...props}
     >
       {children ?? <Icon size={14} />}
+      <span aria-live="polite" className="sr-only">
+        {isCopied ? "Copied to clipboard" : ""}
+      </span>
     </Button>
   );
 };

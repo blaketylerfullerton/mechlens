@@ -7,7 +7,12 @@ import type {
   TraceRequest,
 } from './api-types'
 
-const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
+// Exported because the UI prints it: an empty state that tells you to call the
+// API, or an error that says it could not be reached, has to name the same URL
+// this client actually uses rather than a plausible-looking one.
+export const API_BASE_URL: string = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
+
+const BASE_URL = API_BASE_URL
 
 export class ApiError extends Error {
   status: number

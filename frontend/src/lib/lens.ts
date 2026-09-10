@@ -178,15 +178,25 @@ export function blendBand(step: TokenStep, band: Band): BandState {
 /**
  * Hue per class, in turns (0-1) so THREE's `Color.setHSL` takes them directly.
  *
- * `answer` is the interface's existing cyan accent. `echo` is amber rather
- * than the violet the token strip uses for generated tokens — violet already
- * means something else on this screen. `other` is a desaturated slate that
- * reads as "nothing to see here" without going invisible.
+ * Every hue is taken from the syntax palette the rest of the interface is
+ * built from — no colour is invented outside it, so the blue that means
+ * "settled" here is the same blue that marks a function in a code block and
+ * rings a focused input.
+ *
+ * `answer` is `syntax-func` #82AAFF, the leading accent: this is the thing the
+ * lens exists to show. `echo` is `syntax-const` #FFCB6B, the palette's
+ * attention tone, and not `syntax-keyword` violet — violet marks a generated
+ * token in the strip and cannot mean two things on one screen. `other` is a
+ * near-grey that reads as "nothing to see here" without going invisible.
+ *
+ * `answer` and `other` sit in the same hue family, so they are told apart by
+ * saturation, not hue alone. That is deliberate but not sufficient on its own:
+ * every surface that paints a class also prints its name.
  */
 export const CLASS_HUE: Record<LensClass, number> = {
-  answer: 186 / 360,
-  echo: 35 / 360,
-  other: 220 / 360,
+  answer: 220.8 / 360,
+  echo: 38.9 / 360,
+  other: 217 / 360,
 }
 
 export interface Hsl {
@@ -196,23 +206,30 @@ export interface Hsl {
 }
 
 /** The neutral fill for a band with no lens data. Not on any class ramp. */
-export const NEUTRAL: Hsl = { h: 220 / 360, s: 0.06, l: 0.3 }
+export const NEUTRAL: Hsl = { h: 221.5 / 360, s: 0.13, l: 0.24 }
 
 /**
  * One ramp for every class: confidence drives saturation and lightness, hue
  * carries the class. So hue answers "what is this layer holding" and
  * brightness answers "how strongly", independently — which is what lets the
  * same colour mean the same thing on the brain and in the grid.
+ *
+ * Each ramp lands exactly on its palette colour at full confidence (#82AAFF is
+ * hsl(220.8 100% 75.5%), #FFCB6B is hsl(38.9 100% 71%)), so a fully confident
+ * band is the accent itself rather than something near it.
  */
 export function classColor(klass: LensClass | null, confidence: number): Hsl {
   if (klass === null) return NEUTRAL
 
   const t = Math.min(Math.max(confidence, 0), 1)
-  const isOther = klass === 'other'
+  if (klass === 'other') {
+    return { h: CLASS_HUE.other, s: 0.06 + t * 0.05, l: 0.26 + t * 0.1 }
+  }
+  const top = klass === 'answer' ? 0.755 : 0.71
   return {
     h: CLASS_HUE[klass],
-    s: isOther ? 0.1 + t * 0.14 : 0.45 + t * 0.42,
-    l: isOther ? 0.26 + t * 0.1 : 0.3 + t * 0.32,
+    s: 0.55 + t * 0.45,
+    l: 0.4 + t * (top - 0.4),
   }
 }
 

@@ -491,6 +491,31 @@ class LabelStore:
                 )
         return out
 
+    def layout_all(self, atlas_version: str) -> list[LayoutRow]:
+        """Every position in one atlas, ordered by (layer, feature).
+
+        The order is part of the contract, not incidental: a client sampling
+        this list has to get the same nodes on every request, and callers hash
+        and subsample it positionally. Unlike `layout`, this is for serving a
+        whole atlas rather than resolving the features one trace happens to
+        report.
+        """
+        return [
+            LayoutRow(
+                layer=row["layer"],
+                feature=row["feature"],
+                x=row["x"],
+                y=row["y"],
+                z=row["z"],
+                cluster=row["cluster"],
+            )
+            for row in self.conn.execute(
+                "SELECT layer, feature, x, y, z, cluster FROM atlas_layout "
+                "WHERE atlas_version = ? ORDER BY layer, feature",
+                (atlas_version,),
+            )
+        ]
+
     def put_atlas_record(self, record: AtlasRecord) -> None:
         self.conn.execute(
             "INSERT INTO atlas_record "
@@ -520,17 +545,38 @@ class LabelStore:
         )
         self.conn.commit()
 
-    def atlas_record(self, atlas_version: str | None = None) -> AtlasRecord | None:
+    def atlas_record(
+        self, atlas_version: str | None = None, source: str | None = None
+    ) -> AtlasRecord | None:
         """One atlas's record, or the most recently built one. None if there is
         no atlas — which is a different answer from an atlas with no features,
-        and callers are expected to distinguish them."""
-        if atlas_version is None:
+        and callers are expected to distinguish them.
+
+        `source` narrows "most recently built" to one source representation,
+        and a caller that shows a layout to a human should pass it. Several
+        atlases coexist here by design — the spec requires both sources to be
+        retained under distinct versions, neither overwriting the other — so
+        plain recency picks whichever build happened to run last, which is not
+        a statement about which layout anyone wants to look at. Ignored when
+        `atlas_version` names one outright.
+
+        Builds predating the `source` param recorded none, so they never match
+        a source filter rather than being guessed at.
+        """
+        if atlas_version is not None:
             row = self.conn.execute(
-                "SELECT * FROM atlas_record ORDER BY built_at DESC LIMIT 1"
+                "SELECT * FROM atlas_record WHERE atlas_version = ?", (atlas_version,)
+            ).fetchone()
+        elif source is not None:
+            row = self.conn.execute(
+                "SELECT * FROM atlas_record "
+                "WHERE json_extract(params_json, '$.source') = ? "
+                "ORDER BY built_at DESC LIMIT 1",
+                (source,),
             ).fetchone()
         else:
             row = self.conn.execute(
-                "SELECT * FROM atlas_record WHERE atlas_version = ?", (atlas_version,)
+                "SELECT * FROM atlas_record ORDER BY built_at DESC LIMIT 1"
             ).fetchone()
         if row is None:
             return None

@@ -679,3 +679,8 @@ def test_the_subsample_carries_the_areas_including_unnamed_ones(built):
         assert area["cluster"] == cluster.cluster
         assert area["name"] == cluster.name  # None stays None, not ""
         assert area["n_members"] == cluster.n_members
+        # The centroid is what an area is *drawn* at, so the asset has to
+        # carry it: the idle brain shows areas without holding the member
+        # nodes they were computed from.
+        assert tuple(area["centroid"]) == pytest.approx(cluster.centroid)
+        assert area["spread"] == pytest.approx(cluster.spread)

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, getTraceJob, postTrace } from '@/lib/api-client'
 import type { JobProgress, JobStatus, TracePass, Trace } from '@/lib/api-types'
+import { atlasLayers, loadAtlas } from '@/lib/atlas'
 
 // Fast enough to resolve the lens phase, which decodes a layer roughly every
 // 90ms on gemma-2-2b: at 500ms the brain's depth sweep jumped in blocks of
@@ -12,10 +13,14 @@ const POLL_INTERVAL_MS = 150
 // user press Run again — the first load pulls gemma's weights and is slow.
 const WARMUP_RETRY_MS = 2000
 
-// The passes the trace job runs. The brain view reads `logit_lens` per
-// (token, layer), and the service writes no residual sidecar to enrich from
-// later, so the pass has to run inside the trace job or not at all.
-const REQUESTED_PASSES: TracePass[] = ['lens']
+// The passes the trace job runs. The service writes no residual sidecar to
+// enrich from later, so every pass has to run inside the trace job or not at
+// all — there is no second chance at these.
+//
+// `sae` fills the features the brain draws as nodes; `labels` names them;
+// `lens` fills the per-(token, layer) readout the grid classifies. `labels`
+// depends on `sae` and the service rejects the pair the other way round.
+const REQUESTED_PASSES: TracePass[] = ['sae', 'labels', 'lens']
 
 // `warming` is not a job state — no job exists yet, because /trace is still
 // answering 503 while gemma loads. Kept distinct from `pending` so the UI can
@@ -41,6 +46,26 @@ export function useTrace(): UseTraceResult {
   const [progress, setProgress] = useState<JobProgress | null>(null)
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const generationRef = useRef(0)
+
+  // Which layers to run the SAE pass on: the ones the atlas can actually
+  // place. Derived from the atlas rather than hardcoded, so a trace never
+  // reports features the map has nowhere to draw — and so this widens on its
+  // own when a fuller atlas is built, with nothing here to update.
+  //
+  // Null means "no atlas loaded", and then the request omits `sae_layers`
+  // entirely and the service runs every layer, which is the right default
+  // when there is no map to agree with.
+  const saeLayersRef = useRef<number[] | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    loadAtlas().then((atlas) => {
+      if (!cancelled && atlas) saeLayersRef.current = atlasLayers(atlas)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(
     () => () => {
@@ -78,7 +103,12 @@ export function useTrace(): UseTraceResult {
 
   const submit = useCallback(
     function submit(prompt: string, maxTokens: number, generation: number) {
-      postTrace({ prompt, max_tokens: maxTokens, passes: REQUESTED_PASSES })
+      postTrace({
+        prompt,
+        max_tokens: maxTokens,
+        passes: REQUESTED_PASSES,
+        sae_layers: saeLayersRef.current,
+      })
         .then((res) => {
           if (generation !== generationRef.current) return
           // A job exists now, so leave `warming` behind even before the first

@@ -1,7 +1,15 @@
 import { useMemo } from 'react'
 
+import {
+  CodeBlock,
+  CodeBlockCopyButton,
+  CodeBlockFilename,
+  CodeBlockHeader,
+  CodeBlockTitle,
+} from '@/components/ai-elements/code-block'
 import type { RunState } from '@/hooks/useTrace'
-import type { LayerState, TokenStep, Trace } from '@/lib/api-types'
+import { API_BASE_URL } from '@/lib/api-client'
+import type { Feature, LayerState, TokenStep, TopToken, Trace } from '@/lib/api-types'
 
 type TraceViewerProps = {
   trace: Trace | null
@@ -26,56 +34,164 @@ function formatNumber(value: number, digits = 2): string {
   return new Intl.NumberFormat('en-US', { maximumFractionDigits: digits }).format(value)
 }
 
-function heatColor(value: number, maximum: number): { backgroundColor: string; color: string } {
+/**
+ * The residual-magnitude ramp: one hue, `syntax-func`, from the code surface
+ * up to the accent itself.
+ *
+ * Single-hue on purpose. A rainbow ramp invents colours the palette does not
+ * contain and implies category boundaries where there is only a continuous L2
+ * norm. The exact endpoints are printed beside the map, because a colour a
+ * reader cannot convert back to a number is decoration.
+ */
+function heatColor(value: number, maximum: number): { backgroundColor: string } {
   const ratio = maximum > 0 ? Math.min(value / maximum, 1) : 0
   return {
-    backgroundColor: `hsl(${233 - ratio * 173} 72% ${13 + ratio * 40}%)`,
-    color: ratio > 0.56 ? 'white' : 'hsl(220 30% 88%)',
+    backgroundColor: `hsl(220.8 ${(10 + ratio * 90).toFixed(1)}% ${(9 + ratio * 66.5).toFixed(1)}%)`,
   }
 }
 
-function StatusCopy({ status, error }: Pick<TraceViewerProps, 'status' | 'error'>) {
-  if (error) return <p className="text-sm text-rose-300">Could not load a trace: {error}</p>
+/**
+ * A quantity drawn to scale in the character cell: a 1px rule inside a
+ * `ch`-measured track.
+ *
+ * Not block glyphs (`█▉▊`) — every partial cell caps differently and the run
+ * stacks into a chunky rectangle that reads as a rendering artefact. The width
+ * is computed from the real value with a small floor, so a near-zero row still
+ * prints a mark instead of vanishing.
+ */
+function Bar({ accent = false, ratio }: { accent?: boolean; ratio: number }) {
+  const width = Math.max(Math.min(ratio, 1), 0.02) * 100
+  return (
+    <span aria-hidden="true" className="inline-block w-[8ch] shrink-0 align-middle">
+      <span
+        className={`block h-px ${accent ? 'bg-fn' : 'bg-rule'}`}
+        style={{ width: `${width.toFixed(1)}%` }}
+      />
+    </span>
+  )
+}
+
+/** Term left, value right, hairline between. The shape a card grid replaced. */
+function Facts({ rows }: { rows: [string, string][] }) {
+  return (
+    <dl className="divide-border-subtle divide-y">
+      {rows.map(([term, value]) => (
+        <div className="flex items-baseline justify-between gap-4 py-1.5" key={term}>
+          <dt className="text-text-tertiary text-[12px]">{term}</dt>
+          <dd className="text-text-primary font-mono text-[12px] tabular-nums">{value}</dd>
+        </div>
+      ))}
+    </dl>
+  )
+}
+
+const REQUEST_SNIPPET = (base: string) => `# The request this page makes. \`passes\` is what paints the brain: without
+# "lens" you get the capture and no per-layer readouts to colour it with.
+curl -sS ${base}/trace \\
+  -H 'content-type: application/json' \\
+  -d '{"prompt":"The capital of France is","max_tokens":20,"passes":["lens"]}'
+
+# -> {"job_id":"..."}  — the job runs in the background; poll it until
+#    "status" is "done", then read "trace.steps[].layers[].logit_lens".
+curl -sS ${base}/trace/"$JOB_ID"`
+
+function StatusLine({ status, error }: Pick<TraceViewerProps, 'status' | 'error'>) {
+  if (error) {
+    return (
+      <div className="border-err/40 bg-err/[0.06] rounded-[10px] border p-3" role="alert">
+        <p className="text-err text-[13px] font-medium">The trace service did not return a run.</p>
+        <p className="text-text-secondary mt-1 text-[13px] leading-6">
+          {error} Start the backend with <span className="text-text-primary font-mono">make dev</span>{' '}
+          and check that it is bound to{' '}
+          <span className="text-text-primary font-mono">{API_BASE_URL}</span>.
+        </p>
+      </div>
+    )
+  }
+
   if (status === 'warming' || status === 'pending' || status === 'running') {
     const copy = {
       // No job exists yet in this one — the service is still answering 503.
-      warming: 'Loading Gemma — the first load pulls its weights and is slow…',
-      pending: 'Trace queued…',
-      running: 'Running Gemma and capturing every layer…',
+      warming: 'Loading gemma-2-2b — the first load pulls its weights and is slow.',
+      pending: 'Trace queued.',
+      running: 'Running the model and capturing every layer.',
     }[status]
     return (
-      <p className="text-sm text-cyan-100/80" role="status">
+      <p className="text-text-secondary text-[13px]" role="status">
+        <span aria-hidden="true" className="bg-const mr-2 inline-block size-1.5 rounded-full" />
         {copy}
       </p>
     )
   }
+
   return null
 }
 
-function EmptyState({ status, error }: Pick<TraceViewerProps, 'status' | 'error'>) {
+/**
+ * The shape of the grid that is coming, at the size it will be, so nothing
+ * shifts when it arrives. Hairline blocks, not a spinner over an empty region.
+ */
+function GridSkeleton() {
   return (
-    <main className="flex min-h-full items-center justify-center px-2 py-10">
-      <section className="max-w-2xl text-center">
-        <p className="mb-4 text-xs font-medium tracking-[0.26em] text-cyan-200/70 uppercase">
-          MechLens · Gemma 2 2B
-        </p>
-        <h1 className="font-heading text-4xl leading-tight text-white sm:text-6xl">
-          Watch a model run take shape.
-        </h1>
-        <p className="mx-auto mt-5 max-w-xl text-base leading-7 text-slate-300 sm:text-lg">
-          Send a prompt to inspect its token sequence, next-token predictions, and residual-stream
-          magnitude across all transformer layers.
-        </p>
-        <div className="mx-auto mt-10 grid max-w-lg grid-cols-3 gap-2 text-left text-xs text-slate-300">
-          {['tokens', '26 layers', 'residual stream'].map((label) => (
-            <div key={label} className="rounded-xl border border-white/10 bg-white/5 p-3">
-              {label}
-            </div>
+    <div aria-hidden="true" className="space-y-1 opacity-40">
+      {Array.from({ length: 8 }, (_, row) => (
+        <div className="flex gap-1" key={row}>
+          <div className="bg-bg-surface h-4 w-10 rounded-xs" />
+          {Array.from({ length: 12 }, (_, cell) => (
+            <div className="bg-bg-surface h-4 flex-1 rounded-xs" key={cell} />
           ))}
         </div>
-        <div className="mt-7 min-h-5">
-          <StatusCopy error={error} status={status} />
+      ))}
+    </div>
+  )
+}
+
+/**
+ * What is not here, why, and the command that changes it — in a block that can
+ * actually be copied and run. No illustration, no fabricated dashboard, and no
+ * claim the page cannot currently back with data.
+ */
+function EmptyState({ status, error }: Pick<TraceViewerProps, 'status' | 'error'>) {
+  const isWorking = status === 'warming' || status === 'pending' || status === 'running'
+
+  return (
+    <main className="enter flex min-h-full items-start justify-center py-6">
+      <section className="w-full max-w-2xl">
+        <p className="text-text-tertiary text-[11px] font-medium tracking-[0.04em] uppercase">
+          mechlens · gemma-2-2b · 26 layers
+        </p>
+        <h1 className="text-text-primary mt-3 text-[28px] leading-[1.1] font-semibold sm:text-[36px]">
+          No trace loaded.
+        </h1>
+        <p className="text-text-secondary mt-4 max-w-[70ch] text-[15px] leading-[1.6]">
+          Send a prompt below and the service runs it through gemma-2-2b, keeping the residual
+          stream at every layer and decoding each layer with the logit lens. What comes back is the
+          token sequence, the next-token distribution at each step, and the L2 norm of the residual
+          at all 26 layers × every position.
+        </p>
+
+        <div className="mt-8">
+          <Facts
+            rows={[
+              ['model', 'gemma-2-2b'],
+              ['layers captured', '26'],
+              ['enrichment passes', 'lens'],
+              ['api', API_BASE_URL],
+            ]}
+          />
         </div>
+
+        {/* Reserved either way, so the block below never pushes the page when a
+            status arrives. */}
+        <div className="mt-6 min-h-6">
+          <StatusLine error={error} status={status} />
+        </div>
+
+        {isWorking ? (
+          <div className="mt-6">
+            <GridSkeleton />
+          </div>
+        ) : null}
       </section>
     </main>
   )
@@ -91,26 +207,28 @@ function TokenStrip({
   onSelect: (position: number) => void
 }) {
   return (
-    <div className="overflow-x-auto pb-2">
+    <div className="mask-fade-r overflow-x-auto pb-2 [-webkit-overflow-scrolling:touch]">
       <div className="flex min-w-max gap-1">
         {steps.map((step) => {
           const isSelected = step.step === selectedPosition
           const tone = isSelected
-            ? 'border-cyan-300 bg-cyan-300/20 text-cyan-50'
+            ? 'border-fn bg-fn/[0.08] text-text-primary'
             : step.token.source === 'generated'
-              ? 'border-violet-300/30 bg-violet-300/10 text-violet-100 hover:bg-violet-300/20'
-              : 'border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'
+              ? 'border-kw/30 text-kw hover:border-kw/60'
+              : 'border-border-subtle text-text-secondary hover:border-border-strong'
 
           return (
             <button
               aria-label={`Select token ${step.step}: ${step.token.text || 'empty token'}`}
               aria-pressed={isSelected}
-              className={`rounded-lg border px-2 py-1.5 font-mono text-xs transition ${tone}`}
+              className={`rounded-sm border px-2 py-1.5 font-mono text-[12px] transition-colors duration-150 ${tone}`}
               key={step.step}
               onClick={() => onSelect(step.step)}
               type="button"
             >
-              <span className="mr-1 text-[10px] text-current/60">{step.step}</span>
+              <span className="text-text-disabled mr-1.5 text-[10px] tabular-nums">
+                {step.step}
+              </span>
               {visibleToken(step.token.text)}
             </button>
           )
@@ -120,84 +238,115 @@ function TokenStrip({
   )
 }
 
-function PredictionList({ title, step }: { title: string; step: TokenStep }) {
+/**
+ * A ranked distribution: rank, token, the probability drawn to scale, the
+ * probability as a number. The accent marks rank 1 and nothing else.
+ */
+function Distribution({ tokens }: { tokens: TopToken[] }) {
   return (
-    <section className="rounded-xl border border-white/10 bg-slate-950/50 p-4">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <h3 className="text-xs font-medium tracking-[0.16em] text-slate-400 uppercase">{title}</h3>
-        <span className="text-xs text-slate-400">H {formatNumber(step.logits.entropy)}</span>
+    <ol className="divide-border-subtle divide-y font-mono text-[12px]">
+      {tokens.slice(0, 5).map((token, index) => (
+        <li className="flex items-center gap-2 py-1.5" key={token.token_id}>
+          <span className="text-text-disabled w-3 shrink-0 text-right tabular-nums">
+            {index + 1}
+          </span>
+          <code className={`min-w-0 flex-1 truncate ${index === 0 ? 'text-fn' : 'text-text-primary'}`}>
+            {visibleToken(token.text)}
+          </code>
+          <Bar accent={index === 0} ratio={token.prob} />
+          <span className="text-text-secondary w-12 shrink-0 text-right tabular-nums">
+            {(token.prob * 100).toFixed(1)}%
+          </span>
+        </li>
+      ))}
+    </ol>
+  )
+}
+
+function Panel({
+  children,
+  note,
+  title,
+}: {
+  children: React.ReactNode
+  note?: string
+  title: string
+}) {
+  return (
+    <section className="border-border-subtle bg-bg-surface rounded-[12px] border p-3">
+      <div className="mb-2 flex items-baseline justify-between gap-3">
+        <h3 className="text-text-tertiary text-[11px] font-medium tracking-[0.04em] uppercase">
+          {title}
+        </h3>
+        {note ? (
+          <span className="text-text-tertiary font-mono text-[11px] tabular-nums">{note}</span>
+        ) : null}
       </div>
-      <ol className="space-y-2">
-        {step.logits.top_k.slice(0, 5).map((token, index) => (
-          <li className="flex items-center gap-3 text-sm" key={token.token_id}>
-            <span className="w-4 text-right font-mono text-xs text-slate-500">{index + 1}</span>
-            <code className="min-w-0 flex-1 truncate text-cyan-100">{visibleToken(token.text)}</code>
-            <span className="font-mono text-xs text-slate-300">{(token.prob * 100).toFixed(1)}%</span>
-          </li>
-        ))}
-      </ol>
+      {children}
     </section>
+  )
+}
+
+function FeatureList({ features }: { features: Feature[] }) {
+  const maximum = Math.max(...features.map((feature) => feature.activation), 0)
+  return (
+    <ol className="divide-border-subtle divide-y font-mono text-[12px]">
+      {features.slice(0, 8).map((feature) => (
+        <li className="flex items-center gap-2 py-1.5" key={feature.index}>
+          <span className="text-text-primary w-16 shrink-0">#{feature.index}</span>
+          <Bar ratio={maximum > 0 ? feature.activation / maximum : 0} />
+          <span className="text-text-secondary flex-1 text-right tabular-nums">
+            {formatNumber(feature.activation)}
+          </span>
+        </li>
+      ))}
+    </ol>
   )
 }
 
 function SelectedCell({ state, step }: { state: LayerState; step: TokenStep }) {
   return (
     <div className="space-y-3">
-      <section className="rounded-xl border border-cyan-300/20 bg-cyan-300/5 p-4">
-        <p className="text-xs font-medium tracking-[0.16em] text-cyan-100/70 uppercase">Selected state</p>
-        <div className="mt-3 grid grid-cols-3 gap-3 text-sm">
-          <div>
-            <p className="text-xs text-slate-400">Layer</p>
-            <p className="mt-1 font-mono text-white">{state.layer}</p>
-          </div>
-          <div>
-            <p className="text-xs text-slate-400">Token</p>
-            <p className="mt-1 font-mono text-white">{step.step}</p>
-          </div>
-          <div>
-            <p className="text-xs text-slate-400">Residual norm</p>
-            <p className="mt-1 font-mono text-white">{formatNumber(state.resid_norm)}</p>
-          </div>
+      <section className="border-fn/30 bg-fn/[0.05] rounded-[12px] border p-3">
+        <h3 className="text-text-tertiary text-[11px] font-medium tracking-[0.04em] uppercase">
+          Selected state
+        </h3>
+        <div className="mt-2">
+          <Facts
+            rows={[
+              ['layer', `L${state.layer}`],
+              ['token', `${step.step} · ${visibleToken(step.token.text)}`],
+              ['residual L2 norm', formatNumber(state.resid_norm)],
+              ['sae l0', state.l0 === null ? 'not computed' : formatNumber(state.l0)],
+            ]}
+          />
         </div>
       </section>
 
       {state.logit_lens ? (
-        <section className="rounded-xl border border-white/10 bg-slate-950/50 p-4">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <h3 className="text-xs font-medium tracking-[0.16em] text-slate-400 uppercase">Layer readout</h3>
-            <span className="text-xs text-slate-400">H {formatNumber(state.logit_lens.entropy)}</span>
-          </div>
-          <ol className="space-y-2">
-            {state.logit_lens.top_k.slice(0, 5).map((token, index) => (
-              <li className="flex items-center gap-3 text-sm" key={token.token_id}>
-                <span className="w-4 text-right font-mono text-xs text-slate-500">{index + 1}</span>
-                <code className="min-w-0 flex-1 truncate text-cyan-100">{visibleToken(token.text)}</code>
-                <span className="font-mono text-xs text-slate-300">{(token.prob * 100).toFixed(1)}%</span>
-              </li>
-            ))}
-          </ol>
-        </section>
+        <Panel note={`H ${formatNumber(state.logit_lens.entropy)}`} title="Layer readout">
+          <Distribution tokens={state.logit_lens.top_k} />
+        </Panel>
       ) : (
-        <section className="rounded-xl border border-dashed border-white/15 bg-white/[0.02] p-4 text-sm leading-6 text-slate-400">
-          Layer readouts arrive when the API runs the logit-lens enrichment pass. This connected
-          view is showing the capture data currently returned by <code className="text-slate-300">POST /trace</code>.
+        <section className="border-border-subtle bg-bg-surface rounded-[12px] border border-dashed p-3">
+          <h3 className="text-text-tertiary text-[11px] font-medium tracking-[0.04em] uppercase">
+            Layer readout
+          </h3>
+          <p className="text-text-secondary mt-2 text-[13px] leading-[1.55]">
+            This layer has no logit-lens readout, so there is nothing to decode here. The lens pass
+            did not run for it — request it with{' '}
+            <code className="border-border-subtle bg-bg-elevated text-text-primary rounded-xs border px-1 py-0.5 font-mono text-[12px]">
+              "passes": ["lens"]
+            </code>
+            .
+          </p>
         </section>
       )}
 
       {state.features.length > 0 ? (
-        <section className="rounded-xl border border-white/10 bg-slate-950/50 p-4">
-          <h3 className="mb-3 text-xs font-medium tracking-[0.16em] text-slate-400 uppercase">
-            Active SAE features
-          </h3>
-          <ol className="space-y-2">
-            {state.features.slice(0, 8).map((feature) => (
-              <li className="flex justify-between gap-3 font-mono text-xs" key={feature.index}>
-                <span className="text-cyan-100">#{feature.index}</span>
-                <span className="text-slate-300">{formatNumber(feature.activation)}</span>
-              </li>
-            ))}
-          </ol>
-        </section>
+        <Panel note={`${state.features.length} active`} title="SAE features">
+          <FeatureList features={state.features} />
+        </Panel>
       ) : null}
     </div>
   )
@@ -216,6 +365,11 @@ export function TraceViewer({
     return Math.max(...trace.steps.flatMap((step) => step.layers.map((layer) => layer.resid_norm)))
   }, [trace])
 
+  const minimumResidualNorm = useMemo(() => {
+    if (!trace) return 0
+    return Math.min(...trace.steps.flatMap((step) => step.layers.map((layer) => layer.resid_norm)))
+  }, [trace])
+
   if (!trace || trace.steps.length === 0 || selection === null) {
     return <EmptyState error={error} status={status} />
   }
@@ -223,32 +377,54 @@ export function TraceViewer({
   const currentSelection = selection
   const selectedStep = trace.steps[currentSelection.position]
   const selectedState = selectedStep?.layers[currentSelection.layer]
-  const gridColumns = `4.75rem repeat(${trace.steps.length}, minmax(2.5rem, 1fr))`
+  const gridColumns = `4rem repeat(${trace.steps.length}, minmax(2rem, 1fr))`
 
   if (!selectedStep || !selectedState) {
     return <EmptyState error="The selected trace state is unavailable." status="error" />
   }
 
   return (
-    <main className="min-h-full">
+    <main className="enter min-h-full">
       <div className="space-y-4">
-        <header className="flex flex-col justify-between gap-3 rounded-2xl border border-white/10 bg-slate-950/60 p-4 backdrop-blur sm:flex-row sm:items-center">
+        <header className="border-border-subtle flex flex-col justify-between gap-3 border-b pb-4 sm:flex-row sm:items-end">
           <div>
-            <p className="text-xs font-medium tracking-[0.2em] text-cyan-200/70 uppercase">Trace explorer</p>
-            <h1 className="mt-1 text-lg font-medium text-white">{trace.model}</h1>
+            <p className="text-text-tertiary text-[11px] font-medium tracking-[0.04em] uppercase">
+              Trace explorer
+            </p>
+            <h1 className="text-text-primary mt-1 text-[22px] leading-[1.2] font-semibold">
+              {trace.model}
+            </h1>
+            <p className="text-text-tertiary mt-1 font-mono text-[11px]">
+              {trace.trace_id} · {trace.device} · {trace.dtype}
+            </p>
           </div>
-          <dl className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-slate-400">
-            <div><dt className="inline">tokens </dt><dd className="inline font-mono text-slate-200">{trace.steps.length}</dd></div>
-            <div><dt className="inline">layers </dt><dd className="inline font-mono text-slate-200">{trace.n_layers}</dd></div>
-            <div><dt className="inline">generated </dt><dd className="inline font-mono text-slate-200">{trace.n_generated_tokens}</dd></div>
-            <div><dt className="inline">capture </dt><dd className="inline font-mono text-slate-200">{formatNumber(trace.elapsed_s)}s</dd></div>
+          <dl className="text-text-tertiary flex flex-wrap gap-x-5 gap-y-1 text-[12px]">
+            {(
+              [
+                ['tokens', String(trace.steps.length)],
+                ['layers', String(trace.n_layers)],
+                ['d_model', String(trace.d_model)],
+                ['generated', String(trace.n_generated_tokens)],
+                ['capture', `${formatNumber(trace.elapsed_s)}s`],
+              ] as [string, string][]
+            ).map(([term, value]) => (
+              <div key={term}>
+                <dt className="inline">{term} </dt>
+                <dd className="text-text-primary inline font-mono tabular-nums">{value}</dd>
+              </div>
+            ))}
           </dl>
         </header>
 
-        <section className="rounded-2xl border border-white/10 bg-slate-950/60 p-4 backdrop-blur">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <h2 className="text-xs font-medium tracking-[0.16em] text-slate-400 uppercase">Token sequence</h2>
-            <span className="text-xs text-slate-500">violet = generated</span>
+        <section>
+          <div className="mb-2 flex items-baseline justify-between gap-3">
+            <h2 className="text-text-tertiary text-[11px] font-medium tracking-[0.04em] uppercase">
+              Token sequence
+            </h2>
+            <span className="text-text-tertiary flex items-center gap-1.5 text-[11px]">
+              <span aria-hidden="true" className="bg-kw size-1.5 rounded-full" />
+              generated
+            </span>
           </div>
           <TokenStrip
             onSelect={onSelectPosition}
@@ -258,63 +434,103 @@ export function TraceViewer({
         </section>
 
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
-          <section className="overflow-hidden rounded-2xl border border-white/10 bg-slate-950/60 backdrop-blur">
-            <div className="flex flex-col justify-between gap-1 border-b border-white/10 p-4 sm:flex-row sm:items-center">
-              <div>
-                <h2 className="text-sm font-medium text-white">Residual-stream map</h2>
-                <p className="mt-1 text-xs text-slate-400">Colour intensity is the captured L2 norm at each layer and token.</p>
+          {/* The same frame the brain gets: outer 16, inner 12, 4px gap. It
+              wraps what the reader looks into and nothing else. */}
+          <div className="border-border-subtle min-w-0 rounded-[16px] border bg-[#0D0E11] p-1">
+            <section className="border-border-subtle bg-bg-surface overflow-hidden rounded-[12px] border">
+              <div className="border-border-subtle flex flex-col justify-between gap-2 border-b p-3 sm:flex-row sm:items-center">
+                <div>
+                  <h2 className="text-text-primary text-[13px] font-medium">Residual-stream map</h2>
+                  <p className="text-text-tertiary mt-1 text-[12px]">
+                    L2 norm of the residual at each layer and token, as captured.
+                  </p>
+                </div>
+                {/* The ramp with its endpoints as numbers: a colour nobody can
+                    convert back to a value is decoration. */}
+                <div className="text-text-tertiary flex shrink-0 items-center gap-2 font-mono text-[11px] tabular-nums">
+                  <span>{formatNumber(minimumResidualNorm)}</span>
+                  <span aria-hidden="true" className="flex h-2.5 w-24">
+                    {Array.from({ length: 12 }, (_, step) => (
+                      <span
+                        className="flex-1"
+                        key={step}
+                        style={heatColor(step / 11, 1)}
+                      />
+                    ))}
+                  </span>
+                  <span>{formatNumber(maximumResidualNorm)}</span>
+                </div>
               </div>
-              <span className="text-xs text-slate-500">input → output</span>
-            </div>
-            <div className="max-h-[58vh] overflow-auto p-3">
-              <div className="min-w-max" style={{ display: 'grid', gridTemplateColumns: gridColumns }}>
-                <div className="sticky left-0 z-10 bg-slate-950 px-2 py-2 text-right text-[10px] font-medium tracking-wide text-slate-500 uppercase">layer</div>
-                {trace.steps.map((step) => (
-                  <button
-                    aria-label={`Select token ${step.step}`}
-                    className={`border-b border-white/5 px-1 py-2 font-mono text-[10px] ${step.step === currentSelection.position ? 'bg-cyan-300/10 text-cyan-100' : 'text-slate-500'}`}
-                    key={step.step}
-                    onClick={() => onSelectPosition(step.step)}
-                    type="button"
-                  >
-                    {step.step}
-                  </button>
-                ))}
-
-                {Array.from({ length: trace.n_layers }, (_, layer) => (
-                  <div className="contents" key={layer}>
-                    <div className="sticky left-0 z-10 border-b border-white/5 bg-slate-950 px-2 py-1 text-right font-mono text-[10px] text-slate-500">L{layer}</div>
-                    {trace.steps.map((step) => {
-                      const state = step.layers[layer]
-                      const isSelected = currentSelection.layer === layer && currentSelection.position === step.step
-                      return (
-                        <button
-                          aria-label={`Layer ${layer}, token ${step.step}, residual norm ${formatNumber(state.resid_norm)}`}
-                          aria-pressed={isSelected}
-                          className={`m-px min-h-8 rounded-sm border transition hover:scale-110 hover:border-white/80 focus-visible:z-20 focus-visible:outline-2 focus-visible:outline-cyan-200 ${isSelected ? 'z-10 border-cyan-100 ring-2 ring-cyan-300/70' : 'border-transparent'}`}
-                          key={`${layer}-${step.step}`}
-                          onClick={() => onSelectCell(layer, step.step)}
-                          style={heatColor(state.resid_norm, maximumResidualNorm)}
-                          type="button"
-                        >
-                          <span className="sr-only">{formatNumber(state.resid_norm)}</span>
-                        </button>
-                      )
-                    })}
+              <div className="mask-fade-b max-h-[58vh] overflow-auto p-3">
+                <div className="min-w-max" style={{ display: 'grid', gridTemplateColumns: gridColumns }}>
+                  <div className="bg-bg-surface text-text-tertiary sticky left-0 z-10 px-2 py-2 text-right text-[10px] font-medium tracking-[0.04em] uppercase">
+                    layer
                   </div>
-                ))}
-              </div>
-            </div>
-          </section>
+                  {trace.steps.map((step) => (
+                    <button
+                      aria-label={`Select token ${step.step}`}
+                      className={`border-border-subtle border-b px-1 py-2 font-mono text-[10px] tabular-nums transition-colors duration-150 ${
+                        step.step === currentSelection.position
+                          ? 'text-fn'
+                          : 'text-text-disabled hover:text-text-secondary'
+                      }`}
+                      key={step.step}
+                      onClick={() => onSelectPosition(step.step)}
+                      type="button"
+                    >
+                      {step.step}
+                    </button>
+                  ))}
 
-          <aside className="space-y-4">
+                  {Array.from({ length: trace.n_layers }, (_, layer) => (
+                    <div className="contents" key={layer}>
+                      <div className="bg-bg-surface border-border-subtle text-text-disabled sticky left-0 z-10 border-b px-2 py-1 text-right font-mono text-[10px] tabular-nums">
+                        L{layer}
+                      </div>
+                      {trace.steps.map((step) => {
+                        const state = step.layers[layer]
+                        const isSelected =
+                          currentSelection.layer === layer &&
+                          currentSelection.position === step.step
+                        return (
+                          <button
+                            aria-label={`Layer ${layer}, token ${step.step}, residual norm ${formatNumber(state.resid_norm)}`}
+                            aria-pressed={isSelected}
+                            className={`m-px min-h-7 rounded-xs border transition-colors duration-150 ${
+                              isSelected
+                                ? 'border-text-primary z-10'
+                                : 'hover:border-border-strong border-transparent'
+                            }`}
+                            key={`${layer}-${step.step}`}
+                            onClick={() => onSelectCell(layer, step.step)}
+                            style={heatColor(state.resid_norm, maximumResidualNorm)}
+                            type="button"
+                          >
+                            <span className="sr-only">{formatNumber(state.resid_norm)}</span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <aside className="space-y-3">
             <SelectedCell state={selectedState} step={selectedStep} />
-            <PredictionList step={selectedStep} title="Actual next-token distribution" />
+            <Panel
+              note={`H ${formatNumber(selectedStep.logits.entropy)}`}
+              title="Next-token distribution"
+            >
+              <Distribution tokens={selectedStep.logits.top_k} />
+            </Panel>
           </aside>
         </div>
 
-        <p className="px-1 text-xs leading-5 text-slate-500">
-          This view shows observed model states. Residual magnitude is not a semantic score or a causal explanation.
+        <p className="text-text-tertiary max-w-[70ch] text-[12px] leading-[1.5]">
+          This view shows observed model states. Residual magnitude is not a semantic score or a
+          causal explanation.
         </p>
       </div>
     </main>

@@ -102,6 +102,78 @@ class JobStatusResponse(BaseModel):
     progress: JobProgressResponse | None = None
 
 
+class AtlasNodes(BaseModel):
+    """The node table, transposed and quantised.
+
+    Column-wise rather than a list of objects because it is the same four
+    values repeated ~98,000 times: `[{"layer":0,"feature":0,...}, ...]` spends
+    most of its bytes on repeated key names. `xyz` is flat int16 triples over
+    `extent` — the quantisation error is far below a pixel at any camera
+    distance and it halves the payload. Identical to the idle asset's shape,
+    deliberately: one wire format, one parser on the client.
+    """
+
+    layer: list[int]
+    feature: list[int]
+    cluster: list[int]
+    xyz: list[int]
+
+
+class AtlasArea(BaseModel):
+    """One cluster of the atlas.
+
+    `name` is null whenever the naming was not earned, and that is a
+    measurement outcome to be shown rather than a gap to be filled — the build
+    names a cluster only when its members' label coherence beats its own random
+    baseline by the recorded margin. `coherence` and `baseline_coherence` are
+    carried so a consumer can say *how* it was earned or missed, and a null
+    coherence ("never measured") stays distinct from a low one ("measured, and
+    it lost").
+    """
+
+    cluster: int
+    name: str | None = None
+    n_members: int
+    centroid: tuple[float, float, float]
+    spread: float
+    coherence: float | None = None
+    baseline_coherence: float | None = None
+    explainers: str = ""
+
+
+class AtlasResponse(BaseModel):
+    """The atlas as the brain consumes it.
+
+    Field names match `build_feature_atlas.py`'s idle asset rather than this
+    module's usual style, because the client parses both with one function: the
+    static asset is what the brain draws before a trace exists, and this is the
+    same atlas served whole. A second shape here would mean a second parser and
+    two ways for them to disagree.
+    """
+
+    atlas_version: str
+    source: str
+    note: str
+    # The atlas's own fidelity, carried so the interface can publish how much
+    # of the original neighbourhood structure survived instead of asking the
+    # reader to trust the picture. None means not measured — never 0.
+    knn_preservation: float | None = None
+    knn_k: float | None = None
+    explainer_ami: float | None = None
+    # Identity, so a trace drawn against a different atlas is detectable.
+    positions_sha256: str
+    release: str
+    width: str
+    seed: int
+    layers: str = ""
+    extent: float
+    quantisation: str = "int16, position = value / 32767 * extent"
+    n_sampled: int
+    n_total: int
+    nodes: AtlasNodes
+    areas: list[AtlasArea] = Field(default_factory=list)
+
+
 class FeatureResponse(BaseModel):
     layer: int
     feature_idx: int

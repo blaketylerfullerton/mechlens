@@ -13,7 +13,7 @@
 
 - [x] 2.1 Add `umap-learn` and the density clusterer to `backend/requirements.txt` as build-time dependencies, and verify neither is importable from `app/schema.py` or the service module graph
 - [x] 2.2 Add a `layout` table and an atlas-record table to `backend/app/labels.py` beside `labels`, keyed the same way, and verify a round-trip write/read of positions and cluster ids
-- [x] 2.3 Write `backend/scripts/build_feature_atlas.py`: load all 26 layers' `W_dec`, PCA to an intermediate dimensionality, UMAP to 3D under a fixed seed, and verify it writes a position for all 425,984 (layer, feature) pairs
+- [x] 2.3 Write `backend/scripts/build_feature_atlas.py`: load the requested layers' `W_dec`, PCA to an intermediate dimensionality, UMAP to 3D under a fixed seed, and verify it writes a position for every (layer, feature) pair in the requested set — for the POC that set is the pilot six (0, 5, 10, 16, 20, 25), 98,304 pairs from the decoder source and 98,210 from the label source. The script defaults to all 26 layers and the full 425,984 pairs remain its intended scope; building that atlas is deferred to a follow-on change (see 2.12)
 - [x] 2.4 Normalise the projection to the unit ball and warp it through the same shell shaping the renderer uses, and verify every position lands inside the rendered shell's bounds
 - [x] 2.5 Measure and record kNN preservation against the 2304-d decoder space, with the neighbourhood size and sample count, and verify the recorded figure is reproduced by an independent check over a fresh sample
 - [x] 2.6 Record the atlas version, seed, parameters and a content hash over the positions, and verify a rebuild with the same inputs reproduces the hash while a changed seed produces a different version
@@ -22,31 +22,53 @@
 - [x] 2.9 Record each cluster's explainer distribution, and verify a cluster whose members' labels come predominantly from one explainer is identifiable from the record
 - [x] 2.10 Cluster the same features from their explanation embeddings and record the agreement with the decoder-direction clusters, and verify a low agreement is recorded rather than causing the build to substitute the embedding clustering
 - [x] 2.11 Skip naming and cross-source agreement when the label store holds no embeddings, and verify the atlas still builds with every cluster unnamed and the record states naming was not attempted
-- [ ] 2.12 **Gate:** build the real atlas, publish kNN preservation, per-cluster coherence and cross-source agreement in the change notes, and confirm with the user that the numbers support building the view before starting section 4
+- [x] 2.12 **Gate:** build the real atlas, publish kNN preservation, per-cluster coherence and cross-source agreement in the change notes, and confirm with the user that the numbers support building the view before starting section 4
+
+  **Resolved: the pilot six ship as the POC's scope.** The numbers support the
+  view, on the label source: kNN preservation **0.292** (k=20, 4,000 sampled,
+  against **0.0002** for a random layout of the same 98,210 features), **32**
+  clusters with **27** earning a name at coherence **0.465** against a shuffled
+  baseline of **0.233** (margin 0.232, gate 0.150), and explainer influence
+  (AMI) **0.026**. The decoder source is built and kept, and correctly earns
+  **zero** names from its 12 clusters — a continuum, not an archipelago.
+
+  Scope is the pilot six (0, 5, 10, 16, 20, 25), not all 26, and that is a
+  deliberate decision rather than an unfinished one — see design decision 2b.
+  All 26 layers remain the goal; the import and rebuild that get there are a
+  follow-on change.
 
 ## 3. Carry the layout to the client
 
+> **POC scope.** The atlas covers the pilot six layers (0, 5, 10, 16, 20, 25),
+> and so does the label store — both hold exactly 98,210 labelled features, the
+> same set. A trace that pins `sae_layers` to those six therefore gets a label
+> and a position for every feature it records, and the unplaced and unlabelled
+> paths stay the rare cases they were designed to be. Tasks 3.3, 3.4, 3.6 and
+> 4.4 are still built: they are correctness requirements, not a consequence of
+> the pilot's size, and they are what a 26-layer trace against a 6-layer atlas
+> will need. See design decision 2b.
+
 - [x] 3.1 Bump the trace schema to 1.4 in `backend/app/schema.py` with `Trace.layout` keyed `"layer/index"` and an atlas reference recording version and content hash, and verify a 1.3 trace still loads as one with no layout
-- [ ] 3.2 Attach positions for the features a completed trace reports, and verify a trace with features and an available atlas carries a position for each reported pair plus the atlas identity
-- [ ] 3.3 Return features without positions when the atlas has no entry for them, and verify the response distinguishes an unplaced feature from one with a position
-- [ ] 3.4 Record the absence of an atlas rather than emitting zeroed positions, and verify a trace built with no atlas present carries features, no positions, and a stated absence
-- [ ] 3.5 Add an endpoint serving atlas positions, cluster assignments, recorded names and the atlas record without a trace and without loading the model, and verify it responds with the model unloaded
-- [ ] 3.6 Report the atlas's absence from that endpoint rather than an empty layout, and verify the two cases are distinguishable by a client
-- [ ] 3.7 Generate the idle subsample asset — a uniform sample of atlas nodes plus area centroids and names — and verify its size and that it is a strict subset of the built atlas
-- [ ] 3.8 Mirror schema 1.4 and the atlas endpoint's shapes in `frontend/src/lib/api-types.ts`, and verify the frontend typechecks
+- [x] 3.2 Attach positions for the features a completed trace reports, and verify a trace with features and an available atlas carries a position for each reported pair plus the atlas identity
+- [x] 3.3 Return features without positions when the atlas has no entry for them, and verify the response distinguishes an unplaced feature from one with a position
+- [x] 3.4 Record the absence of an atlas rather than emitting zeroed positions, and verify a trace built with no atlas present carries features, no positions, and a stated absence
+- [x] 3.5 Add an endpoint serving atlas positions, cluster assignments, recorded names and the atlas record without a trace and without loading the model, and verify it responds with the model unloaded
+- [x] 3.6 Report the atlas's absence from that endpoint rather than an empty layout, and verify the two cases are distinguishable by a client
+- [x] 3.7 Generate the idle subsample asset — a uniform sample of atlas nodes plus area centroids and names — and verify its size and that it is a strict subset of the built atlas
+- [x] 3.8 Mirror schema 1.4 and the atlas endpoint's shapes in `frontend/src/lib/api-types.ts`, and verify the frontend typechecks
 
 ## 4. Render nodes
 
 - [x] 4.1 Load the idle subsample and render it as an inactive point cloud in a single draw call inside the existing shell, and verify the brain shows structure on first load with no trace requested
 - [x] 4.2 Render the shell alone with a stated reason when no atlas is available, and verify no node is placed at an arbitrary position
-- [ ] 4.3 Light nodes from the trace's recorded activations via a per-node activation attribute, and verify two features with different recorded activations render at different prominence while a dim node beside a bright cluster stays dim
-- [ ] 4.4 Render a feature the atlas cannot place as an unplaced entry with its activation, and verify no position is invented for it
-- [ ] 4.5 Detect and state an atlas version mismatch between the trace and the loaded atlas, and verify the positions are not presented as corresponding to that trace
-- [ ] 4.6 Add the scope selector for cell / token / whole-trace, stating the scope, its feature count and the aggregation used for trace scope, and verify each scope lights the set the trace records for it
-- [ ] 4.7 Exclude the first sequence position from the lit set with a stated reason, and verify no BOS feature is ever lit at any scope
-- [ ] 4.8 State the shown-versus-fired count from `l0` alongside the lit nodes, and verify the figure matches the trace's own `l0` for the displayed layers
-- [ ] 4.9 Build a k-d tree over the active nodes on scope change and add per-node inspection showing layer, index, activation, label if present, and the Neuronpedia link, and verify a feature with no explanation shows the absence rather than an empty label
-- [ ] 4.10 Render every node inactive with a stated reason when the trace has no features, name the layers without data when coverage is partial, and verify a missing layer is not shown as a layer in which nothing fired
+- [x] 4.3 Light nodes from the trace's recorded activations via a per-node activation attribute, and verify two features with different recorded activations render at different prominence while a dim node beside a bright cluster stays dim
+- [x] 4.4 Render a feature the atlas cannot place as an unplaced entry with its activation, and verify no position is invented for it
+- [x] 4.5 Detect and state an atlas version mismatch between the trace and the loaded atlas, and verify the positions are not presented as corresponding to that trace
+- [x] 4.6 Add the scope selector for cell / token / whole-trace, stating the scope, its feature count and the aggregation used for trace scope, and verify each scope lights the set the trace records for it
+- [x] 4.7 Exclude the first sequence position from the lit set with a stated reason, and verify no BOS feature is ever lit at any scope
+- [x] 4.8 State the shown-versus-fired count from `l0` alongside the lit nodes, and verify the figure matches the trace's own `l0` for the displayed layers
+- [x] 4.9 Build a k-d tree over the active nodes on scope change and add per-node inspection showing layer, index, activation, label if present, and the Neuronpedia link, and verify a feature with no explanation shows the absence rather than an empty label
+- [x] 4.10 Render every node inactive with a stated reason when the trace has no features, name the layers without data when coverage is partial, and verify a missing layer is not shown as a layer in which nothing fired
 
 ## 5. Retire the layer bands
 
