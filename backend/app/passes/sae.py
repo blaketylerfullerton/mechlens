@@ -68,6 +68,8 @@ class SAEPass:
     def run(self, trace: Trace, residuals: np.ndarray) -> PassRecord:
         _check_compatible(trace, self.hook)
 
+        if self.saes is None and trace.model != "gemma-2-2b":
+            raise ValueError(f"{RELEASE} requires gemma-2-2b, got {trace.model}")
         device = self.device or pick_device()
         layers = self.layers if self.layers is not None else list(range(trace.n_layers))
         saes = self.saes if self.saes is not None else load_layers(layers, self.width, device)
@@ -79,6 +81,17 @@ class SAEPass:
 
         for encoded, layer in enumerate(layers, start=1):
             sae = saes[layer]
+            metadata = getattr(getattr(sae, "cfg", None), "metadata", None)
+            expected_hook = getattr(metadata, "hook_name", None)
+            if expected_hook and expected_hook != f"blocks.{layer}.{SAE_HOOK}":
+                raise ValueError(f"SAE expects hook {expected_hook}, not layer {layer} resid_post")
+            expected_size = {"16k": 16384, "65k": 65536, "262k": 262144}.get(self.width)
+            actual_size = getattr(getattr(sae, "cfg", None), "d_sae", None)
+            if actual_size is not None and actual_size != expected_size:
+                raise ValueError(f"SAE size {actual_size} does not match width {self.width}")
+            expected_model = getattr(metadata, "model_name", None)
+            if expected_model and expected_model != trace.model:
+                raise ValueError(f"SAE expects {expected_model}, trace uses {trace.model}")
             # [n_tokens, d_model] — one layer's slice for the whole sequence.
             # np.array (a copy) rather than asarray: a memory-mapped trace is
             # read-only, and torch.from_numpy warns on non-writable buffers.
@@ -125,6 +138,7 @@ class SAEPass:
             name=self.name,
             params={
                 "release": RELEASE,
+                "model": trace.model,
                 "width": self.width,
                 "top_k": self.top_k,
                 "hook": SAE_HOOK,

@@ -428,7 +428,10 @@ class LabelStore:
             "ON CONFLICT(source_set, feature) DO UPDATE SET "
             "  text = excluded.text, explainer = excluded.explainer, "
             "  explanation_type = excluded.explanation_type, score = excluded.score, "
-            "  embedding = COALESCE(excluded.embedding, labels.embedding), "
+            "  embedding = CASE WHEN excluded.embedding IS NOT NULL THEN excluded.embedding "
+            "    WHEN labels.text IS excluded.text AND labels.explainer IS excluded.explainer "
+            "      AND labels.explanation_type IS excluded.explanation_type THEN labels.embedding "
+            "    ELSE NULL END, "
             "  fetched_at = excluded.fetched_at",
             params,
         )
@@ -442,7 +445,37 @@ class LabelStore:
     # needs a position and the text that says what it is. One SQLite file, one
     # connection, one thing to build and one thing to delete.
 
-    def put_layout(self, atlas_version: str, rows: Iterable[LayoutRow]) -> int:
+    def publish_atlas(self, record: AtlasRecord, rows: list[LayoutRow], clusters: list[ClusterRow]) -> None:
+        """Publish a complete immutable artifact, or leave the database unchanged."""
+        from dataclasses import asdict
+
+        if len(rows) != record.n_features or len(clusters) != record.n_clusters:
+            raise ValueError("atlas counts do not match its rows")
+        if len({(r.layer, r.feature) for r in rows}) != len(rows):
+            raise ValueError("duplicate atlas feature identities")
+        if len({c.cluster for c in clusters}) != len(clusters):
+            raise ValueError("duplicate atlas clusters")
+        rows = sorted(rows, key=lambda r: (r.layer, r.feature))
+        clusters = sorted(clusters, key=lambda c: c.cluster)
+        with self.conn:
+            self.conn.execute("BEGIN IMMEDIATE")
+            old = self.atlas_record(record.atlas_version)
+            if old is not None:
+                before, after = asdict(old), asdict(record)
+                before.pop("built_at")
+                after.pop("built_at")
+                if (before != after or self.layout_all(record.atlas_version) != rows
+                        or self.clusters(record.atlas_version) != clusters):
+                    raise ValueError("refusing to overwrite an existing atlas identity")
+                return
+            # Clean up orphan rows from older, interrupted non-atomic builds.
+            for table in ("atlas_layout", "atlas_cluster"):
+                self.conn.execute(f"DELETE FROM {table} WHERE atlas_version = ?", (record.atlas_version,))
+            self.put_layout(record.atlas_version, rows, commit=False)
+            self.put_clusters(record.atlas_version, clusters, commit=False)
+            self.put_atlas_record(record, commit=False)
+
+    def put_layout(self, atlas_version: str, rows: Iterable[LayoutRow], *, commit: bool = True) -> int:
         """Bulk insert-or-replace positions for one atlas."""
         params = [
             (atlas_version, r.layer, r.feature, r.x, r.y, r.z, r.cluster) for r in rows
@@ -458,7 +491,8 @@ class LabelStore:
             "  cluster = excluded.cluster",
             params,
         )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
         return len(params)
 
     def layout(
@@ -516,7 +550,7 @@ class LabelStore:
             )
         ]
 
-    def put_atlas_record(self, record: AtlasRecord) -> None:
+    def put_atlas_record(self, record: AtlasRecord, *, commit: bool = True) -> None:
         self.conn.execute(
             "INSERT INTO atlas_record "
             "(atlas_version, release, width, seed, params_json, metrics_json, "
@@ -543,10 +577,12 @@ class LabelStore:
                 or datetime.now(timezone.utc).isoformat(timespec="seconds"),
             ),
         )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
 
     def atlas_record(
-        self, atlas_version: str | None = None, source: str | None = None
+        self, atlas_version: str | None = None, source: str | None = None,
+        release: str | None = None, width: str | None = None
     ) -> AtlasRecord | None:
         """One atlas's record, or the most recently built one. None if there is
         no atlas — which is a different answer from an atlas with no features,
@@ -567,16 +603,16 @@ class LabelStore:
             row = self.conn.execute(
                 "SELECT * FROM atlas_record WHERE atlas_version = ?", (atlas_version,)
             ).fetchone()
-        elif source is not None:
-            row = self.conn.execute(
-                "SELECT * FROM atlas_record "
-                "WHERE json_extract(params_json, '$.source') = ? "
-                "ORDER BY built_at DESC LIMIT 1",
-                (source,),
-            ).fetchone()
         else:
+            filters, values = [], []
+            for column, value in (("json_extract(params_json, '$.source')", source),
+                                  ("release", release), ("width", width)):
+                if value is not None:
+                    filters.append(f"{column} = ?")
+                    values.append(value)
+            where = " WHERE " + " AND ".join(filters) if filters else ""
             row = self.conn.execute(
-                "SELECT * FROM atlas_record ORDER BY built_at DESC LIMIT 1"
+                "SELECT * FROM atlas_record" + where + " ORDER BY built_at DESC LIMIT 1", values
             ).fetchone()
         if row is None:
             return None
@@ -593,7 +629,7 @@ class LabelStore:
             built_at=row["built_at"],
         )
 
-    def put_clusters(self, atlas_version: str, rows: Iterable[ClusterRow]) -> int:
+    def put_clusters(self, atlas_version: str, rows: Iterable[ClusterRow], *, commit: bool = True) -> int:
         params = [
             (
                 atlas_version,
@@ -630,7 +666,8 @@ class LabelStore:
             "  centroid_z = excluded.centroid_z, spread = excluded.spread",
             params,
         )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
         return len(params)
 
     def clusters(self, atlas_version: str) -> list[ClusterRow]:

@@ -7,7 +7,8 @@ import pytest
 from app.labels import LabelRow, LabelStore
 from app.passes import apply
 from app.passes.labels import LabelsPass, _features_by_layer
-from app.schema import Feature, label_key
+from app.schema import Feature, PassRecord, label_key
+from app.sae_cache import RELEASE
 
 from factories import make_result
 
@@ -38,6 +39,7 @@ def store(tmp_path):
 def trace():
     """A synthetic trace with SAE features already on it."""
     t = make_result().trace
+    t.passes = [PassRecord(name="sae", params={"release": RELEASE, "width": "16k"})]
     for step in t.steps:
         for state in step.layers:
             state.features = [
@@ -113,4 +115,4 @@ def test_features_by_layer_dedupes_and_sorts(trace):
 def test_rerunning_the_pass_replaces_its_record(trace, store):
     apply(LabelsPass(store=store, verbose=False), trace, None)
     apply(LabelsPass(store=store, verbose=False), trace, None)
-    assert [p.name for p in trace.passes] == ["labels"]
+    assert [p.name for p in trace.passes] == ["sae", "labels"]

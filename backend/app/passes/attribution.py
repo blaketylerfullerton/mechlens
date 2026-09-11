@@ -77,6 +77,12 @@ class AttributionPass:
     model: HookedTransformer | None = None
 
     def run(self, trace: Trace, residuals: np.ndarray) -> PassRecord:
+        if trace.steering is not None:
+            raise ValueError(
+                "attribution of steered traces is unsupported: replay must include "
+                "the intervention and its contribution; use the experiment command "
+                "to measure a feature's effect on a target token"
+            )
         model = self.model if self.model is not None else _default_model()
         _check_compatible(trace, model)
 
@@ -169,6 +175,8 @@ class AttributionPass:
             name=self.name,
             params={
                 "top_k": self.top_k,
+                "weight_metric": "contribution_l2_norm",
+                "causal": False,
                 "hook_attn_out": "hook_attn_out",
                 "hook_mlp_out": "hook_mlp_out",
                 "hook_pattern": "attn.hook_pattern",

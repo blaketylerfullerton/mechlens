@@ -500,7 +500,8 @@ def test_label_text_never_moves_a_feature_in_a_decoder_atlas(build_module, tmp_p
     b = _build(build_module, noise, source="decoder", dry_run=True)
 
     assert a["positions_sha256"] == b["positions_sha256"]
-    assert a["atlas_version"] == b["atlas_version"]
+    # Geometry is unchanged, but names/diagnostics are a different artifact.
+    assert a["atlas_version"] != b["atlas_version"]
 
 
 def test_label_text_does_move_a_feature_in_a_label_atlas(build_module, tmp_path):
@@ -684,3 +685,23 @@ def test_the_subsample_carries_the_areas_including_unnamed_ones(built):
         # nodes they were computed from.
         assert tuple(area["centroid"]) == pytest.approx(cluster.centroid)
         assert area["spread"] == pytest.approx(cluster.spread)
+
+
+def test_cross_source_check_really_reads_decoder_vectors(build_module):
+    rng = np.random.default_rng(9)
+    groups = np.repeat(np.eye(3), 40, axis=0)
+    vectors = groups + rng.normal(scale=0.01, size=groups.shape)
+    keys = [(0, i) for i in range(len(vectors))]
+    embeddings = dict(zip(keys, vectors))
+    same = build_module.cross_source_agreement(
+        np.zeros(len(keys)), keys, embeddings, min_cluster_size=10,
+        decoder_provider=lambda selected: vectors,
+    )
+    shuffled = vectors[rng.permutation(len(vectors))]
+    different = build_module.cross_source_agreement(
+        np.zeros(len(keys)), keys, embeddings, min_cluster_size=10,
+        decoder_provider=lambda selected: shuffled,
+    )
+    assert same["cross_source_ari"] > 0.95
+    assert different["cross_source_ari"] < 0.1
+    assert same["cross_source_decoder_sha256"] != different["cross_source_decoder_sha256"]

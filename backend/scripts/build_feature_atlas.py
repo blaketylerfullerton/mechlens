@@ -54,6 +54,7 @@ cluster, because a measurement that stops being taken stops being true.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import time
@@ -415,42 +416,43 @@ def cross_source_agreement(
     seed: int = 0,
     sample: int = DEFAULT_CROSS_SAMPLE,
     min_cluster_size: int = DEFAULT_MIN_CLUSTER_SIZE,
+    decoder_provider=None,
 ) -> dict:
-    """Do explanation embeddings carve the space the way decoder directions do?
+    """Compare independent decoder and text clusters on identical feature keys.
 
-    Clusters a sample of the same features by their label embeddings and
-    reports the adjusted Rand index against the shipped clustering. Never a
-    gate: the positions and clusters that ship are always the decoder ones. A
-    low score is recorded as a low score.
+    The displayed projection's labels are deliberately not used: for a label
+    atlas that would compare text with itself. Both spaces are normalized and
+    clustered with the same settings, before the brain-shaped display warp.
     """
     from sklearn.cluster import HDBSCAN
-    from sklearn.decomposition import PCA
     from sklearn.metrics import adjusted_rand_score
 
-    have = [i for i, key in enumerate(keys) if key in embeddings]
-    if len(have) < max(4, min_cluster_size):
-        return {
-            "cross_source_ari": None,
-            "cross_source_sample": len(have),
-            "cross_source_note": "too few explanation embeddings to compare",
-        }
-
+    have = [key for key in keys if key in embeddings]
+    if len(have) < max(4, min_cluster_size) or sample < max(4, min_cluster_size):
+        return {"cross_source_ari": None, "cross_source_sample": len(have),
+                "cross_source_note": "too few explanation embeddings to compare"}
+    if decoder_provider is None:
+        return {"cross_source_ari": None, "cross_source_sample": 0,
+                "cross_source_note": "decoder directions unavailable"}
     rng = np.random.default_rng(seed)
     if len(have) > sample:
-        have = sorted(rng.choice(have, size=sample, replace=False).tolist())
-
-    matrix = np.stack([np.asarray(embeddings[keys[i]], dtype=np.float32) for i in have])
-    n_components = min(DEFAULT_PCA_DIM, min(matrix.shape) - 1)
-    if n_components >= 2:
-        matrix = PCA(n_components=n_components, random_state=seed).fit_transform(matrix)
-
-    size = max(2, min(min_cluster_size, max(2, len(matrix) // 2)))
-    text_labels = HDBSCAN(min_cluster_size=size).fit_predict(matrix)
-
+        have = [have[i] for i in sorted(rng.choice(len(have), size=sample, replace=False))]
+    decoder = decoder_provider(have)
+    text = np.stack([embeddings[key] for key in have])
+    size = max(2, min(min_cluster_size, len(have) // 2))
+    def assignments(matrix):
+        matrix = np.asarray(matrix, dtype=np.float64)
+        matrix = matrix / np.maximum(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-12)
+        return HDBSCAN(min_cluster_size=size).fit_predict(matrix)
+    decoder_labels, text_labels = assignments(decoder), assignments(text)
     return {
-        "cross_source_ari": float(adjusted_rand_score(labels[have], text_labels)),
+        "cross_source_ari": float(adjusted_rand_score(decoder_labels, text_labels)),
         "cross_source_sample": len(have),
-        "cross_source_text_clusters": int(len({int(v) for v in text_labels.tolist()} - {-1})),
+        "cross_source_text_clusters": len(set(text_labels.tolist()) - {-1}),
+        "cross_source_decoder_clusters": len(set(decoder_labels.tolist()) - {-1}),
+        "cross_source_method": "HDBSCAN on unit-normalized decoder and label vectors; shared sample",
+        "cross_source_keys_sha256": hashlib.sha256(json.dumps(have).encode()).hexdigest(),
+        "cross_source_decoder_sha256": hashlib.sha256(np.asarray(decoder, dtype="<f4").tobytes()).hexdigest(),
     }
 
 
@@ -567,9 +569,26 @@ def build(
             margin=coherence_margin,
             seed=seed,
         )
+        def decoder_sample(sample_keys):
+            if source == "decoder":
+                lookup = {key: i for i, key in enumerate(keys)}
+                return vectors[[lookup[key] for key in sample_keys]]
+            provider = sae_provider or (lambda layer: get_sae(layer, width, device or pick_device()))
+            rows = {}
+            for layer in sorted({key[0] for key in sample_keys}):
+                wanted = [feature for l, feature in sample_keys if l == layer]
+                weights = provider(layer).W_dec
+                selected = weights[wanted]
+                if hasattr(selected, "detach"):
+                    selected = selected.detach().cpu().numpy()
+                for feature, row in zip(wanted, selected):
+                    rows[(layer, feature)] = row
+            return np.stack([rows[key] for key in sample_keys])
+
         metrics.update(
             cross_source_agreement(
-                cluster_labels, keys, embeddings, seed, cross_sample, min_cluster_size
+                cluster_labels, keys, embeddings, seed, cross_sample, min_cluster_size,
+                decoder_provider=decoder_sample,
             )
         )
         # The standing hazard for a text-derived layout, measured either way so
@@ -601,8 +620,31 @@ def build(
             "layers": ",".join(str(layer) for layer in layers),
             "shell_radius": atlas.SHELL_RADIUS,
         }
-        version = atlas.atlas_version(RELEASE, width, seed, params)
+        # The identity includes the actual source and annotation snapshot, not
+        # just a seed. Updated imports must never overwrite an older map.
+        from dataclasses import asdict
+        input_hash = hashlib.sha256()
+        input_hash.update(json.dumps(keys).encode())
+        input_hash.update(np.asarray(vectors, dtype="<f4").tobytes())
+        annotation_hash = hashlib.sha256()
+        for key in keys:
+            annotation_hash.update(json.dumps([key, texts.get(key), explainers.get(key)]).encode())
+            if key in embeddings:
+                annotation_hash.update(np.asarray(embeddings[key], dtype="<f4").tobytes())
+        params["input_sha256"] = input_hash.hexdigest()
+        params["annotations_sha256"] = annotation_hash.hexdigest()
+        params["build_contract"] = 2
+        params["knn_k"] = knn_k
+        params["knn_sample"] = knn_sample
+        params["cross_sample"] = cross_sample
         digest = atlas.positions_hash(positions)
+        artifact_hash = hashlib.sha256(json.dumps(
+            {"keys": keys, "positions": digest, "assignments": cluster_labels.tolist(),
+             "clusters": [asdict(c) for c in clusters], "metrics": metrics},
+            sort_keys=True,
+        ).encode()).hexdigest()
+        params["artifact_sha256"] = artifact_hash
+        version = atlas.atlas_version(RELEASE, width, seed, params)
 
         record = AtlasRecord(
             atlas_version=version,
@@ -617,8 +659,8 @@ def build(
         )
 
         if not dry_run:
-            store.put_layout(
-                version,
+            store.publish_atlas(
+                record,
                 [
                     LayoutRow(
                         layer=layer,
@@ -630,9 +672,8 @@ def build(
                     )
                     for i, (layer, feature) in enumerate(keys)
                 ],
+                clusters,
             )
-            store.put_clusters(version, clusters)
-            store.put_atlas_record(record)
     finally:
         if owned:
             store.close()

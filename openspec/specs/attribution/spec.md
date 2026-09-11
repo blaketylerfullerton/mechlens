@@ -12,8 +12,9 @@ of the trace already describes.
 ### Requirement: Residual stream decomposed into attributable edges
 For every `LayerState` at layer 1 through the last layer, `edges` SHALL
 decompose that layer's residual stream into carry-over, attention, and MLP
-contributions whose weights account for the layer's residual norm within a
-defined tolerance.
+contributions. Edge weights SHALL be identified as L2 contribution magnitudes,
+not conserved shares or causal effects. Full-vector reconstruction SHALL be
+measured separately from the sum of serialized edge weights.
 
 #### Scenario: Decomposition covers every token and layer
 - **WHEN** the attribution pass runs on a trace with residuals present for
@@ -23,9 +24,9 @@ defined tolerance.
   of kind `attn`
 
 #### Scenario: Decomposition is checkable
-- **WHEN** a `LayerState`'s edge weights are summed
-- **THEN** the sum matches that layer's `resid_norm` within a defined
-  tolerance, and the pass records this check in its `PassRecord.stats`
+- **WHEN** the pass reconstructs the residual from full residual, attention and MLP vectors
+- **THEN** it records the relative reconstruction gap in `PassRecord.stats`
+- **AND** edge weights are not claimed to sum to `resid_norm`, because vector norms do not preserve cancellation
 
 ### Requirement: Layer 0 has no residual carry-over source
 Layer 0 is the first transformer block; there is no earlier `LayerState` for
@@ -94,3 +95,8 @@ activation to upstream contributions is deferred to a later phase.
 #### Scenario: No sae edges emitted
 - **WHEN** the attribution pass runs on any trace
 - **THEN** no edge with `kind="sae"` appears anywhere in the resulting trace
+
+### Requirement: Steered traces are rejected until intervention replay is supported
+The pass SHALL reject steered traces before loading a model or emitting edges.
+Replaying the original intervention and accounting for its additive contribution
+are prerequisites to lifting this restriction.

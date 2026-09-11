@@ -34,7 +34,7 @@ from ..passes.labels import LabelsPass
 from ..passes.layout import DEFAULT_ATLAS_SOURCE, LayoutPass
 from ..passes.lens import LogitLensPass
 from ..passes.sae import SAEPass
-from ..sae_cache import DEFAULT_WIDTH, get_sae
+from ..sae_cache import DEFAULT_WIDTH, RELEASE, get_sae
 from ..schema import SteeringInfo, Trace
 from . import jobs
 from .models import (
@@ -315,7 +315,8 @@ def create_app(
         idle asset is cut with, so a client asking twice gets the same nodes.
         """
         with open_label_store() as store:
-            record = store.atlas_record(version or atlas_version, source=atlas_source)
+            record = store.atlas_record(version or atlas_version, source=atlas_source,
+                                        release=RELEASE, width=DEFAULT_WIDTH)
             # 404 rather than an empty atlas: "no atlas has been built" and "an
             # atlas that placed nothing" are different facts, and a client that
             # cannot tell them apart will render one as the other.

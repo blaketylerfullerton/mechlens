@@ -45,6 +45,7 @@ from pathlib import Path
 import numpy as np
 
 from ..labels import DEFAULT_DB_PATH, LabelStore
+from ..identity import feature_identity
 from ..schema import NodePosition, PassRecord, Trace, label_key
 from .labels import _features_by_layer
 
@@ -79,13 +80,15 @@ class LayoutPass:
                 f"run the SAE pass first (enrich --sae)"
             )
 
+        release, width = feature_identity(trace)
+        trace.layout = {}
         pairs = [(layer, feature) for layer, features in wanted.items() for feature in features]
         store = self.store or LabelStore(self.db_path)
         owned = self.store is None
         t0 = time.time()
 
         try:
-            record = store.atlas_record(self.atlas_version, source=self.source)
+            record = store.atlas_record(self.atlas_version, source=self.source, release=release, width=width)
             # No atlas is a legitimate deployment state, not an error: the
             # label DB ships without one until `build_feature_atlas.py` has
             # run. The trace keeps its features and gains no positions.
@@ -112,6 +115,8 @@ class LayoutPass:
                     elapsed_s=time.time() - t0,
                 )
 
+            if (record.release, record.width) != (release, width):
+                raise ValueError("atlas release/width does not match the trace's SAE dictionary")
             placed = store.layout(record.atlas_version, pairs)
         finally:
             if owned:

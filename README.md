@@ -450,6 +450,21 @@ export does not use a single explainer. For `gemma-2-2b` at 16k, layers 16, 18,
 `gpt-4o-mini`, and the two write in visibly different styles. Every label
 records its `explainer` for that reason. See `phase3.md`.
 
+## Measurement correctness and controlled experiments
+
+Before interpreting the map, see [the measurement plan and DGX Spark experiment guide](docs/measurement-plan.md).
+Enrichment now replaces old results atomically and checks SAE dictionary identity;
+atlas builds fingerprint their actual inputs and publish complete versions. The
+cross-source check compares decoder vectors with explanation embeddings independently.
+Attribution currently refuses steered traces because it cannot yet replay their
+intervention correctly. Its existing edges are contribution magnitudes, not causal
+importance scores.
+
+`python -m app.cli experiment --help` exposes a fixed-prefix comparison of baseline,
+zero control, feature suppression and steering strengths against a chosen next-token
+probability. Related prompts and unrelated controls can be saved in one JSON report.
+This measures a feature intervention's effect; it does not construct a complete causal graph.
+
 ## Tests
 
 ```bash

@@ -36,10 +36,35 @@ class Pass(Protocol):
 def apply(pass_: Pass, trace: Trace, residuals: np.ndarray) -> PassRecord:
     """Run `pass_` and record it on the trace, replacing any earlier run of it.
 
-    Re-running a pass overwrites the fields it owns, so its record should be
-    replaced too — otherwise the trace claims two conflicting provenances for
-    the same features.
+    Each run replaces that pass's complete result, even when a layer subset
+    is requested. SAE reruns also invalidate dependent labels and positions.
+    A failure leaves the previous document and its provenance intact.
     """
-    record = pass_.run(trace, residuals)
-    trace.passes = [p for p in trace.passes if p.name != record.name] + [record]
+    # Work on a private document. A failing pass must not leave half a new
+    # measurement alongside the old provenance. Residual tensors are not copied.
+    candidate = trace.model_copy(deep=True)
+    invalidated = {pass_.name}
+    if pass_.name == "sae":
+        invalidated.update({"labels", "layout"})
+        candidate.labels = {}
+        candidate.layout = {}
+        for step in candidate.steps:
+            for state in step.layers:
+                state.features = []
+                state.l0 = None
+    elif pass_.name == "labels":
+        candidate.labels = {}
+    elif pass_.name == "layout":
+        candidate.layout = {}
+    elif pass_.name in {"lens", "attribution"}:
+        for step in candidate.steps:
+            for state in step.layers:
+                if pass_.name == "lens":
+                    state.logit_lens = None
+                else:
+                    state.edges = []
+    record = pass_.run(candidate, residuals)
+    candidate.passes = [p for p in candidate.passes if p.name not in invalidated] + [record]
+    for name in type(trace).model_fields:
+        setattr(trace, name, getattr(candidate, name))
     return record

@@ -91,7 +91,7 @@ def test_offline_by_default(store, monkeypatch):
     assert store.get(LAYER, 999) is None
 
 
-def test_upsert_replaces_text_but_keeps_an_existing_embedding(store):
+def test_changed_text_invalidates_an_existing_embedding(store):
     vector = np.arange(4, dtype=np.float32)
     store.upsert([LabelRow(source_set=SOURCE_SET, feature=7, text="old", embedding=vector)])
     store.upsert([LabelRow(source_set=SOURCE_SET, feature=7, text="new")])
@@ -99,7 +99,7 @@ def test_upsert_replaces_text_but_keeps_an_existing_embedding(store):
     assert store.get(LAYER, 7).text == "new"
     # Re-importing explanations should not silently drop the vectors that a
     # separate, much more expensive import pass put there.
-    assert np.array_equal(store.embeddings(LAYER, [7])[7], vector)
+    assert 7 not in store.embeddings(LAYER, [7])
 
 
 def test_embeddings_round_trip_as_float32(store):

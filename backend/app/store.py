@@ -16,6 +16,8 @@ moved or copied around without rewriting anything.
 from __future__ import annotations
 
 from pathlib import Path
+import os
+import tempfile
 
 import numpy as np
 
@@ -53,7 +55,7 @@ def save_trace(
         dtype=str(result.residuals.dtype),
     )
 
-    json_path.write_text(_stamped(trace).model_dump_json(indent=2))
+    atomic_write_text(json_path, _stamped(trace).model_dump_json(indent=2))
     return json_path
 
 
@@ -65,7 +67,7 @@ def update_trace(trace: Trace, json_path: Path | str) -> Path:
     every SAE tweak would be pure waste.
     """
     json_path = Path(json_path)
-    json_path.write_text(_stamped(trace).model_dump_json(indent=2))
+    atomic_write_text(json_path, _stamped(trace).model_dump_json(indent=2))
     return json_path
 
 
@@ -112,3 +114,18 @@ def load(json_path: Path | str, mmap: bool = False) -> tuple[Trace, np.ndarray]:
     """Convenience: both halves in one call."""
     trace = load_trace(json_path)
     return trace, load_residuals(trace, json_path, mmap=mmap)
+
+
+def atomic_write_text(path: Path | str, text: str) -> None:
+    """Replace a document only after the complete new bytes are on disk."""
+    path = Path(path)
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(fd, "w") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)

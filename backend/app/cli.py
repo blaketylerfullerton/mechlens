@@ -280,7 +280,7 @@ def cmd_trace(args: argparse.Namespace) -> None:
     if args.sae:
         layers = parse_layers(args.layers, result.trace.n_layers)
         apply(
-            SAEPass(width=args.width, top_k=args.sae_top_k, layers=layers, device=args.device),
+            SAEPass(width=args.width or DEFAULT_WIDTH, top_k=args.sae_top_k, layers=layers, device=args.device),
             result.trace,
             result.residuals,
         )
@@ -333,7 +333,7 @@ def cmd_enrich(args: argparse.Namespace) -> None:
     if args.sae:
         layers = parse_layers(args.layers, trace.n_layers)
         apply(
-            SAEPass(width=args.width, top_k=args.sae_top_k, layers=layers, device=args.device),
+            SAEPass(width=args.width or DEFAULT_WIDTH, top_k=args.sae_top_k, layers=layers, device=args.device),
             trace,
             residuals,
         )
@@ -406,12 +406,45 @@ def cmd_show(args: argparse.Namespace) -> None:
         print(f"  resid norms: L0 {norms[:, 0].mean():.0f} -> L{trace.n_layers - 1} {norms[:, -1].mean():.0f}")
 
 
+def cmd_experiment(args: argparse.Namespace) -> None:
+    """Save a reproducible comparison for related and control prompts."""
+    import json
+    from .experiments import measure_feature
+    from .sae_cache import get_sae
+
+    model = get_model()
+    sae = get_sae(args.layer, args.width)
+    if args.target_token_id is not None:
+        target = args.target_token_id
+    else:
+        ids = model.tokenizer.encode(args.target, add_special_tokens=False)
+        if len(ids) != 1:
+            raise SystemExit("--target must encode to exactly one token; use --target-token-id explicitly")
+        target = ids[0]
+    reports = []
+    for role, prompts in (("example", args.prompt), ("control", args.control_prompt)):
+        for prompt in prompts:
+            report = measure_feature(model, sae, prompt, args.layer, args.feature_idx,
+                                     target, args.coefficients, width=args.width, position=args.position)
+            report["role"] = role
+            reports.append(report)
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    from .store import atomic_write_text
+    atomic_write_text(args.out, json.dumps({"experiments": reports}, indent=2, allow_nan=False))
+    print(f"saved {len(reports)} fixed-prefix experiments to {args.out}")
+    for report in reports:
+        print(f"{report['role']}: {report['prompt']!r}")
+        for row in report["measurements"]:
+            print(f"  {row['mode']:12s} {str(row['coefficient']):>6s} "
+                  f"p={row['target_probability']:.6f} delta={row['delta_probability']:+.6f}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="app.cli", description=__doc__.splitlines()[0])
     sub = p.add_subparsers(dest="command", required=True)
 
     def add_sae_flags(sp: argparse.ArgumentParser) -> None:
-        sp.add_argument("--width", default=DEFAULT_WIDTH, help="SAE width: 16k, 65k, 262k")
+        sp.add_argument("--width", default=None, help="SAE width: 16k, 65k, 262k")
         sp.add_argument("--sae-top-k", type=int, default=SAE_TOP_K, help="features kept per layer")
         sp.add_argument("--layers", help="subset to encode, e.g. '0-5,20' (default: all)")
         sp.add_argument("--device", help="cuda / cpu (default: cuda when available)")
@@ -474,6 +507,20 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--lens", action="store_true", help="show the per-layer logit lens instead")
     s.add_argument("--attribution", action="store_true", help="show the per-layer attribution edges instead")
     s.set_defaults(func=cmd_show)
+
+    x = sub.add_parser("experiment", help="measure one feature's effect on a fixed-prefix target token")
+    x.add_argument("-p", "--prompt", action="append", required=True, help="repeat for related prompts")
+    x.add_argument("--control-prompt", action="append", default=[], help="repeat for unrelated controls")
+    x.add_argument("--layer", type=int, required=True)
+    x.add_argument("--feature-idx", type=int, required=True)
+    x.add_argument("--position", type=int, help="intervention token position, including BOS; default last")
+    x.add_argument("--width", default=DEFAULT_WIDTH, choices=["16k", "65k", "262k"])
+    target = x.add_mutually_exclusive_group(required=True)
+    target.add_argument("--target", help="exact next-token text, including leading space")
+    target.add_argument("--target-token-id", type=int)
+    x.add_argument("--coefficients", type=float, nargs="+", default=[-5.0, 5.0])
+    x.add_argument("--out", type=Path, required=True)
+    x.set_defaults(func=cmd_experiment)
 
     return p
 

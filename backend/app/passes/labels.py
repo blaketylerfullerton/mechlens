@@ -25,6 +25,7 @@ import numpy as np
 
 from ..labels import DEFAULT_DB_PATH, LabelStore, URL_TEMPLATE, source_set_template
 from ..sae_cache import DEFAULT_WIDTH, RELEASE
+from ..identity import feature_identity
 from ..schema import PassRecord, Trace, label_key
 
 
@@ -33,7 +34,7 @@ class LabelsPass:
     """Fills Trace.labels for every feature the SAE pass recorded."""
 
     name: str = field(default="labels", init=False)
-    width: str = DEFAULT_WIDTH
+    width: str | None = None
     db_path: Path = DEFAULT_DB_PATH
     fetch_missing: bool = False
     max_fetches: int = 200
@@ -51,9 +52,15 @@ class LabelsPass:
                 f"run the SAE pass first (enrich --sae)"
             )
 
+        release, width = feature_identity(trace)
+        if self.width is not None and self.width != width:
+            raise ValueError(f"labels width {self.width} does not match SAE width {width}")
+        if self.store is not None and self.store.width != width:
+            raise ValueError(f"label store width {self.store.width} does not match SAE width {width}")
+        trace.labels = {}
         store = self.store or LabelStore(
             self.db_path,
-            width=self.width,
+            width=width,
             fetch_missing=self.fetch_missing,
             max_fetches=self.max_fetches,
         )
@@ -84,12 +91,12 @@ class LabelsPass:
             name=self.name,
             params={
                 "release": RELEASE,
-                "width": self.width,
-                "neuronpedia_model": _model_id(self.width),
+                "width": width,
+                "neuronpedia_model": _model_id(width),
                 # Enough for a frontend to build every link itself. The URL is a
                 # pure function of these three, so storing 6000 of them would be
                 # storing the same f-string 6000 times.
-                "source_set_template": source_set_template(trace.n_layers, self.width) or "",
+                "source_set_template": source_set_template(trace.n_layers, width) or "",
                 "url_template": URL_TEMPLATE,
                 "fetch_missing": self.fetch_missing,
                 # Neuronpedia's export does not use one explainer throughout —
