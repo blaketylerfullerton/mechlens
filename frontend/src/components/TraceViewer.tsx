@@ -1,12 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react'
 
-import {
-  CodeBlock,
-  CodeBlockCopyButton,
-  CodeBlockFilename,
-  CodeBlockHeader,
-  CodeBlockTitle,
-} from '@/components/ai-elements/code-block'
 import type { RunState } from '@/hooks/useTrace'
 import { API_BASE_URL } from '@/lib/api-client'
 import type { Feature, LayerState, TokenStep, TopToken, Trace } from '@/lib/api-types'
@@ -133,16 +126,6 @@ function Facts({ rows }: { rows: [string, string][] }) {
     </dl>
   )
 }
-
-const REQUEST_SNIPPET = (base: string) => `# The request this page makes. \`passes\` is what paints the brain: without
-# "lens" you get the capture and no per-layer readouts to colour it with.
-curl -sS ${base}/trace \\
-  -H 'content-type: application/json' \\
-  -d '{"prompt":"The capital of France is","max_tokens":20,"passes":["lens"]}'
-
-# -> {"job_id":"..."}  — the job runs in the background; poll it until
-#    "status" is "done", then read "trace.steps[].layers[].logit_lens".
-curl -sS ${base}/trace/"$JOB_ID"`
 
 function StatusLine({ status, error }: Pick<TraceViewerProps, 'status' | 'error'>) {
   if (error) {

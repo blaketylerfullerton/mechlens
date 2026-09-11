@@ -12,11 +12,11 @@ SQLite file answers both "where is this feature" and "what does it mean".
 Two sources, and an atlas records which it used (see SOURCES):
 
     --source labels    explanation embeddings. The default, and the only source
-                       that yields areas: 0.303 kNN preservation, 32 clusters,
+                       that yields areas: 0.292 kNN preservation, 32 clusters,
                        27 of them earning a name.
     --source decoder   every layer's `W_dec` rows, all in the one
                        residual-stream basis the layers share. The model's own
-                       geometry: 0.154 preservation, and a continuum with no
+                       geometry: 0.143 preservation, and a continuum with no
                        areas in it at all.
 
 This is the only module in the project that imports umap; see
@@ -841,10 +841,14 @@ def report(summary: dict, clusters: list[ClusterRow]) -> None:
         + (f" — {m['explainer_ami_note']}" if m.get("explainer_ami_note") else "")
     )
 
-    named = [c for c in clusters if c.name][:10]
+    # Sorted before the slice, not after: taking the first ten and *then*
+    # ordering them by size prints ten arbitrary areas under a heading that
+    # says "largest", which is how a fresh build came to omit the 8,320-member
+    # area entirely while claiming to list the biggest.
+    named = sorted((c for c in clusters if c.name), key=lambda c: -c.n_members)[:10]
     if named:
         print("\n  largest named areas:")
-        for c in sorted(named, key=lambda c: -c.n_members):
+        for c in named:
             gap = (
                 None
                 if c.coherence is None or c.baseline_coherence is None

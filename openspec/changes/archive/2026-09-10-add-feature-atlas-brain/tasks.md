@@ -109,9 +109,9 @@
 
 ## 7. Verification
 
-- [ ] 7.1 Run `pytest backend/tests -q` and verify the suite passes with new coverage for the two passes, the `sae` phase ordering, schema 1.4 round-tripping, layout attachment, and the atlas record's three measurements
-- [ ] 7.2 Verify the atlas build is reproducible end to end: rebuild from the same inputs and seed, and confirm identical positions, identical cluster assignments and a matching content hash
-- [ ] 7.3 Trace a prompt with `sae`, `labels` and `lens`, and verify in the running app that features light on the brain, areas glow, the transport walks depth, label filtering narrows the lit set, and the grid still shows the lens classification
-- [ ] 7.4 Verify each degraded path in the running app: no atlas, no features, partial layer coverage, features without labels, and an atlas version mismatch each state what is missing rather than rendering an empty or misleading view
-- [ ] 7.5 Update `README.md` — the layout table, the phase table, the measured-numbers table with the atlas's diagnostics, and the "two known gaps" note now that the explanation embeddings have a consumer
-- [ ] 7.6 Run `openspec validate add-feature-atlas-brain --strict` and confirm the change is valid before archiving
+- [x] 7.1 Run `pytest backend/tests -q` and verify the suite passes with new coverage for the two passes, the `sae` phase ordering, schema 1.4 round-tripping, layout attachment, and the atlas record's three measurements
+- [x] 7.2 Verify the atlas build is reproducible end to end: rebuild from the same inputs and seed, and confirm identical positions, identical cluster assignments and a matching content hash
+- [x] 7.3 Trace a prompt with `sae`, `labels` and `lens`, and verify in the running app that features light on the brain, areas glow, the transport walks depth, label filtering narrows the lit set, and the grid still shows the lens classification
+- [x] 7.4 Verify each degraded path in the running app: no atlas, no features, partial layer coverage, features without labels, and an atlas version mismatch each state what is missing rather than rendering an empty or misleading view
+- [x] 7.5 Update `README.md` — the layout table, the phase table, the measured-numbers table with the atlas's diagnostics, and the "two known gaps" note now that the explanation embeddings have a consumer
+- [x] 7.6 Run `openspec validate add-feature-atlas-brain --strict` and confirm the change is valid before archiving

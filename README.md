@@ -32,8 +32,11 @@ feature steering are reachable over HTTP.
 
 ## Status
 
-Phases 0–6 are done; phase 7 is feature-complete bar one blocked item and is in
-final verification; the trace schema is at **1.4**.
+Phases 0–7 are done, bar one item of phase 7 that is blocked on the service
+rather than the view; the trace schema is at **1.4**. The atlas is verified
+reproducible: a rebuild from the same inputs and seed returns identical
+positions for all **98,210** features, identical cluster assignments, and a
+matching content hash.
 
 | phase | what | state |
 | --- | --- | --- |
@@ -44,7 +47,7 @@ final verification; the trace schema is at **1.4**.
 | 4 | logit lens — every layer decoded through `ln_final` + `W_U` | done |
 | 5 | attribution — exact resid/attn/mlp decomposition of every layer | done |
 | 6 | API service — FastAPI `/trace`, `/steer`, `/feature`, job queue, GPU lock | done |
-| 7 | feature atlas — a fixed position per feature, and the brain drawn from it | in progress |
+| 7 | feature atlas — a fixed position per feature, and the brain drawn from it | done, bar one blocked item |
 | 8 | feature-level attribution — `kind="sae"` edges, deferred from phase 5 | next |
 
 Phase 7, in more detail — the parts that are in, and the one that is not:
@@ -422,6 +425,7 @@ roughly double the JSON for no added information.
 | `app/passes/labels.py` | phase 3: Neuronpedia labels for those features |
 | `app/passes/lens.py` | phase 4: every layer decoded through `ln_final` + `W_U` |
 | `app/passes/attribution.py` | phase 5: resid/attn/mlp edges decomposing every layer's residual |
+| `app/passes/layout.py` | phase 7: the atlas's position for each feature a trace reports |
 | `app/atlas.py` | phase 7: the feature atlas — the shell warp, its diagnostics, the naming gate |
 | `app/labels.py` | the label store — SQLite lookup, the atlas tables, a capped API fallback |
 | `app/passes/__init__.py` | the `Pass` protocol — take a trace + residuals, fill fields |
