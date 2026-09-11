@@ -98,7 +98,7 @@ function App() {
             edge, and a column that grew to the height of a long trace put
             that edge below the fold: the detail panel for whatever you were
             pointing at rendered somewhere you could not see. */}
-        <div className="border-border-subtle flex h-[42svh] shrink-0 rounded-[16px] border bg-[#0D0E11] p-1 lg:sticky lg:top-5 lg:h-[calc(100svh-3.25rem)] lg:w-1/2 lg:min-w-[20rem]">
+        <div className="border-border-subtle flex h-[42svh] shrink-0 rounded-[16px] border bg-[#0D0E11] p-1 lg:sticky lg:top-5 lg:h-[calc(100svh-3.25rem)] lg:w-[60%] lg:min-w-[22rem]">
           <div className="border-border-subtle bg-bg-surface min-w-0 flex-1 overflow-hidden rounded-[12px] border">
             <Brain
               onSelectLayer={selectLayer}

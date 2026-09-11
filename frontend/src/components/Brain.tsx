@@ -373,6 +373,114 @@ const ACTIVE_MAX_SIZE = 0.11
 const NODE_IDLE_OPACITY_LIT = 0.13
 
 // --------------------------------------------------------------------------
+// the trail: the layers the sweep has already passed
+// --------------------------------------------------------------------------
+
+/**
+ * Why a trail exists at all.
+ *
+ * A cell-scope frame answers "what fired at L14" and says nothing whatever
+ * about order — and order is the one thing a residual stream actually has.
+ * Stepping the transport by hand shows 26 unrelated frames and leaves the
+ * sequence to be held in the reader's head, which is the same as not showing
+ * it. So the layers already passed stay on screen behind the current one,
+ * fading with age, and depth becomes something you watch rather than
+ * something you reconstruct.
+ *
+ * A separate colour, not a dimmer green: brightness alone reads as "weaker
+ * activation", which is a claim about the model, and this is a claim about
+ * time. Blue is *earlier*, green is *now*, and nothing is being said about
+ * strength by the difference.
+ */
+const TRAIL_COLOR = new THREE.Color(0x82aaff)
+
+/** How many passed layers stay on screen behind the current one. */
+const TRAIL_DEPTH = 6
+
+/** Milliseconds per layer while the sweep runs. */
+const SWEEP_MS = 280
+
+const TRAIL_VERTEX_SHADER = `
+attribute float prominence;
+attribute float decay;
+uniform float detail;
+varying float vFade;
+void main() {
+  vFade = prominence * decay;
+  vec4 viewPosition = modelViewMatrix * vec4(position, 1.0);
+  // Older layers shrink as well as dim, so the head of the sweep stays the
+  // thing being looked at even where the trail is dense.
+  gl_PointSize = mix(${ACTIVE_MIN_SIZE.toFixed(3)}, ${ACTIVE_MAX_SIZE.toFixed(3)}, prominence)
+    * mix(0.55, 1.0, decay)
+    * mix(0.85, 1.45, detail)
+    * (300.0 / -viewPosition.z);
+  gl_Position = projectionMatrix * viewPosition;
+}
+`
+
+const TRAIL_FRAGMENT_SHADER = `
+uniform vec3 color;
+varying float vFade;
+void main() {
+  vec2 offset = gl_PointCoord - vec2(0.5);
+  float radius = length(offset);
+  if (radius > 0.5) discard;
+  float edge = smoothstep(0.5, 0.15, radius);
+  gl_FragColor = vec4(color, edge * vFade * 0.5);
+}
+`
+
+/** One node from a layer the sweep has passed, with how far back it was. */
+interface TrailNode extends LitNode {
+  /** 1 is the layer just left; TRAIL_DEPTH is the oldest still drawn. */
+  age: number
+}
+
+/**
+ * Normalised against the trail's own peak, not the current layer's.
+ *
+ * Same rule as `prominence` documents — brightest node in the same set — and
+ * it has to be applied to this set separately. The head of the sweep is one
+ * layer and the trail is six, so sharing a denominator would make the trail
+ * behind a cold layer clamp to full brightness and the trail behind a hot one
+ * vanish, for a reason about which layer happens to be current rather than
+ * about what fired.
+ */
+function buildTrailCloud(nodes: TrailNode[]): THREE.Points {
+  let maxActivation = 0
+  for (const node of nodes) if (node.activation > maxActivation) maxActivation = node.activation
+
+  const positions = new Float32Array(nodes.length * 3)
+  const prominences = new Float32Array(nodes.length)
+  const decays = new Float32Array(nodes.length)
+  for (let i = 0; i < nodes.length; i++) {
+    positions[i * 3] = nodes[i].x
+    positions[i * 3 + 1] = nodes[i].y
+    positions[i * 3 + 2] = nodes[i].z
+    prominences[i] = prominence(nodes[i].activation, maxActivation)
+    decays[i] = 1 - (nodes[i].age - 1) / TRAIL_DEPTH
+  }
+
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  geometry.setAttribute('prominence', new THREE.BufferAttribute(prominences, 1))
+  geometry.setAttribute('decay', new THREE.BufferAttribute(decays, 1))
+
+  const material = new THREE.ShaderMaterial({
+    uniforms: { color: { value: TRAIL_COLOR }, detail: { value: 0 } },
+    vertexShader: TRAIL_VERTEX_SHADER,
+    fragmentShader: TRAIL_FRAGMENT_SHADER,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  })
+
+  const points = new THREE.Points(geometry, material)
+  points.frustumCulled = false
+  return points
+}
+
+// --------------------------------------------------------------------------
 // areas: a cluster of the atlas, drawn as a soft mass rather than an outline
 // --------------------------------------------------------------------------
 
@@ -582,6 +690,8 @@ interface SceneHandles {
   camera: THREE.PerspectiveCamera
   brainGroup: THREE.Group
   brainMesh: THREE.Mesh
+  /** The stalk under the cerebellum. Part of the shell, so it hides with it. */
+  brainstemMesh: THREE.Mesh
   geometry: THREE.BufferGeometry
   brainstemGeometry: THREE.BufferGeometry
   material: THREE.MeshPhysicalMaterial
@@ -590,6 +700,8 @@ interface SceneHandles {
   nodeCloud: THREE.Points | null
   /** The features the current trace lit, at the current scope. */
   activeCloud: THREE.Points | null
+  /** The layers the sweep has passed, fading with age. Null when not sweeping. */
+  trailCloud: THREE.Points | null
   /** The lit areas, as soft masses at their centroids. */
   areaCloud: THREE.Points | null
   /**
@@ -651,6 +763,11 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
   // It aggregates, and the panel says so — `aggregation` is stated rather
   // than left to be inferred, which is what makes the wider default honest.
   const [scope, setScope] = useState<LitScope>('trace')
+
+  // Whether the anatomical shell is drawn. On by default: it is what makes the
+  // cloud read as a volume rather than a flat spray, and a first-time reader
+  // needs that before they need to see through it.
+  const [shell, setShell] = useState(true)
 
   // Which node the pointer is over, if any.
   const [hoveredNode, setHoveredNode] = useState<LitNode | null>(null)
@@ -731,6 +848,80 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
     }
     return [...has].sort((a, b) => a - b)
   }, [trace])
+
+  // -- the sweep: depth as motion -----------------------------------------
+  //
+  // The transport walks one layer per click, which shows 26 frames and leaves
+  // the order between them to be remembered. Playing it walks depth on a
+  // clock instead, and `trail` keeps the layers already passed on screen
+  // behind the current one — so "what fired in what order" is watched rather
+  // than reconstructed. See `TRAIL_COLOR` for why the trail is a different
+  // colour and not a dimmer one.
+  const [playing, setPlaying] = useState(false)
+
+  // Every layer the sweep has passed and not yet aged out, oldest first.
+  const [trail, setTrail] = useState<{ layer: number; nodes: LitNode[] }[]>([])
+
+  const sweepLayer = selection?.layer ?? null
+  const lastLayer = trace === null ? null : trace.n_layers - 1
+
+  // A new trace stops the sweep and drops the history with it: that history
+  // belongs to a trace that is no longer on screen. Adjusted during render
+  // rather than in an effect, for the same reason `lastMoved` below is —
+  // an effect would commit one painted frame of the old sweep first.
+  const [lastTrace, setLastTrace] = useState(trace)
+  if (trace !== lastTrace) {
+    setLastTrace(trace)
+    setPlaying(false)
+    setTrail([])
+  }
+
+  // The history itself, accumulated at each layer the sweep lands on.
+  //
+  // It cannot be derived during render from the current props, because it is
+  // what the props *were* — so it is written against the layer last recorded,
+  // the same shape as the selection adjustment below. Keyed by layer so a
+  // sweep that revisits one replaces its entry rather than drawing it twice,
+  // and capped at `TRAIL_DEPTH` so the oldest layers leave instead of piling
+  // into a static haze that says nothing about order.
+  const [trailAt, setTrailAt] = useState<number | null>(null)
+  if (playing && sweepLayer !== null && sweepLayer !== trailAt) {
+    setTrailAt(sweepLayer)
+    setTrail((previous) => [
+      ...previous.filter((entry) => entry.layer !== sweepLayer).slice(-TRAIL_DEPTH),
+      { layer: sweepLayer, nodes: drawn },
+    ])
+  }
+
+  // One layer per tick, stopping at the end rather than wrapping — L25
+  // followed by L0 would read as a cycle, and the residual stream does not
+  // loop. Same reason the transport's arrows stop at both ends. The last
+  // layer holds for a full beat before the sweep stops, so the end of the
+  // run is something you see rather than something that blinks past.
+  useEffect(() => {
+    if (!playing) return
+    if (onSelectLayer === undefined || sweepLayer === null || lastLayer === null) return
+    const timer = window.setTimeout(() => {
+      if (sweepLayer >= lastLayer) setPlaying(false)
+      else onSelectLayer(sweepLayer + 1)
+    }, SWEEP_MS)
+    return () => window.clearTimeout(timer)
+  }, [playing, onSelectLayer, sweepLayer, lastLayer])
+
+  // Flattened for drawing, with the current layer left out: it is already the
+  // active cloud, and drawing it twice under additive blending would make the
+  // head of the sweep brighter for a reason about compositing rather than
+  // about activation.
+  const trailNodes = useMemo<TrailNode[]>(() => {
+    if (!playing) return []
+    const past = trail.filter((entry) => entry.layer !== sweepLayer)
+    const out: TrailNode[] = []
+    past.forEach((entry, index) => {
+      const age = past.length - index
+      for (const node of entry.nodes) out.push({ ...node, age })
+    })
+    return out
+  }, [playing, trail, sweepLayer])
 
   // The activity the brain is entitled to show, derived from the job's own
   // reported state. It counts, and never places: a layer counter is a number,
@@ -859,12 +1050,14 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
       camera,
       brainGroup,
       brainMesh,
+      brainstemMesh,
       geometry,
       brainstemGeometry,
       material,
       lobeBoundaries,
       nodeCloud: null,
       activeCloud: null,
+      trailCloud: null,
       areaCloud: null,
       areaLabels: [],
       lift: 0,
@@ -970,6 +1163,23 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
       if (idle) idle.opacity = NODE_IDLE_OPACITY
     }
   }, [drawn, lit.maxActivation, positionsUsable])
+
+  // -- the trail: the passed layers, rebuilt as the sweep advances --------
+  useEffect(() => {
+    const handles = handlesRef.current
+    if (!handles || trailNodes.length === 0 || !positionsUsable) return
+
+    const cloud = buildTrailCloud(trailNodes)
+    handles.brainGroup.add(cloud)
+    handles.trailCloud = cloud
+
+    return () => {
+      handles.brainGroup.remove(cloud)
+      cloud.geometry.dispose()
+      ;(cloud.material as THREE.Material).dispose()
+      handles.trailCloud = null
+    }
+  }, [trailNodes, positionsUsable])
 
   // -- the area masses: rebuilt when what is lit inside them changes ------
   useEffect(() => {
@@ -1128,6 +1338,56 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
     })
   }, [atlas, lit])
 
+  // -- the shell, on or off ------------------------------------------------
+  //
+  // Two layers of double-sided glass sit between the camera and any node on
+  // the far side of the cloud, and dropping the shell's opacity far enough to
+  // see through both leaves an outline too faint to be worth drawing. So it
+  // is a switch rather than a slider.
+  //
+  // Nothing about the reading changes when it is off, which is the point: the
+  // shell was never data. It is a container that makes the cloud legible as a
+  // volume, and turning it off trades that for seeing straight through.
+  useEffect(() => {
+    const handles = handlesRef.current
+    if (!handles) return
+
+    handles.brainMesh.visible = shell
+    handles.brainstemMesh.visible = shell
+    handles.lobeBoundaries.visible = shell
+  }, [shell])
+
+  // Pressing play at the last layer restarts from L0. The sweep has one
+  // direction, so "again" can only mean from the top; doing nothing would be
+  // a control that looks live and is not.
+  const togglePlay = () => {
+    if (playing) {
+      setPlaying(false)
+      setTrail([])
+      return
+    }
+    if (onSelectLayer !== undefined && sweepLayer !== null && lastLayer !== null) {
+      if (sweepLayer >= lastLayer) onSelectLayer(0)
+    }
+    // A fresh run starts from nothing: the previous sweep's trail behind a new
+    // one would read as layers this run had already passed.
+    setTrail([])
+    setTrailAt(null)
+    setPlaying(true)
+  }
+
+  // Stepping by hand takes the sweep over rather than fighting it: a clock
+  // that kept advancing under the reader's own clicks would make the arrows
+  // feel broken.
+  const stepLayer =
+    onSelectLayer === undefined
+      ? undefined
+      : (layer: number) => {
+          setPlaying(false)
+          setTrail([])
+          onSelectLayer(layer)
+        }
+
   return (
     <div className="relative h-full w-full">
       <div className="h-full w-full" ref={containerRef} />
@@ -1136,6 +1396,8 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
       <div className="pointer-events-none absolute inset-0 overflow-hidden" ref={labelsRef} />
 
       <BrainLegend atlas={atlas} />
+
+      <ShellToggle onChange={setShell} shell={shell} />
 
       <ActivityChip activity={activity} status={status} />
       <ComputingNote activity={activity} />
@@ -1149,7 +1411,9 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
         lit={lit}
         onQueryChange={setQuery}
         onScopeChange={setScope}
-        onSelectLayer={onSelectLayer}
+        onSelectLayer={stepLayer}
+        onTogglePlay={togglePlay}
+        playing={playing}
         query={query}
         scope={scope}
         selection={selection}
@@ -1183,9 +1447,14 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
  * structure before a prompt, and it is not the set a trace is read against.
  */
 function BrainLegend({ atlas }: { atlas: Atlas | null | undefined }) {
+  // Collapsed by default. Every clause below is still on the page, one click
+  // away — but a permanent wall of prose over the canvas was reading as the
+  // subject, and the cloud it disclaims was reading as its background.
+  const [open, setOpen] = useState(false)
+
   if (atlas === undefined) {
     return (
-      <div className="pointer-events-none absolute top-3 left-3 max-w-[16rem] rounded-[12px] bg-[#0D0E11]/80 p-2.5 text-[11px]">
+      <div className="pointer-events-none absolute top-3 left-3 rounded-[10px] bg-[#0D0E11]/80 px-2 py-1 text-[11px]">
         <p className="text-text-tertiary leading-4">Loading the feature atlas…</p>
       </div>
     )
@@ -1207,10 +1476,37 @@ function BrainLegend({ atlas }: { atlas: Atlas | null | undefined }) {
   const layers = atlasLayers(atlas)
   const named = namedAreaCount(atlas)
 
+  // The resting state: what is on screen, counted, and the way back to why.
+  if (!open) {
+    return (
+      <button
+        aria-expanded={false}
+        className="border-border-subtle bg-[#0D0E11]/80 text-text-tertiary hover:text-text-primary hover:border-border-strong absolute top-3 left-3 rounded-[10px] border px-2 py-1 font-mono text-[11px] tabular-nums transition-colors duration-150"
+        onClick={() => setOpen(true)}
+        type="button"
+      >
+        {atlas.nodes.length.toLocaleString()} nodes · {atlas.areas.length} areas
+        <span className="text-text-disabled"> · what is this?</span>
+      </button>
+    )
+  }
+
   return (
-    <div className="pointer-events-none absolute top-3 left-3 max-w-[16rem] space-y-2 rounded-[12px] bg-[#0D0E11]/80 p-2.5 text-[11px]">
+    <div className="border-border-subtle pointer-events-auto absolute top-3 left-3 max-h-[calc(100%-1.5rem)] max-w-[16rem] space-y-2 overflow-y-auto rounded-[12px] border bg-[#0D0E11]/95 p-2.5 text-[11px]">
       <div className="space-y-1">
-        <p className="text-text-tertiary font-medium tracking-[0.04em] uppercase">Feature nodes</p>
+        <div className="flex items-baseline justify-between gap-2">
+          <p className="text-text-tertiary font-medium tracking-[0.04em] uppercase">
+            Feature nodes
+          </p>
+          <button
+            aria-label="Collapse the legend"
+            className="text-text-tertiary hover:text-text-primary pointer-events-auto font-mono transition-colors duration-150"
+            onClick={() => setOpen(false)}
+            type="button"
+          >
+            ×
+          </button>
+        </div>
         <p className="text-text-secondary leading-4">
           A node is one SAE feature — a single direction the sparse autoencoder reads out of the
           residual stream.
@@ -1287,6 +1583,38 @@ function BrainLegend({ atlas }: { atlas: Atlas | null | undefined }) {
   )
 }
 
+/**
+ * Hide the shell, see the whole cloud.
+ *
+ * Bottom right, away from the legend and the lit-feature panel, because it
+ * belongs to neither: it changes what is drawn, not what is measured. Off it
+ * says what is missing rather than just reading as the wrong state — an empty
+ * black field with nodes floating in it is otherwise hard to tell from a
+ * broken render.
+ */
+function ShellToggle({
+  onChange,
+  shell,
+}: {
+  onChange: (shell: boolean) => void
+  shell: boolean
+}) {
+  return (
+    <button
+      aria-pressed={!shell}
+      className={
+        'border-border-subtle bg-[#0D0E11]/80 hover:border-border-strong absolute right-3 bottom-3 ' +
+        'rounded-[10px] border px-2 py-1 font-mono text-[11px] transition-colors duration-150 ' +
+        (shell ? 'text-text-tertiary hover:text-text-primary' : 'text-const')
+      }
+      onClick={() => onChange(!shell)}
+      type="button"
+    >
+      {shell ? 'hide shell' : 'shell hidden'}
+    </button>
+  )
+}
+
 /** What each scope lights, said in words beside the control that sets it. */
 const SCOPE_COPY: Record<LitScope, { label: string; says: string }> = {
   cell: { label: 'Cell', says: 'one layer at one token' },
@@ -1313,6 +1641,8 @@ function FeaturePanel({
   onQueryChange,
   onScopeChange,
   onSelectLayer,
+  onTogglePlay,
+  playing,
   query,
   scope,
   selection,
@@ -1327,6 +1657,8 @@ function FeaturePanel({
   onQueryChange: (query: string) => void
   onScopeChange: (scope: LitScope) => void
   onSelectLayer?: (layer: number) => void
+  onTogglePlay: () => void
+  playing: boolean
   query: string
   scope: LitScope
   selection: { layer: number; position: number } | null
@@ -1364,6 +1696,8 @@ function FeaturePanel({
       <Transport
         featureLayers={featureLayers}
         onSelectLayer={onSelectLayer}
+        onTogglePlay={onTogglePlay}
+        playing={playing}
         scope={scope}
         selection={selection}
         trace={trace}
@@ -1418,14 +1752,65 @@ function FeaturePanel({
         </dl>
       )}
 
-      {lit.fired !== null && lit.shown < lit.fired ? (
+      <AreaReadout areas={areas} />
+
+      <Caveats coverage={coverage} lit={lit} />
+    </div>
+  )
+}
+
+/**
+ * Everything true of the lit set that is not a control and not a count.
+ *
+ * Folded behind one disclosure, not deleted. Each of these exists to stop a
+ * specific misreading — a slice read as the whole, an unplaceable feature read
+ * as one that never fired, an unrun layer read as an empty one, BOS read as
+ * signal — and none of them stop being true when they are one click away. What
+ * they were doing open was burying the two controls that actually steer the
+ * view, under a column of text, on top of the picture both of them describe.
+ *
+ * The trigger states the count, so a reader knows there is something to open
+ * rather than having to open it to find out.
+ */
+function Caveats({ coverage, lit }: { coverage: string | null; lit: LitSet }) {
+  const [open, setOpen] = useState(false)
+
+  const sliced = lit.fired !== null && lit.shown < lit.fired
+  const notes =
+    (sliced ? 1 : 0) +
+    (lit.unplaced.length > 0 ? 1 : 0) +
+    (coverage ? 1 : 0) +
+    (lit.bosExcluded ? 1 : 0)
+  if (notes === 0) return null
+
+  if (!open) {
+    return (
+      <button
+        className="text-text-tertiary hover:text-text-primary pointer-events-auto font-mono transition-colors duration-150"
+        onClick={() => setOpen(true)}
+        type="button"
+      >
+        ▸ {notes} note{notes === 1 ? '' : 's'} on this set
+      </button>
+    )
+  }
+
+  return (
+    <div className="space-y-2">
+      <button
+        className="text-text-tertiary hover:text-text-primary pointer-events-auto font-mono transition-colors duration-150"
+        onClick={() => setOpen(false)}
+        type="button"
+      >
+        ▾ {notes} note{notes === 1 ? '' : 's'} on this set
+      </button>
+
+      {sliced ? (
         <p className="text-text-tertiary leading-4">
           The SAE pass keeps the strongest features per cell, not all of them — {lit.shown} of{' '}
           {lit.fired} that fired.
         </p>
       ) : null}
-
-      <AreaReadout areas={areas} />
 
       {/* 4.4 — a feature that fired but has nowhere honest to be drawn. */}
       {lit.unplaced.length > 0 ? (
@@ -1584,12 +1969,16 @@ function LabelSearch({
 function Transport({
   featureLayers,
   onSelectLayer,
+  onTogglePlay,
+  playing,
   scope,
   selection,
   trace,
 }: {
   featureLayers: number[]
   onSelectLayer?: (layer: number) => void
+  onTogglePlay: () => void
+  playing: boolean
   scope: LitScope
   selection: { layer: number; position: number } | null
   trace: Trace
@@ -1604,12 +1993,16 @@ function Transport({
   const canGoOn = !inert && layer < last
   const hasData = featureLayers.includes(layer)
 
+  const step =
+    'text-text-tertiary enabled:hover:bg-white/[0.02] disabled:text-text-disabled ' +
+    'px-2 py-1 font-mono transition-colors duration-150 disabled:cursor-not-allowed'
+
   return (
     <div className="space-y-1">
       <div className="border-border-subtle bg-bg-elevated pointer-events-auto flex items-center rounded-[10px] border">
         <button
           aria-label="Previous layer"
-          className="text-text-tertiary enabled:hover:bg-white/[0.02] disabled:text-text-disabled px-2 py-1 font-mono transition-colors duration-150 disabled:cursor-not-allowed"
+          className={step}
           disabled={!canGoBack}
           onClick={() => onSelectLayer(layer - 1)}
           type="button"
@@ -1622,14 +2015,38 @@ function Transport({
         </span>
         <button
           aria-label="Next layer"
-          className="text-text-tertiary enabled:hover:bg-white/[0.02] disabled:text-text-disabled px-2 py-1 font-mono transition-colors duration-150 disabled:cursor-not-allowed"
+          className={step}
           disabled={!canGoOn}
           onClick={() => onSelectLayer(layer + 1)}
           type="button"
         >
           ▶
         </button>
+        <button
+          aria-label={playing ? 'Stop the sweep' : 'Sweep every layer in order'}
+          className={
+            'border-border-subtle enabled:hover:bg-white/[0.02] disabled:text-text-disabled ' +
+            'border-l px-2 py-1 font-mono transition-colors duration-150 disabled:cursor-not-allowed ' +
+            (playing ? 'text-const' : 'text-text-tertiary')
+          }
+          disabled={inert}
+          onClick={onTogglePlay}
+          type="button"
+        >
+          {playing ? '■ stop' : '▶ sweep'}
+        </button>
       </div>
+
+      {/* What the sweep is doing, while it does it — including the part the
+          picture cannot say for itself, which is that the blue is time and
+          not a weaker activation. */}
+      {playing ? (
+        <p className="text-text-tertiary leading-4">
+          Sweeping L0 → L{last}, one layer every {(SWEEP_MS / 1000).toFixed(2)}s. The last{' '}
+          {TRAIL_DEPTH} layers stay on screen in{' '}
+          <span className="text-fn">blue</span>, fading with age — that is order, not strength.
+        </p>
+      ) : null}
 
       {inert ? (
         <p className="text-const leading-4">
@@ -1845,6 +2262,8 @@ function applyDetail(handles: SceneHandles | null): void {
 
   const active = handles.activeCloud?.material as THREE.ShaderMaterial | undefined
   if (active) active.uniforms.detail.value = detail
+  const trail = handles.trailCloud?.material as THREE.ShaderMaterial | undefined
+  if (trail) trail.uniforms.detail.value = detail
   const areas = handles.areaCloud?.material as THREE.ShaderMaterial | undefined
   if (areas) areas.uniforms.detail.value = detail
   const idle = handles.nodeCloud?.material as THREE.PointsMaterial | undefined
