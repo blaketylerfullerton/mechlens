@@ -845,7 +845,7 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
   // Whether the anatomical shell is drawn. On by default: it is what makes the
   // cloud read as a volume rather than a flat spray, and a first-time reader
   // needs that before they need to see through it.
-  const [shell, setShell] = useState(true)
+  const [shell, setShell] = useState(false)
 
   // Which node the pointer is over, if any.
   const [hoveredNode, setHoveredNode] = useState<LitNode | null>(null)
