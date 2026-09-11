@@ -322,13 +322,15 @@ Watching depth on the brain is now done with the transport control described in
 
 ### Requirement: Band colour reuses the lens classification and crossover marker
 **Reason**: The brain no longer reads logit-lens data. Colouring bands by the
-`answer` / `echo` / `other` classification made the brain a second rendering of
-the signal the trace grid already shows in the same colours from the same
-module. The brain now shows SAE feature activity, which nothing else displays.
+`answer` / `echo` / `other` classification spent the whole rendering on a
+layer x token signal — binned into seven bands, shown one token at a time —
+that the trace grid's own layer x token cells can carry exactly. The brain now
+shows SAE feature activity, which nothing else displays.
 
-**Migration**: The lens classification and the `crossover_layer` marker remain
-in the trace grid, which is unchanged and remains the single place that
-classification is rendered. No brain surface consumes lens data.
+**Migration**: The lens classification and the `crossover_layer` marker move to
+the trace grid, which gains a colour mode for the classification and a marker
+on its layer axis — the grid becomes the single place either is rendered. No
+brain surface consumes lens data.
 
 ### Requirement: The brain degrades when lens data is absent
 **Reason**: The brain no longer depends on lens data, so a lens-shaped

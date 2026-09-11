@@ -72,21 +72,40 @@
 
 ## 5. Retire the layer bands
 
-- [ ] 5.1 Remove the band painting, band rings, crossover ring and band hover panel from `frontend/src/components/Brain.tsx`, and verify the brain renders with the point cloud alone and no band artifacts remain on screen
-- [ ] 5.2 Remove the band helpers left without a consumer from `frontend/src/lib/lens.ts`, keeping the per-cell classification the grid uses, and verify the grid still renders the lens classification and the crossover marker unchanged
-- [ ] 5.3 Rewrite the brain legend for nodes and areas, and verify it states that a node is an SAE feature, that an area is a cluster of similar residual-stream directions, and that neither is a brain region
-- [ ] 5.4 Confirm no axis, coordinate readout, distance scale or measurement affordance is rendered, that the layout's local-versus-global limits are stated, and that the atlas's kNN preservation figure is reachable from the interface
+- [x] 5.1 Remove the band painting, band rings, crossover ring and band hover panel from `frontend/src/components/Brain.tsx`, and verify the brain renders with the point cloud alone and no band artifacts remain on screen
+- [x] 5.2 Remove the band helpers left without a consumer from `frontend/src/lib/lens.ts`, keeping the per-cell classification the grid uses, and verify the grid still renders the lens classification and the crossover marker unchanged
+- [x] 5.3 Rewrite the brain legend for nodes and areas, and verify it states that a node is an SAE feature, that an area is a cluster of similar residual-stream directions, and that neither is a brain region
+- [x] 5.4 Confirm no axis, coordinate readout, distance scale or measurement affordance is rendered, that the layout's local-versus-global limits are stated, and that the atlas's kNN preservation figure is reachable from the interface
+- [x] 5.5 Give the lens classification the renderer the migration assumed it had: colour the trace grid's cells by `answer` / `echo` / `other` under a stated colour mode, mark `crossover_layer` on the layer axis, and verify both are on screen and that the mode is unavailable with a stated reason on a trace with no lens readouts
+
+  **Why this was not in the plan.** 5.2 and design decision 1 both justified
+  deleting the bands with "the grid already renders it". It did not — the grid
+  colours cells by residual L2 norm, and nothing anywhere drew `crossover_layer`.
+  Retiring the bands would therefore have dropped the `answer`/`echo`/`other`
+  reading from the interface entirely rather than moving it. Building the
+  renderer makes the migration true; the spec's REMOVED-requirement note still
+  says the grid is "unchanged", which it no longer is.
 
 ## 6. Areas, detail levels, transport, filtering
 
-- [ ] 6.1 Render atlas clusters as areas labelled only with the names the atlas recorded, and verify an unnamed cluster renders unnamed and is not summarised in the interface
-- [ ] 6.2 Derive area prominence from member activations at the displayed scope, stating the combination used and how many of the area's features were active, and verify an area with no active members is not lit
-- [ ] 6.3 Disclose the source of a named area's name — the member feature its label came from and the coherence measured — and verify it is reachable from the area
-- [ ] 6.4 Add level-of-detail so areas read without individual identities and nodes resolve on approach, and verify the overview is legible without focusing any single node
-- [ ] 6.5 Drive the lit set from the shared (layer, token) selection so a grid cell click lights that cell's features, and verify selecting from either surface updates both and a new trace resets both to one default
-- [ ] 6.6 Add a transport control stepping the selected layer, and verify it stops at the last layer without wrapping and is inert with a stated reason on a trace with no feature data
+- [x] 6.1 Render atlas clusters as areas labelled only with the names the atlas recorded, and verify an unnamed cluster renders unnamed and is not summarised in the interface
+- [x] 6.2 Derive area prominence from member activations at the displayed scope, stating the combination used and how many of the area's features were active, and verify an area with no active members is not lit
+- [x] 6.3 Disclose the source of a named area's name — the member feature its label came from and the coherence measured — and verify it is reachable from the area
+- [x] 6.4 Add level-of-detail so areas read without individual identities and nodes resolve on approach, and verify the overview is legible without focusing any single node
+- [x] 6.5 Drive the lit set from the shared (layer, token) selection so a grid cell click lights that cell's features, and verify selecting from either surface updates both and a new trace resets both to one default
+- [x] 6.6 Add a transport control stepping the selected layer, and verify it stops at the last layer without wrapping and is inert with a stated reason on a trace with no feature data
 - [ ] 6.7 Light features per layer from live job progress without lighting a layer the service has not reported, and verify the lit set never runs ahead of the last reading and a layer whose features have not arrived is shown as computing rather than lit
-- [ ] 6.8 Add label-text filtering of the lit nodes, stating matched-out-of-active, and verify a query with no matches says so and that unlabelled features are excluded with that stated
+
+  **Blocked on the service, not the view.** The second half is built and
+  verified: while a layer-counting phase runs the brain states which layer is
+  being computed, lights nothing from it, and never advances past the last
+  reading. The first half cannot be built against the current API — a job's
+  features reach the client only with the finished trace (`JobStatusResponse.trace`
+  is null until `done`), so there is nothing to light per layer while the pass
+  is running. Doing it needs a partial-feature channel: progress carrying each
+  layer's features as it finishes them, or a readable partial trace. That is an
+  api-service change and a spec delta there, not a frontend task.
+- [x] 6.8 Add label-text filtering of the lit nodes, stating matched-out-of-active, and verify a query with no matches says so and that unlabelled features are excluded with that stated
 
 ## 7. Verification
 

@@ -83,9 +83,11 @@ forms; (b) hybrid, layer as a soft prior on one axis — muddies both readings
 and makes the honesty copy incoherent ("this axis is partly layer"). Rejected.
 
 *Cost:* most of `frontend-brain-view` is a rewrite, and the layer bands, rings,
-crossover ring and band hover panel are deleted. The lens classification they
-carried is unaffected — `lens.ts` is already the shared source and the grid
-already renders it, so nothing is lost from the screen.
+crossover ring and band hover panel are deleted. That deletion takes the lens
+classification off the screen with them: `lens.ts` is the shared source, but
+the brain was its only renderer — the grid colours its cells by residual L2
+norm, and nothing drew `crossover_layer` at all. Keeping the reading therefore
+costs a renderer in the grid, not just a deletion on the brain (see task 5.5).
 
 ### 2. Two atlases: label embeddings for the default view, `W_dec` for the geometry
 
@@ -422,9 +424,11 @@ precomputed table.
   double-sided shell with bloom may read as fog. → Prototype the render against
   a real atlas early, before the areas, LOD, filtering and transport are built
   on top of it.
-- **Deleting the bands is a visible loss.** → The lens classification and the
-  crossover marker stay in the grid, which already renders them from the same
-  module; the brain stops duplicating a signal rather than dropping one.
+- **Deleting the bands is a visible loss.** It is a real one: the brain was the
+  only renderer of the `answer` / `echo` / `other` classification, and nothing
+  drew `crossover_layer`. → The grid gains both, from the same `lens.ts`
+  module — a colour mode over its own layer x token cells, where the reading is
+  per-cell and unblurred rather than binned into seven bands.
 - **`Trace.layout` grows the trace JSON** by a few hundred KB. → Quantise, or
   drop to a compact parallel-array form, if it becomes the dominant term.
 

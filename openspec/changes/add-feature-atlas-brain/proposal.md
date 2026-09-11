@@ -2,10 +2,11 @@
 
 The brain on screen today shows a continuous field: seven depth bands, each a
 range of transformer layers, tinted by the logit-lens classification at the
-selected token. It answers "how did the answer crystallise with depth" — the
-same question the trace grid already answers, in the same colours, from the
-same module. So the brain is a second rendering of one signal rather than a
-view of anything the grid cannot show.
+selected token. It answers "how did the answer crystallise with depth" — a
+layer x token question, blurred into seven bands and shown one token at a
+time, which the trace grid's layer x token surface can answer exactly and all
+at once. So the brain spends every spatial dimension it has on a signal that
+is better read as a grid, and shows nothing the grid could not.
 
 Meanwhile the one thing in a trace that is genuinely *discrete and nameable* —
 the SAE features that fired, with an activation value and a human-readable
@@ -62,8 +63,9 @@ a thin disc, and "which layer" becomes "when it lights up" — driven by the
 existing shared (layer, token) selection, which already makes the trace grid a
 token x layer transport control. The seven layer bands, their rings, the
 crossover ring and the band hover breakdown are removed from the brain; the
-logit-lens classification they carried remains in the trace grid, which is
-where both surfaces already read it from.
+logit-lens classification they carried moves to the trace grid, which gains a
+colour mode for it and a crossover marker on its layer axis, so the reading
+changes surface rather than disappearing.
 
 **BREAKING: `Trace` schema 1.3 -> 1.4.** Adds `Trace.layout`, a side table
 keyed `"layer/index"` in the same shape and for the same reason as
@@ -120,8 +122,11 @@ a query over the model's own concepts.
 - `components/Brain.tsx` — bands, rings and their hover panel removed; a point
   cloud, area markers, level-of-detail, and picking added.
 - `lib/lens.ts` — band helpers (`bandLayers`, `blendBand`, `bandOfLayer`) lose
-  their only consumer on the brain side; the per-cell classification the grid
-  uses stays.
+  their only consumer and are deleted; the per-cell classification stays, and
+  gains its first renderer in the grid.
+- `components/TraceViewer.tsx` — the residual map gains a colour mode for the
+  `answer` / `echo` / `other` classification and a `crossover_layer` marker on
+  its layer axis, so the reading the bands carried has somewhere to live.
 - `lib/api-types.ts` — mirrors the schema and `TracePass` changes.
 - A static idle-atlas subsample so the brain still has structure with no trace
   loaded.
