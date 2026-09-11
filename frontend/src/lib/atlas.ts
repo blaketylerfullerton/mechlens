@@ -151,9 +151,8 @@ export class AtlasFormatError extends Error {}
  *
  * Throws rather than returning a partial atlas: a truncated node list would
  * silently misplace features, which is worse than not drawing them. The caller
- * is expected to treat a failure as "no atlas available" and say so — see the
- * requirement that the brain renders the shell alone rather than placing nodes
- * at arbitrary positions.
+ * is expected to treat a failure as "no atlas available" and say so rather
+ * than placing nodes at arbitrary positions.
  */
 export function parseAtlas(raw: unknown): Atlas {
   const payload = raw as AtlasPayload
