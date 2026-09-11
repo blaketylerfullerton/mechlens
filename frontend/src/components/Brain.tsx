@@ -362,6 +362,8 @@ function buildNodeCloud(atlas: Atlas): THREE.Points {
 const ACTIVE_COLOR = new THREE.Color(0x7ee787)
 const ACTIVE_MIN_SIZE = 0.034
 const ACTIVE_MAX_SIZE = 0.11
+/** The weakest a lit node may be drawn. See the active fragment shader. */
+const ACTIVE_MIN_ALPHA = 0.7
 
 /**
  * How far the idle cloud drops back once something is lit.
@@ -370,7 +372,7 @@ const ACTIVE_MAX_SIZE = 0.11
  * finding. At cell scope the lit set is ~16 nodes against 20,000, so without
  * this the data is a rounding error on the texture behind it.
  */
-const NODE_IDLE_OPACITY_LIT = 0.13
+const NODE_IDLE_OPACITY_LIT = 0.07
 
 // --------------------------------------------------------------------------
 // the trail: the layers the sweep has already passed
@@ -601,6 +603,13 @@ const SHELL_PICK_RADIUS = 1.6
 const PICK_STEPS = 96
 /** How near the ray a node must pass to count as hovered, in shell units. */
 const PICK_RADIUS = 0.055
+/**
+ * How far the pointer may travel between press and release and still count as
+ * a click rather than a drag. The same gesture orbits the brain, so without
+ * this every turn of the camera would re-pin whatever ended up under the
+ * cursor.
+ */
+const CLICK_SLOP = 4
 
 /**
  * Where a ray enters and leaves a sphere at the origin, or null if it misses.
@@ -651,9 +660,76 @@ void main() {
   float radius = length(offset);
   if (radius > 0.5) discard;
   float edge = smoothstep(0.5, 0.15, radius);
-  gl_FragColor = vec4(color, edge * mix(0.35, 1.0, vProminence));
+  // The alpha floor is the weakest a lit node is allowed to be. It used to be
+  // 0.35, which put a low-activation node under the idle cloud's own
+  // brightness: green became grey-green and the lit set stopped reading as
+  // the data. A lit node is a finding at any activation, so the floor is high
+  // enough to be unambiguously green, and prominence still separates the
+  // strong from the weak across the range above it.
+  gl_FragColor = vec4(color, edge * mix(${ACTIVE_MIN_ALPHA.toFixed(2)}, 1.0, vProminence));
 }
 `
+
+/**
+ * The ring around a pinned node.
+ *
+ * A pin holds one node's panel open, and a held-open panel with nothing on
+ * screen to say *which* node it belongs to is a caption without a subject —
+ * the reader has to remember what they clicked. So the pin is drawn.
+ *
+ * A ring rather than a filled dot, and in the shell's own tone rather than a
+ * brighter green: the node inside it has to stay visible and stay the colour
+ * its activation earned. The marker says "this one is being read", which is a
+ * fact about the reader, not about the model.
+ */
+const PIN_COLOR = new THREE.Color(0xe6e8eb)
+/** Comfortably clear of ACTIVE_MAX_SIZE, so the ring surrounds the node. */
+const PIN_SIZE = 0.17
+
+const PIN_VERTEX_SHADER = `
+uniform float detail;
+void main() {
+  vec4 viewPosition = modelViewMatrix * vec4(position, 1.0);
+  gl_PointSize = ${PIN_SIZE.toFixed(3)} * mix(0.85, 1.45, detail) * (300.0 / -viewPosition.z);
+  gl_Position = projectionMatrix * viewPosition;
+}
+`
+
+const PIN_FRAGMENT_SHADER = `
+uniform vec3 color;
+void main() {
+  float radius = length(gl_PointCoord - vec2(0.5));
+  if (radius > 0.5) discard;
+  // Two smoothsteps make an annulus: opaque between them, transparent inside
+  // and out, so the node keeps reading through the hole in the middle.
+  float ring = smoothstep(0.33, 0.40, radius) * smoothstep(0.50, 0.43, radius);
+  gl_FragColor = vec4(color, ring * 0.85);
+}
+`
+
+function buildPinMarker(node: LitNode): THREE.Points {
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute(
+    'position',
+    new THREE.BufferAttribute(new Float32Array([node.x, node.y, node.z]), 3),
+  )
+
+  const material = new THREE.ShaderMaterial({
+    uniforms: { color: { value: PIN_COLOR }, detail: { value: 0 } },
+    vertexShader: PIN_VERTEX_SHADER,
+    fragmentShader: PIN_FRAGMENT_SHADER,
+    transparent: true,
+    depthWrite: false,
+    // Not additive: the ring is a marker, not light, and adding it to a dense
+    // patch of cloud would blow out to white exactly where it needs to read
+    // as an outline.
+    blending: THREE.NormalBlending,
+  })
+
+  const points = new THREE.Points(geometry, material)
+  points.frustumCulled = false
+  return points
+}
 
 function buildActiveCloud(nodes: LitNode[], maxActivation: number): THREE.Points {
   const positions = new Float32Array(nodes.length * 3)
@@ -704,6 +780,8 @@ interface SceneHandles {
   trailCloud: THREE.Points | null
   /** The lit areas, as soft masses at their centroids. */
   areaCloud: THREE.Points | null
+  /** The ring around the pinned node, if one is pinned. */
+  pinMarker: THREE.Points | null
   /**
    * One absolutely-positioned label per drawn area, projected from its
    * centroid every frame.
@@ -772,6 +850,19 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
   // Which node the pointer is over, if any.
   const [hoveredNode, setHoveredNode] = useState<LitNode | null>(null)
 
+  // Which node has been clicked, if any.
+  //
+  // Hover alone made a node something you could look at and never touch: the
+  // panel carries a Neuronpedia link, and moving the pointer towards that link
+  // takes it off the node, which closes the panel the link was in. A pin is
+  // the fix — the panel stays until it is dismissed, so the link is reachable
+  // and the text is selectable.
+  //
+  // It outranks hover rather than yielding to it. A pinned panel that swapped
+  // its contents for whatever the pointer crossed on the way to the link would
+  // be the same trap with an extra step.
+  const [pinnedNode, setPinnedNode] = useState<LitNode | null>(null)
+
   // Which area's label the pointer is over. Carries the atlas's record and
   // what this trace lit inside it, because the disclosure needs both.
   const [hoveredArea, setHoveredArea] = useState<{
@@ -796,6 +887,17 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
   // be lying about what it is showing.
   const filter = useMemo<LabelFilter>(() => filterByLabel(lit, trace, query), [lit, trace, query])
   const drawn = filter.nodes
+
+  // A new lit set invalidates the pin: it names one node in the set being
+  // replaced, and holding it open would leave a panel — and a ring in the
+  // scene — describing a feature that is no longer drawn. Adjusted during
+  // render rather than in an effect, the same shape as `lastTrace` below, so
+  // the stale panel is never committed and painted first.
+  const [pinnedIn, setPinnedIn] = useState(drawn)
+  if (drawn !== pinnedIn) {
+    setPinnedIn(drawn)
+    setPinnedNode(null)
+  }
 
   // Areas are aggregated from the members actually on screen.
   const areas = useMemo<LitArea[]>(
@@ -1059,6 +1161,7 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
       activeCloud: null,
       trailCloud: null,
       areaCloud: null,
+      pinMarker: null,
       areaLabels: [],
       lift: 0,
       detail: 0,
@@ -1273,7 +1376,8 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
     const raycaster = new THREE.Raycaster()
     const pointer = new THREE.Vector2()
 
-    const onMove = (event: PointerEvent) => {
+    /** The frontmost node under the pointer, or null. Shared by hover and click. */
+    const pick = (event: PointerEvent): LitNode | null => {
       const rect = container.getBoundingClientRect()
       pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
       pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
@@ -1311,17 +1415,65 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
           }
         }
       }
-      setHoveredNode(found)
+      return found
     }
 
+    const onMove = (event: PointerEvent) => setHoveredNode(pick(event))
     const onLeave = () => setHoveredNode(null)
+
+    // Click and drag arrive as the same pair of events, and the drag orbits the
+    // camera — so they are told apart by how far the pointer travelled.
+    let pressedAt: { x: number; y: number } | null = null
+    const onDown = (event: PointerEvent) => {
+      pressedAt = { x: event.clientX, y: event.clientY }
+    }
+    const onUp = (event: PointerEvent) => {
+      const start = pressedAt
+      pressedAt = null
+      if (start === null) return
+      if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > CLICK_SLOP) return
+      // A click on empty space picks nothing and so unpins: the way out is the
+      // same gesture as the way in, and needs no target to aim at.
+      setPinnedNode(pick(event))
+    }
+
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPinnedNode(null)
+    }
+
     container.addEventListener('pointermove', onMove)
     container.addEventListener('pointerleave', onLeave)
+    container.addEventListener('pointerdown', onDown)
+    container.addEventListener('pointerup', onUp)
+    window.addEventListener('keydown', onKey)
     return () => {
       container.removeEventListener('pointermove', onMove)
       container.removeEventListener('pointerleave', onLeave)
+      container.removeEventListener('pointerdown', onDown)
+      container.removeEventListener('pointerup', onUp)
+      window.removeEventListener('keydown', onKey)
     }
   }, [tree])
+
+  // -- the pin marker: a ring on the node whose panel is being held open ----
+  useEffect(() => {
+    const handles = handlesRef.current
+    if (!handles || pinnedNode === null) return
+
+    const marker = buildPinMarker(pinnedNode)
+    // Seeded from the camera's current distance, so the ring is the right size
+    // on its first painted frame rather than on the second.
+    ;(marker.material as THREE.ShaderMaterial).uniforms.detail.value = handles.detail
+    handles.brainGroup.add(marker)
+    handles.pinMarker = marker
+
+    return () => {
+      handles.brainGroup.remove(marker)
+      marker.geometry.dispose()
+      ;(marker.material as THREE.Material).dispose()
+      handles.pinMarker = null
+    }
+  }, [pinnedNode])
 
   // -- the shell recedes once there is data inside it ---------------------
   useEffect(() => {
@@ -1420,10 +1572,13 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
         trace={trace}
       />
 
-      {/* One detail panel, and the area wins: the pointer is over its label,
-          which sits above the cloud, so a node behind it is not what is being
-          asked about. */}
-      {hoveredArea ? (
+      {/* One detail panel. A pin outranks everything, because it is the one
+          state the reader asked for out loud. Below it the area wins over a
+          node: the pointer is over the area's label, which sits above the
+          cloud, so a node behind it is not what is being asked about. */}
+      {pinnedNode ? (
+        <NodeDetail node={pinnedNode} onUnpin={() => setPinnedNode(null)} trace={trace} />
+      ) : hoveredArea ? (
         <AreaDetail entry={hoveredArea} />
       ) : hoveredNode ? (
         <NodeDetail node={hoveredNode} trace={trace} />
@@ -2166,14 +2321,45 @@ function AreaDetail({ entry }: { entry: { area: AtlasArea; lit: LitArea | null }
  * Neuronpedia has no label for some features, and a blank where text belongs
  * reads as a loading state or a bug instead of as the fact it is.
  */
-function NodeDetail({ node, trace }: { node: LitNode; trace: Trace | null }) {
+function NodeDetail({
+  node,
+  onUnpin,
+  trace,
+}: {
+  node: LitNode
+  /** Present only when this panel is pinned, which is what makes it dismissable. */
+  onUnpin?: () => void
+  trace: Trace | null
+}) {
   const key = `${node.layer}/${node.feature}`
   const label = trace?.labels[key] ?? null
   const record = trace?.passes.find((p) => p.name === 'labels')
   const labelsRan = record !== undefined
 
+  const pinned = onUnpin !== undefined
+
   return (
-    <div className="border-border-subtle bg-bg-elevated absolute bottom-3 left-3 max-w-[20rem] space-y-1 rounded-[10px] border px-2.5 py-2 text-[11px]">
+    <div
+      className={
+        'bg-bg-elevated absolute bottom-3 left-3 max-w-[20rem] space-y-1 rounded-[10px] ' +
+        'border px-2.5 py-2 text-[11px] ' +
+        // A pinned panel is a held state, so it says so with its border rather
+        // than with a word: the reader needs to know it will not close on its
+        // own, and the ring on the node is the other half of the same signal.
+        (pinned ? 'border-border-strong' : 'border-border-subtle')
+      }
+    >
+      {pinned ? (
+        <button
+          aria-label="Unpin this feature"
+          className="text-text-tertiary hover:text-text-primary absolute top-1.5 right-2 font-mono transition-colors duration-150"
+          onClick={onUnpin}
+          type="button"
+        >
+          ✕
+        </button>
+      ) : null}
+
       <p className="text-text-primary font-mono tabular-nums">
         L{node.layer} #{node.feature}
         <span className="text-text-tertiary"> · act {node.activation.toFixed(2)}</span>
@@ -2203,6 +2389,10 @@ function NodeDetail({ node, trace }: { node: LitNode; trace: Trace | null }) {
       >
         neuronpedia ↗
       </a>
+
+      <p className="text-text-disabled font-mono text-[10px] leading-4">
+        {pinned ? 'pinned · esc or click away to close' : 'click to pin'}
+      </p>
     </div>
   )
 }
@@ -2266,6 +2456,8 @@ function applyDetail(handles: SceneHandles | null): void {
   if (trail) trail.uniforms.detail.value = detail
   const areas = handles.areaCloud?.material as THREE.ShaderMaterial | undefined
   if (areas) areas.uniforms.detail.value = detail
+  const pin = handles.pinMarker?.material as THREE.ShaderMaterial | undefined
+  if (pin) pin.uniforms.detail.value = detail
   const idle = handles.nodeCloud?.material as THREE.PointsMaterial | undefined
   // Scaled around the default framing (~0.62), so the idle cloud looks the
   // way it always has until the camera actually moves.
