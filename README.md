@@ -2,18 +2,38 @@
 
 <img width="1704" height="964" alt="Screenshot 2026-09-08 at 10 21 00 PM" src="https://github.com/user-attachments/assets/e79d946a-34db-4acb-bd81-14529f7dc4a8" />
 
-Mechanistic-interpretability tracing for `gemma-2-2b` under TransformerLens.
+Look inside a language model on your own machine.
 
-Generate token by token, capture the residual stream at every layer, then run
-enrichment passes over the saved trace — SAE features, Neuronpedia labels, the
-logit lens, and attribution. A FastAPI service sits in front of all of it, so
-tracing and feature steering are also reachable over HTTP. Phase 7 is under way:
-every SAE feature gets a fixed place in a *feature atlas*, so a trace can be
-drawn as the features it actually lit up.
+Send a prompt and mechlens shows you which of the model's features actually
+fired — not neurons, but the sparse-autoencoder features that have
+human-readable names — what each one is called, where it sits among the other
+98,210 features the atlas covers, and how the answer took shape layer by layer.
+The model, the features, the labels and the layout all run locally, and nothing
+leaves the machine.
+
+It also tells you how much to trust the picture, which is the part most
+interpretability visualisations leave out. Every claim on screen carries its
+measurement: how much of the feature space survived being flattened to three
+dimensions (**29%** of a feature's nearest neighbours), whether a named region
+holds together better than a random group of the same size (**0.465** against
+**0.233**), and how many of the features that fired are actually being drawn
+(the SAE pass keeps the strongest **16** of a mean **78** per cell). A picture
+nobody measured is decoration.
+
+Under the hood: `gemma-2-2b` under TransformerLens, generated token by token
+with the residual stream captured at every layer, then enrichment passes over
+the saved trace — Gemma Scope SAE features, Neuronpedia labels, the logit lens,
+and attribution. A FastAPI service sits in front of all of it, so tracing and
+feature steering are reachable over HTTP.
+
+**Today this is a repo you clone and set up**, not a tool you install — see
+[Setup](#setup). Making it one command is the plan, and it is written down in
+[Where this is going](#where-this-is-going).
 
 ## Status
 
-Phases 0–6 are done, phase 7 is partly landed; the trace schema is at **1.4**.
+Phases 0–6 are done; phase 7 is feature-complete bar one blocked item and is in
+final verification; the trace schema is at **1.4**.
 
 | phase | what | state |
 | --- | --- | --- |
@@ -27,17 +47,27 @@ Phases 0–6 are done, phase 7 is partly landed; the trace schema is at **1.4**.
 | 7 | feature atlas — a fixed position per feature, and the brain drawn from it | in progress |
 | 8 | feature-level attribution — `kind="sae"` edges, deferred from phase 5 | next |
 
-Phase 7, in more detail — the parts that are in and the parts that are not:
+Phase 7, in more detail — the parts that are in, and the one that is not:
 
 | | state |
 | --- | --- |
 | `POST /trace` runs the `sae` and `labels` passes; the job reports an `sae` phase | done |
 | the atlas build, its five diagnostics, and two source representations | done |
 | schema 1.4 — `Trace.layout`, a side table keyed `"layer/index"` | done |
-| serving the layout with a trace, and the atlas endpoint | not started |
+| serving the layout with a trace, and the atlas endpoint | done |
 | the brain renders atlas nodes, and says what the layout does and does not claim | done |
-| lighting nodes from a trace's activations, areas, the transport, label search | not started |
-| retiring the layer bands — the brain still draws both | not started |
+| lighting nodes from a trace's activations, areas, the transport, label search | done |
+| retiring the layer bands — the brain draws the feature cloud alone | done |
+| the trace grid colours cells by the lens classification, with the crossover marker | done |
+| lighting features per layer *while* the job runs | blocked — see below |
+
+The last row is blocked on the service, not the view. A job's features reach the
+client only with the finished trace (`JobStatusResponse.trace` is null until
+`done`), so there is nothing to light per layer while the SAE pass is running.
+What the brain does instead is state which layer is being computed and light
+nothing from it, which is the honest reading of a counter. Closing it properly
+needs a partial-feature channel — progress carrying each layer's features, or a
+readable partial trace — which is an api-service change, not a frontend one.
 
 Measured on the traces in `backend/traces/`:
 
@@ -52,7 +82,7 @@ Measured on the traces in `backend/traces/`:
 | attribution | 26 layers x 31 tokens in **1.2s**; reconstruction gap **≤1.3e-2** across all five traces (bf16 tail, per-layer mean ~0.004–0.005, flat with depth); attn top-8 coverage **90–98%** |
 | atlas (label source) | 98,210 features over 6 layers; kNN preservation **0.292**, 32 clusters, **27** earning a name at coherence **0.465** against a random baseline of **0.233**; explainer influence **0.026** |
 | atlas (decoder source) | 98,304 features over the same 6 layers; kNN preservation **0.143**, 12 clusters, **0** earning a name (margin **+0.049**, needs +0.15) |
-| tests | **286 passed, 1 skipped** in ~53s |
+| tests | **316 passed, 1 skipped** in ~79s |
 
 The atlas numbers above are a **6-layer pilot** (0, 5, 10, 16, 20, 25), not the
 full 26. Those six were picked to span the depth range and to include two of the
@@ -64,6 +94,56 @@ activations — a known Gemma Scope artifact, kept per-token but excluded from
 every summary statistic. The other long-standing gap is now closed: the
 explanation embeddings (`--embeddings`, ~2GB) have a consumer, and it turned out
 to be a bigger one than expected — see the atlas section below.
+
+## Where this is going
+
+The end state is a local-first tool you install with one command and point at a
+model: a browser opens and you are looking inside it. Ollama's shape, for
+interpretability. Today this is a research repo — a venv, a 462MB import script,
+a 3-minute atlas build and two dev servers — and closing that gap is worth more
+than any feature below it.
+
+The friction a newcomer hits, in the order they hit it:
+
+| | closed by |
+| --- | --- |
+| Python env, torch/CUDA versions, two servers to start | a published wheel with the built frontend inside it |
+| a 462MB label DB produced by an import script | shipping it as a release asset, pulled with a progress bar |
+| a 3-minute atlas build | shipping the 560KB asset the same way |
+| `gemma-2-2b` hardwired in `model_cache.py` | a small model registry |
+| an HF token and a licence click before anything runs | an ungated default model — `gpt2-small` has public SAEs |
+
+Roughly in order:
+
+1. **A hosted static demo.** The frontend renders a saved trace plus the atlas
+   asset, and needs no model, no GPU and no backend — so a handful of prebuilt
+   traces on a static host demonstrates the whole view. Nobody installs a tool
+   they have not seen run.
+2. **One command to serve it.** A single package with the built frontend inside
+   the wheel and FastAPI serving both halves. No node, no vite, no second port.
+3. **A pullable bundle.** The unit is not a model; it is a model *plus* its
+   SAEs, its labels and its atlas. One command should fetch all four.
+4. **Docker**, for Linux/CUDA users and servers — second-class on purpose. The
+   development machine here is aarch64 Blackwell, which is nobody else's
+   platform, and a CUDA container gives a Mac user nothing.
+5. **Bring your own SAE** — load a SAELens-format file against a supported
+   model, auto-interp labels optional. Covers most of "my own model" for almost
+   nothing.
+6. **Train an SAE locally.** One activation stream feeds every layer's SAE at
+   once, so 26 of them cost roughly what one does.
+
+Phase 8 — feature-level attribution, the `kind="sae"` edges deferred from phase
+5 — is a capability rather than a packaging step, and it is what would turn this
+from a view of *what fired* into a view of *what caused what*. It is worth more
+than items 4–6 and is harder than all of them.
+
+**Where the Ollama analogy breaks, so it is not promised.** Ollama ships a
+static binary because llama.cpp is C++; torch alone is 2–3GB of wheels and no
+packaging changes that. And `ollama run` is inference, whereas training an SAE
+is training — hours of GPU time, not seconds, at a quality below Gemma Scope.
+A run that reports its explained variance, L0 and dead-feature count is worth
+shipping; one that implies it matched a lab's is not, in a project built around
+saying how much to trust what you are looking at.
 
 ## Setup
 
@@ -224,7 +304,14 @@ one, once, offline:
 ```bash
 python scripts/build_feature_atlas.py --layers 0,5,10,16,20,25   # ~3 min, reads the label DB
 python scripts/build_feature_atlas.py --source decoder           # the other representation, needs the SAEs
+python scripts/build_feature_atlas.py --asset-only               # re-emit the idle asset from the DB, no rebuild
 ```
+
+`--asset-only` exists because the idle asset is derived output — positions,
+clusters and metrics all live in the label store once a build has run — and
+UMAP is the expensive, stochastic step. Changing a serialised field must not
+cost a rebuild, or the atlas risks losing the one property it is required to
+have: that a feature is placed identically everywhere it is drawn.
 
 ```
 atlas 16k-s0-731e35f436  (98,210 features, source=labels 256d)
@@ -362,7 +449,7 @@ records its `explainer` for that reason. See `phase3.md`.
 ## Tests
 
 ```bash
-pytest backend/tests -q            # ~53s: a 1M-param model on CPU, and stand-in SAEs
+pytest backend/tests -q            # ~79s: a 1M-param model on CPU, and stand-in SAEs
 MECHLENS_SLOW=1 pytest backend/tests -q   # adds a real Gemma Scope SAE (302MB download)
 ```
 
