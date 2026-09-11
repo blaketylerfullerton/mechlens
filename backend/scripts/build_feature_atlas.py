@@ -719,6 +719,9 @@ def write_subsample(
             {
                 "cluster": c.cluster,
                 "name": c.name,
+                # The medoid whose label became the name, so the view can show
+                # which member is speaking for the cluster.
+                "name_source": list(c.name_source) if c.name_source else None,
                 "n_members": c.n_members,
                 "centroid": list(c.centroid),
                 "spread": c.spread,
@@ -738,6 +741,60 @@ def write_subsample(
         "n_sampled": int(len(picks)),
         "max_quantisation_error": payload["max_quantisation_error"],
     }
+
+
+def rewrite_subsample(
+    path: Path,
+    db_path: str,
+    atlas_version: str | None = None,
+    source: str = DEFAULT_SOURCE,
+    size: int = DEFAULT_SUBSAMPLE,
+    seed: int = 0,
+) -> dict:
+    """Re-emit the idle asset from an atlas already in the DB.
+
+    The asset is derived output — positions, clusters and metrics all live in
+    the label store once a build has run — so regenerating it must not cost a
+    rebuild. UMAP is the expensive, stochastic step and rerunning it to change
+    a serialised field would risk the one property the atlas is required to
+    have: that a feature is placed identically everywhere it is drawn.
+
+    Same sample as the build would draw, because `subsample_indices` is seeded
+    and the row order is the layout table's own.
+    """
+    with LabelStore(db_path) as store:
+        record = store.atlas_record(atlas_version, source=None if atlas_version else source)
+        if record is None:
+            raise SystemExit(
+                f"no atlas in {db_path}"
+                + (f" for version {atlas_version}" if atlas_version else f" from source {source}")
+            )
+        version = record.atlas_version
+        rows = store.layout_all(version)
+        clusters = store.clusters(version)
+
+    if not rows:
+        raise SystemExit(f"atlas {version} has no layout rows")
+
+    keys = [(r.layer, r.feature) for r in rows]
+    # float64, not float32: the store round-trips doubles, and narrowing here
+    # would shift the quantisation extent in the last decimals and re-emit an
+    # asset whose nodes differ from the build's for no reason.
+    positions = np.array([[r.x, r.y, r.z] for r in rows], dtype=np.float64)
+    cluster_labels = np.array([r.cluster for r in rows], dtype=np.int32)
+
+    return write_subsample(
+        path,
+        version,
+        keys,
+        positions,
+        cluster_labels,
+        clusters,
+        size,
+        seed,
+        source=str(record.params.get("source", source)),
+        metrics=record.metrics,
+    )
 
 
 def report(summary: dict, clusters: list[ClusterRow]) -> None:
@@ -861,7 +918,30 @@ def main() -> None:
         default=str(Path(__file__).resolve().parents[2] / "frontend" / "public" / "atlas-idle.json"),
     )
     parser.add_argument("--dry-run", action="store_true", help="measure and print, write nothing")
+    parser.add_argument(
+        "--asset-only",
+        action="store_true",
+        help="re-emit the idle asset from the atlas already in the DB, without rebuilding",
+    )
+    parser.add_argument(
+        "--atlas-version", default="", help="with --asset-only: which atlas (default: latest)"
+    )
     args = parser.parse_args()
+
+    if args.asset_only:
+        info = rewrite_subsample(
+            Path(args.subsample_out),
+            db_path=args.db,
+            atlas_version=args.atlas_version or None,
+            source=args.source,
+            size=args.subsample,
+            seed=args.seed,
+        )
+        print(
+            f"rewrote {info['path']} — {info['n_sampled']:,} nodes, "
+            f"{info['bytes'] / 1024:.0f}KB, no rebuild"
+        )
+        return
 
     layers = parse_layers(args.layers)
     note = (

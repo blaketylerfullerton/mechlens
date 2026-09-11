@@ -133,6 +133,12 @@ class AtlasArea(BaseModel):
 
     cluster: int
     name: str | None = None
+    #: `(layer, feature)` of the member whose own label became `name` — the
+    #: cluster's medoid. Null whenever `name` is null. Carried so the view can
+    #: disclose that an area's name is one member's label standing for many,
+    #: and which member that was, rather than presenting it as a summary of
+    #: the whole cluster.
+    name_source: tuple[int, int] | None = None
     n_members: int
     centroid: tuple[float, float, float]
     spread: float

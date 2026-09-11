@@ -371,6 +371,7 @@ def create_app(
                 AtlasArea(
                     cluster=c.cluster,
                     name=c.name,
+                    name_source=c.name_source,
                     n_members=c.n_members,
                     centroid=c.centroid,
                     spread=c.spread,
