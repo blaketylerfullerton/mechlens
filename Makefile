@@ -80,3 +80,11 @@ down:
 
 $(RUN):
 	@mkdir -p $(RUN)
+
+# The landing page. Standalone on purpose: no backend, no model, no GPU — it is
+# a static site that deploys somewhere public, unlike frontend/ which is the
+# local tool. Runs in the foreground on :5180, so it never collides with vite
+# on :5173 and `make down` has nothing to clean up.
+.PHONY: site
+site:
+	@cd site && npm run dev

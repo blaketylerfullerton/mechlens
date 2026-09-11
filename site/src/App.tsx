@@ -114,56 +114,7 @@ function Hero() {
   )
 }
 
-function WhatYouSee() {
-  return (
-    <Section id="what" label="what you see">
-      <div className="grid gap-px overflow-hidden rounded-xl border border-border-subtle bg-border-subtle sm:grid-cols-3">
-        <Card title="The features that fired">
-          Not neurons — sparse-autoencoder features with human-readable names,
-          top-k per token and layer.
-        </Card>
-        <Card title="Where they sit">
-          One fixed position per feature across the whole atlas, so the same
-          feature lands in the same place every run.
-        </Card>
-        <Card title="How much to trust it">
-          Every claim carries its measurement: 29% neighbour preservation,
-          0.465 cluster coherence against 0.233 for random.
-        </Card>
-      </div>
-    </Section>
-  )
-}
 
-function UnderTheHood() {
-  return (
-    <Section id="how" label="under the hood">
-      <dl className="max-w-2xl divide-y divide-border-subtle border-y border-border-subtle">
-        <Row term="model">gemma-2-2b under TransformerLens, bf16 on CUDA</Row>
-        <Row term="capture">residual stream, token by token, all 26 layers</Row>
-        <Row term="features">Gemma Scope 16k SAEs, Neuronpedia labels</Row>
-        <Row term="attribution">exact resid / attn / mlp decomposition</Row>
-        <Row term="service">FastAPI — /trace, /steer, /feature</Row>
-      </dl>
-    </Section>
-  )
-}
-
-function Setup() {
-  return (
-    <Section id="setup" label="setup">
-      <p className="mb-6 max-w-2xl text-base leading-relaxed text-text-secondary">
-        Three commands. gemma is gated, so accept the license on Hugging Face
-        first.
-      </p>
-      <pre className="overflow-x-auto rounded-lg border border-border-subtle bg-bg-surface/80 p-5 font-mono text-xs leading-relaxed text-text-secondary backdrop-blur-sm">
-        <code>{`python -m venv venv && source venv/bin/activate
-pip install -r backend/requirements.txt
-huggingface-cli login`}</code>
-      </pre>
-    </Section>
-  )
-}
 
 function Footer() {
   return (
@@ -200,59 +151,8 @@ function Container({
   )
 }
 
-function Section({
-  children,
-  id,
-  label,
-}: {
-  children: React.ReactNode
-  id: string
-  label: string
-}) {
-  return (
-    <section className="border-t border-border-subtle py-20" id={id}>
-      <Container>
-        <p className="mb-6 font-mono text-xs tracking-wide text-text-tertiary uppercase">
-          {label}
-        </p>
-        {children}
-      </Container>
-    </section>
-  )
-}
 
-function Card({
-  children,
-  title,
-}: {
-  children: React.ReactNode
-  title: string
-}) {
-  return (
-    <div className="bg-bg-base/80 p-6 backdrop-blur-sm">
-      <h3 className="font-mono text-sm text-text-primary">{title}</h3>
-      <p className="mt-3 text-sm leading-relaxed text-text-secondary">
-        {children}
-      </p>
-    </div>
-  )
-}
 
-function Row({
-  children,
-  term,
-}: {
-  children: React.ReactNode
-  term: string
-}) {
-  return (
-    <div className="flex flex-col gap-1 py-3 sm:flex-row sm:gap-6">
-      <dt className="font-mono text-xs text-text-tertiary sm:w-32 sm:shrink-0 sm:pt-0.5">
-        {term}
-      </dt>
-      <dd className="text-sm text-text-secondary">{children}</dd>
-    </div>
-  )
-}
+
 
 export default App
