@@ -1,11 +1,13 @@
 // The one place the logit-lens classification and its colours are defined.
 //
-// The brain and the grid both colour things by "what is this layer holding at
-// this position" — and if they each computed that themselves they would drift,
-// which would make a colour mean two things in one screen. So both read this
-// module. The residual-magnitude heatmap in TraceViewer is deliberately *not*
-// routed through here: it encodes a different quantity (an L2 norm, not a
-// classification) and shares no scale with these colours.
+// The brain used to colour layer bands from this module; it no longer reads
+// lens data at all — it shows SAE features, which nothing else displays, and
+// the bands are gone. What stays here is the per-(position, layer) question
+// "what is this layer holding here", defined once so that whichever surface
+// renders it cannot drift from any other. The trace grid does not colour its
+// cells by it today — that grid encodes residual L2 magnitude, a different
+// quantity on a scale these colours do not share — so the classification
+// currently has no renderer.
 //
 // Semantics follow backend/app/passes/lens.py, which computes the same three
 // populations as per-layer curves (`top1_agreement_by_layer`, `echo_by_layer`).
@@ -62,117 +64,6 @@ export function classifyLayer(step: TokenStep, layer: number): LayerClassificati
   return { layer, klass, confidence: top.prob }
 }
 
-// -- bands ----------------------------------------------------------------
-
-/** A contiguous run of layers drawn as one region. */
-export interface Band {
-  index: number
-  startLayer: number
-  endLayer: number
-  layers: number[]
-}
-
-/**
- * Default band count. 26 layers as 26 bands would be wafer-thin stripes on a
- * 1.4-radius shell — unreadable and unclickable — so layers are binned, the
- * same call the archived brain-view design made for its rings.
- */
-export const DEFAULT_BAND_COUNT = 7
-
-/**
- * Partition `0..nLayers-1` into contiguous bands, every layer in exactly one,
- * no band empty. When the count does not divide evenly the remainder goes to
- * the earliest bands (so band sizes decrease by at most one, front to back),
- * and asking for more bands than layers yields one band per layer rather than
- * empty ones.
- */
-export function bandLayers(nLayers: number, bandCount: number = DEFAULT_BAND_COUNT): Band[] {
-  if (nLayers <= 0 || bandCount <= 0) return []
-
-  const count = Math.min(bandCount, nLayers)
-  const base = Math.floor(nLayers / count)
-  const remainder = nLayers % count
-
-  const bands: Band[] = []
-  let next = 0
-  for (let index = 0; index < count; index++) {
-    const size = base + (index < remainder ? 1 : 0)
-    const startLayer = next
-    const endLayer = next + size - 1
-    bands.push({
-      index,
-      startLayer,
-      endLayer,
-      layers: Array.from({ length: size }, (_, offset) => startLayer + offset),
-    })
-    next += size
-  }
-  return bands
-}
-
-export interface BandState {
-  band: Band
-  /** `null` when no layer in the band had a lens readout to classify. */
-  klass: LensClass | null
-  /** Mean confidence of the layers matching `klass`; 0 when `klass` is null. */
-  confidence: number
-  /** How many layers voted for each class. Zero-count classes are included. */
-  counts: Record<LensClass, number>
-  /** Per-layer detail, for the hover disclosure. Excludes undecoded layers. */
-  layers: LayerClassification[]
-  /** Layers in this band with no lens readout at all. */
-  undecoded: number[]
-}
-
-const CLASSES: LensClass[] = ['answer', 'echo', 'other']
-
-/**
- * Blend one band's layers into a single class and intensity.
- *
- * Majority class by layer count, ties broken toward the class held by the
- * higher layer — the more settled reading, and the same rule the archived
- * design chose. Intensity is the mean confidence of the layers that voted for
- * the winner, not of the whole band, so a confident majority is not dimmed by
- * the layers it outvoted.
- *
- * The blend is lossy by construction, which is why `counts`, `layers` and
- * `undecoded` come back with it: the caller is expected to disclose the
- * breakdown rather than let a mixed band's colour stand as the whole story.
- */
-export function blendBand(step: TokenStep, band: Band): BandState {
-  const layers: LayerClassification[] = []
-  const undecoded: number[] = []
-
-  for (const layer of band.layers) {
-    const classification = classifyLayer(step, layer)
-    if (classification === null) undecoded.push(layer)
-    else layers.push(classification)
-  }
-
-  const counts: Record<LensClass, number> = { answer: 0, echo: 0, other: 0 }
-  for (const { klass } of layers) counts[klass] += 1
-
-  if (layers.length === 0) {
-    return { band, klass: null, confidence: 0, counts, layers, undecoded }
-  }
-
-  // Ties toward the higher layer: scanning the band's own layers from the top
-  // down, the first class holding the maximum count wins.
-  const maximum = Math.max(...CLASSES.map((klass) => counts[klass]))
-  let winner: LensClass = layers[layers.length - 1].klass
-  for (let i = layers.length - 1; i >= 0; i--) {
-    if (counts[layers[i].klass] === maximum) {
-      winner = layers[i].klass
-      break
-    }
-  }
-
-  const matching = layers.filter((l) => l.klass === winner)
-  const confidence = matching.reduce((sum, l) => sum + l.confidence, 0) / matching.length
-
-  return { band, klass: winner, confidence, counts, layers, undecoded }
-}
-
 // -- colour ---------------------------------------------------------------
 
 /**
@@ -205,18 +96,18 @@ export interface Hsl {
   l: number
 }
 
-/** The neutral fill for a band with no lens data. Not on any class ramp. */
+/** The neutral fill for a cell with no lens readout. Not on any class ramp. */
 export const NEUTRAL: Hsl = { h: 221.5 / 360, s: 0.13, l: 0.24 }
 
 /**
  * One ramp for every class: confidence drives saturation and lightness, hue
  * carries the class. So hue answers "what is this layer holding" and
  * brightness answers "how strongly", independently — which is what lets the
- * same colour mean the same thing on the brain and in the grid.
+ * same colour mean the same thing wherever it is drawn.
  *
  * Each ramp lands exactly on its palette colour at full confidence (#82AAFF is
  * hsl(220.8 100% 75.5%), #FFCB6B is hsl(38.9 100% 71%)), so a fully confident
- * band is the accent itself rather than something near it.
+ * cell is the accent itself rather than something near it.
  */
 export function classColor(klass: LensClass | null, confidence: number): Hsl {
   if (klass === null) return NEUTRAL
@@ -264,9 +155,4 @@ export function crossoverLayer(trace: Trace): number | null {
   const stat = lensPass(trace)?.stats.crossover_layer
   if (typeof stat !== 'number' || stat < 0 || stat >= trace.n_layers) return null
   return Math.round(stat)
-}
-
-/** Which band contains `layer`, or -1. */
-export function bandOfLayer(bands: Band[], layer: number): number {
-  return bands.findIndex((band) => layer >= band.startLayer && layer <= band.endLayer)
 }

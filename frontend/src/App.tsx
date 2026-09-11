@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from 'react'
 
-import { Brain } from '@/components/Brain'
+import { Brain, type SelectionVia } from '@/components/Brain'
 import { ChatPanel } from '@/components/ChatPanel'
 import { TraceViewer } from '@/components/TraceViewer'
 import { useTrace } from '@/hooks/useTrace'
@@ -18,6 +18,15 @@ export interface Selection {
   layer: number
   position: number
   traceId: string
+  /**
+   * What moved the selection here.
+   *
+   * The pair alone is not enough for the brain: clicking one grid cell and
+   * arriving at the same cell by default mean different things about what
+   * should be lit. Carried on the selection rather than kept beside it, so
+   * the two can never disagree about which is which.
+   */
+  via: SelectionVia
 }
 
 function App() {
@@ -33,31 +42,43 @@ function App() {
       layer: trace.n_layers - 1,
       position: trace.steps.length - 1,
       traceId: trace.trace_id,
+      via: 'default',
     }
   }, [trace, selection])
 
   const selectCell = useCallback(
     (layer: number, position: number) => {
       if (!trace) return
-      setSelection({ layer, position, traceId: trace.trace_id })
+      setSelection({ layer, position, traceId: trace.trace_id, via: 'cell' })
     },
     [trace],
   )
 
-  // Picking a token keeps the depth you were looking at, and picking a band
-  // keeps the token — so moving along one axis never silently resets the other.
+  // Picking a token keeps the layer you were looking at — so moving along one
+  // axis never silently resets the other.
   const selectPosition = useCallback(
     (position: number) => {
       if (!trace || !currentSelection) return
-      setSelection({ layer: currentSelection.layer, position, traceId: trace.trace_id })
+      setSelection({
+        layer: currentSelection.layer,
+        position,
+        traceId: trace.trace_id,
+        via: 'token',
+      })
     },
     [trace, currentSelection],
   )
 
+  // The brain's transport, moving the shared selection's depth.
   const selectLayer = useCallback(
     (layer: number) => {
       if (!trace || !currentSelection) return
-      setSelection({ layer, position: currentSelection.position, traceId: trace.trace_id })
+      setSelection({
+        layer,
+        position: currentSelection.position,
+        traceId: trace.trace_id,
+        via: 'layer',
+      })
     },
     [trace, currentSelection],
   )
@@ -71,7 +92,13 @@ function App() {
             frame holding an inner surface, hairline on both, 4px gap, radii
             concentric (16 − 4 = 12). It wraps what the reader looks *into* and
             nothing else. */}
-        <div className="border-border-subtle flex h-[42svh] shrink-0 rounded-[16px] border bg-[#0D0E11] p-1 lg:h-auto lg:w-1/2 lg:min-w-[20rem]">
+        {/* Sticky and viewport-height on a wide screen, rather than growing
+            with the trace beside it. The brain anchors its own overlays — the
+            legend, the lit-feature panel, the hover detail — to its bottom
+            edge, and a column that grew to the height of a long trace put
+            that edge below the fold: the detail panel for whatever you were
+            pointing at rendered somewhere you could not see. */}
+        <div className="border-border-subtle flex h-[42svh] shrink-0 rounded-[16px] border bg-[#0D0E11] p-1 lg:sticky lg:top-5 lg:h-[calc(100svh-3.25rem)] lg:w-1/2 lg:min-w-[20rem]">
           <div className="border-border-subtle bg-bg-surface min-w-0 flex-1 overflow-hidden rounded-[12px] border">
             <Brain
               onSelectLayer={selectLayer}

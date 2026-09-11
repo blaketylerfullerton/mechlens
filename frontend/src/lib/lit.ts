@@ -20,8 +20,8 @@
 // is — so it can be exercised under node without a WebGL context.
 
 import type { Trace, NodePosition, PassRecord } from './api-types'
-import type { Atlas } from './atlas'
-import { nodeKey } from './atlas'
+import type { Atlas, AtlasArea } from './atlas'
+import { areasByCluster, nodeKey } from './atlas'
 
 /**
  * How much of the trace is lit at once.
@@ -252,6 +252,130 @@ export function prominence(activation: number, maxActivation: number): number {
   if (!(maxActivation > 0)) return 0
   const t = activation / maxActivation
   return t < 0 ? 0 : t > 1 ? 1 : t
+}
+
+// --------------------------------------------------------------------------
+// areas: a cluster of the atlas, as this trace lit it
+// --------------------------------------------------------------------------
+
+/**
+ * How an area's member activations combine into one prominence.
+ *
+ * Max, the same rule and for the same reason as `AGGREGATION`: an area is as
+ * bright as its brightest member fired, so one hard-firing feature is a real
+ * event rather than something averaged away by the hundreds of members that
+ * did not fire. Summing would rank a large area above a small one for a
+ * reason about cluster size, which is a fact about the atlas and not about
+ * the trace.
+ *
+ * It is deliberately *not* a function of how many members fired — that number
+ * is reported beside it instead, because "one feature fired hard" and "forty
+ * fired weakly" are different findings and must not collapse into one glow.
+ */
+export const AREA_AGGREGATION = 'max' as const
+
+/** One atlas area, with what this trace lit inside it. */
+export interface LitArea {
+  area: AtlasArea
+  /** How many of the area's members are lit at the displayed scope. */
+  active: number
+  /** The combined activation, per `AREA_AGGREGATION`. */
+  activation: number
+  /** 0..1 against the brightest area in the same set. */
+  prominence: number
+}
+
+/**
+ * The areas this lit set touches, brightest first.
+ *
+ * Only areas with at least one active member are returned: an area with
+ * nothing lit in it is not lit, and returning it with a zero would invite a
+ * renderer to draw it as though it had been measured and found dark. A node
+ * whose cluster is -1 belongs to no area and contributes to none.
+ */
+export function litAreas(set: LitSet, atlas: Atlas | null | undefined): LitArea[] {
+  if (!atlas) return []
+  const byCluster = areasByCluster(atlas)
+
+  const best = new Map<number, { active: number; activation: number }>()
+  for (const node of set.nodes) {
+    if (node.cluster < 0) continue
+    const seen = best.get(node.cluster)
+    if (seen === undefined) {
+      best.set(node.cluster, { active: 1, activation: node.activation })
+    } else {
+      seen.active += 1
+      // AREA_AGGREGATION.
+      if (node.activation > seen.activation) seen.activation = node.activation
+    }
+  }
+
+  const peak = Math.max(...[...best.values()].map((v) => v.activation), 0)
+  const areas: LitArea[] = []
+  for (const [cluster, tally] of best) {
+    const area = byCluster.get(cluster)
+    // A cluster the atlas has no record for cannot be drawn as an area: there
+    // is no centroid to put it at and no membership count to state.
+    if (area === undefined) continue
+    areas.push({
+      area,
+      active: tally.active,
+      activation: tally.activation,
+      prominence: prominence(tally.activation, peak),
+    })
+  }
+
+  areas.sort((a, b) => b.activation - a.activation)
+  return areas
+}
+
+// --------------------------------------------------------------------------
+// filtering the lit set by what its features are called
+// --------------------------------------------------------------------------
+
+/**
+ * The lit nodes whose labels match `query`, and what had to be left out.
+ *
+ * Case-insensitive substring, not a ranked search: the query is a filter over
+ * a set already on screen, and a relevance order would imply a judgement
+ * about which match is better that nothing here can support.
+ *
+ * `unlabelled` is the count of active features with no explanation at all.
+ * They can never match — there is no text to match against — and the view is
+ * required to say so rather than let them read as features the query ruled
+ * out.
+ */
+export interface LabelFilter {
+  query: string
+  nodes: LitNode[]
+  /** Active features carrying a label, matched or not. */
+  labelled: number
+  /** Active features with no label, which no query can match. */
+  unlabelled: number
+}
+
+export function filterByLabel(
+  set: LitSet,
+  trace: Trace | null,
+  query: string,
+): LabelFilter {
+  const needle = query.trim().toLowerCase()
+  let labelled = 0
+  let unlabelled = 0
+  const nodes: LitNode[] = []
+
+  for (const node of set.nodes) {
+    const label = trace?.labels[nodeKey(node.layer, node.feature)] ?? null
+    const text = label?.text?.trim() ?? ''
+    if (text === '') {
+      unlabelled += 1
+      continue
+    }
+    labelled += 1
+    if (needle === '' || text.toLowerCase().includes(needle)) nodes.push(node)
+  }
+
+  return { query: needle, nodes, labelled, unlabelled }
 }
 
 // --------------------------------------------------------------------------

@@ -5,20 +5,8 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 
-import type { Band, BandState, Hsl } from '@/lib/lens'
-import {
-  DEFAULT_BAND_COUNT,
-  NEUTRAL,
-  bandLayers,
-  bandOfLayer,
-  blendBand,
-  classColor,
-  crossoverLayer,
-  cssColor,
-  hasLensData,
-} from '@/lib/lens'
 import type { JobProgress, Trace } from '@/lib/api-types'
-import type { Atlas } from '@/lib/atlas'
+import type { Atlas, AtlasArea } from '@/lib/atlas'
 import {
   atlasLayers,
   loadAtlas,
@@ -26,12 +14,15 @@ import {
   positionBuffer,
   sourceClaim,
 } from '@/lib/atlas'
-import type { LitNode, LitScope, LitSet } from '@/lib/lit'
+import type { LabelFilter, LitArea, LitNode, LitScope, LitSet } from '@/lib/lit'
 import {
   AGGREGATION,
+  AREA_AGGREGATION,
   BOS_REASON,
   atlasAgreement,
   coverageNote,
+  filterByLabel,
+  litAreas,
   litSet,
   prominence,
 } from '@/lib/lit'
@@ -250,113 +241,6 @@ function buildBrainGeometry(): THREE.BufferGeometry {
 }
 
 // --------------------------------------------------------------------------
-// layer bands
-// --------------------------------------------------------------------------
-
-// How thick a slab of vertices counts as sitting on a band boundary, in the
-// geometry's own units. Wide enough that the ring is continuous on a wrinkled
-// surface, narrow enough that it still reads as a line.
-const RING_SLAB = 0.045
-const RING_SEGMENTS = 72
-
-// Depth runs front to back: band 0 (the model's first layers) at the frontal
-// pole, the last band at the occipital pole. Front-to-back rather than any
-// other axis because the grid already reads "input -> output" left to right,
-// so the brain inherits the same directional convention.
-function depthRange(position: THREE.BufferAttribute): { front: number; back: number } {
-  let front = -Infinity
-  let back = Infinity
-  for (let i = 0; i < position.count; i++) {
-    const z = position.getZ(i)
-    if (z > front) front = z
-    if (z < back) back = z
-  }
-  return { front, back }
-}
-
-/**
- * Which visual band a depth falls in. `front` maps to band 0.
- *
- * This is a plain geometric slicing of the shell and carries no anatomical
- * meaning — see the legend the component renders, and design.md on why the
- * sulcus lines are pushed into the background whenever bands are shown.
- */
-function bandForDepth(z: number, front: number, back: number, bandCount: number): number {
-  const span = front - back
-  if (span <= 0) return 0
-  const t = (front - z) / span
-  return Math.min(bandCount - 1, Math.max(0, Math.floor(t * bandCount)))
-}
-
-/** Per-vertex band index, computed once per band count rather than per frame. */
-function assignVertexBands(
-  position: THREE.BufferAttribute,
-  front: number,
-  back: number,
-  bandCount: number,
-): Uint8Array {
-  const bands = new Uint8Array(position.count)
-  for (let i = 0; i < position.count; i++) {
-    bands[i] = bandForDepth(position.getZ(i), front, back, bandCount)
-  }
-  return bands
-}
-
-/**
- * A closed loop hugging the surface at depth `z`, for drawing a band boundary.
- *
- * Sampled from the geometry's own vertices rather than drawn as an analytic
- * ellipse: the shell has gyri, a cerebellum bulge and a longitudinal fissure
- * carved into it, so a ring computed from the ellipsoid formula would float
- * off the surface in some places and sink into it in others. Returns null near
- * the poles, where a constant-z slice has too little of the surface in it to
- * describe a ring.
- */
-function ringPointsAtDepth(
-  position: THREE.BufferAttribute,
-  z: number,
-): THREE.Vector3[] | null {
-  const radii = new Float32Array(RING_SEGMENTS).fill(-1)
-  const vertex = new THREE.Vector3()
-
-  for (let i = 0; i < position.count; i++) {
-    vertex.fromBufferAttribute(position, i)
-    if (Math.abs(vertex.z - z) > RING_SLAB) continue
-    const angle = Math.atan2(vertex.y, vertex.x)
-    const bin = Math.min(
-      RING_SEGMENTS - 1,
-      Math.floor(((angle + Math.PI) / (Math.PI * 2)) * RING_SEGMENTS),
-    )
-    const radius = Math.hypot(vertex.x, vertex.y)
-    if (radius > radii[bin]) radii[bin] = radius
-  }
-
-  const filled = radii.reduce((n, r) => (r > 0 ? n + 1 : n), 0)
-  if (filled < RING_SEGMENTS * 0.6) return null // too close to a pole to ring
-
-  // Bridge the gaps left by empty angular bins so the loop stays closed.
-  for (let bin = 0; bin < RING_SEGMENTS; bin++) {
-    if (radii[bin] > 0) continue
-    let before = bin
-    let after = bin
-    while (radii[(before + RING_SEGMENTS) % RING_SEGMENTS] <= 0) before -= 1
-    while (radii[after % RING_SEGMENTS] <= 0) after += 1
-    const a = radii[((before % RING_SEGMENTS) + RING_SEGMENTS) % RING_SEGMENTS]
-    const b = radii[after % RING_SEGMENTS]
-    radii[bin] = (a + b) / 2
-  }
-
-  const points: THREE.Vector3[] = []
-  for (let bin = 0; bin <= RING_SEGMENTS; bin++) {
-    const index = bin % RING_SEGMENTS
-    const angle = (index / RING_SEGMENTS) * Math.PI * 2 - Math.PI
-    const radius = radii[index] * 1.012 // lift clear of the shell
-    points.push(new THREE.Vector3(Math.cos(angle) * radius, Math.sin(angle) * radius, z))
-  }
-  return points
-}
-
-// --------------------------------------------------------------------------
 // activity: what the brain shows while a job is in flight
 // --------------------------------------------------------------------------
 
@@ -368,40 +252,46 @@ function ringPointsAtDepth(
  * still answering 503 and no job exists at all. `generating` advances a token
  * counter and deliberately does *not* light a layer: the capture loop computes
  * a whole forward pass per token, so no layer is ever singly "executing" (see
- * design.md). `lens` is the one phase that really does walk depth, so it is
- * the only one that drives the band sweep.
+ * design.md). `layers` is a phase that counts layers — the SAE pass, or the
+ * lens pass — and it reports its position in that count without the shell
+ * claiming to show where it is: depth is not a spatial axis here, so there is
+ * nowhere on the shell for a layer to be.
  */
-type ActivityKind = 'idle' | 'unknown' | 'generating' | 'lens'
+type ActivityKind = 'idle' | 'unknown' | 'generating' | 'layers'
 
 interface Activity {
   kind: ActivityKind
-  /** Band index the sweep is allowed to reach — never exceeded. */
-  targetBand: number
   done: number
   total: number
 }
 
-const IDLE: Activity = { kind: 'idle', targetBand: 0, done: 0, total: 0 }
+const IDLE: Activity = { kind: 'idle', done: 0, total: 0 }
 
-/** What one band is showing for the selected position. */
-interface BandView {
-  band: Band
-  /** null when there is no trace, or no lens readout anywhere in the band. */
-  state: BandState | null
-  color: Hsl
-  isCrossover: boolean
-  containsSelection: boolean
-}
+/**
+ * What moved the shared selection.
+ *
+ * The brain needs this, not just the new value: "the user clicked one cell"
+ * and "a new trace defaulted the selection" mean different things about what
+ * should be lit, and a bare (layer, token) pair cannot tell them apart.
+ */
+export type SelectionVia = 'cell' | 'token' | 'layer' | 'default'
 
 export interface BrainProps {
   trace: Trace | null
   /** The (layer, token) the grid and the brain share. */
-  selection: { layer: number; position: number } | null
+  selection: { layer: number; position: number; via?: SelectionVia } | null
   status: RunState
   progress: JobProgress | null
-  /** Clicking a band selects its first layer, keeping both surfaces in step. */
+  /** The transport steps the shared selection's layer. */
   onSelectLayer?: (layer: number) => void
 }
+
+/**
+ * The shell's own tone: the interface's primary #E6E8EB, never pure white.
+ * One flat colour, because nothing is painted onto the shell any more — the
+ * data is the cloud inside it.
+ */
+const SHELL_COLOR = new THREE.Color(0xe6e8eb)
 
 // --------------------------------------------------------------------------
 // the node cloud
@@ -482,6 +372,120 @@ const ACTIVE_MAX_SIZE = 0.11
  */
 const NODE_IDLE_OPACITY_LIT = 0.13
 
+// --------------------------------------------------------------------------
+// areas: a cluster of the atlas, drawn as a soft mass rather than an outline
+// --------------------------------------------------------------------------
+
+/**
+ * Why a glow and not a hull.
+ *
+ * An outline says "the boundary is here", and a UMAP cluster has no boundary
+ * worth drawing — the projection distorts distance past a neighbourhood, so
+ * the edge of a convex hull would be an artifact of the flattening presented
+ * as a fact about the model. A soft mass at the centroid claims only what the
+ * atlas measured: something is concentrated around here.
+ *
+ * Size comes from the cluster's own recorded `spread`, so a diffuse area looks
+ * diffuse, and brightness from its members' activations — never the reverse.
+ */
+const AREA_COLOR = new THREE.Color(0x7ee787)
+const AREA_MIN_SIZE = 0.34
+const AREA_MAX_SIZE = 1.5
+
+const AREA_VERTEX_SHADER = `
+attribute float prominence;
+attribute float spread;
+uniform float detail;
+varying float vProminence;
+void main() {
+  vProminence = prominence;
+  vec4 viewPosition = modelViewMatrix * vec4(position, 1.0);
+  float size = clamp(spread * 14.0, ${AREA_MIN_SIZE.toFixed(2)}, ${AREA_MAX_SIZE.toFixed(2)});
+  // Areas recede as the camera closes in: up close the nodes are the subject
+  // and a soft mass over them is fog.
+  gl_PointSize = size * mix(1.0, 0.45, detail) * (300.0 / -viewPosition.z);
+  gl_Position = projectionMatrix * viewPosition;
+}
+`
+
+const AREA_FRAGMENT_SHADER = `
+uniform vec3 color;
+uniform float detail;
+varying float vProminence;
+void main() {
+  vec2 offset = gl_PointCoord - vec2(0.5);
+  float radius = length(offset);
+  if (radius > 0.5) discard;
+  // A wide gaussian falloff: no edge anywhere, because there is no boundary
+  // to claim.
+  float falloff = exp(-radius * radius * 11.0) - exp(-2.75);
+  gl_FragColor = vec4(color, falloff * mix(0.30, 0.10, detail) * mix(0.25, 1.0, vProminence));
+}
+`
+
+function buildAreaCloud(areas: LitArea[]): THREE.Points {
+  const positions = new Float32Array(areas.length * 3)
+  const prominences = new Float32Array(areas.length)
+  const spreads = new Float32Array(areas.length)
+  for (let i = 0; i < areas.length; i++) {
+    const [x, y, z] = areas[i].area.centroid
+    positions[i * 3] = x
+    positions[i * 3 + 1] = y
+    positions[i * 3 + 2] = z
+    prominences[i] = areas[i].prominence
+    spreads[i] = areas[i].area.spread
+  }
+
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  geometry.setAttribute('prominence', new THREE.BufferAttribute(prominences, 1))
+  geometry.setAttribute('spread', new THREE.BufferAttribute(spreads, 1))
+
+  const material = new THREE.ShaderMaterial({
+    uniforms: { color: { value: AREA_COLOR }, detail: { value: 0 } },
+    vertexShader: AREA_VERTEX_SHADER,
+    fragmentShader: AREA_FRAGMENT_SHADER,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  })
+
+  const points = new THREE.Points(geometry, material)
+  points.frustumCulled = false
+  return points
+}
+
+// --------------------------------------------------------------------------
+// level of detail
+// --------------------------------------------------------------------------
+
+/**
+ * How close the camera is, 0 (furthest out) to 1 (closest in), against the
+ * orbit control's own limits.
+ *
+ * One number drives the whole progressive disclosure: far out, areas carry
+ * the view and no single node's identity is needed to read it; close in, the
+ * area masses fade back and the nodes grow into things you can aim at.
+ */
+function detailLevel(distance: number, near: number, far: number): number {
+  if (far <= near) return 0
+  const t = (far - distance) / (far - near)
+  return t < 0 ? 0 : t > 1 ? 1 : t
+}
+
+/** Clearance between two area labels before one of them gives way, in px. */
+const LABEL_GAP = 10
+
+/**
+ * Where the area labels give way to the nodes.
+ *
+ * Past the default framing, not at it: the brain opens at roughly 0.62 on
+ * this scale, and a window that began before that would hand the viewer a
+ * half-faded overview they never asked to leave.
+ */
+const LABEL_FADE_START = 0.70
+const LABEL_FADE_END = 0.93
+
 // -- picking ---------------------------------------------------------------
 
 /** Slightly outside the shell, so a node right at the surface is reachable. */
@@ -514,13 +518,16 @@ function intersectSphere(
 
 const ACTIVE_VERTEX_SHADER = `
 attribute float prominence;
+uniform float detail;
 varying float vProminence;
 void main() {
   vProminence = prominence;
   vec4 viewPosition = modelViewMatrix * vec4(position, 1.0);
   // sizeAttenuation, by hand: nodes shrink with distance so the cloud reads
-  // as a volume rather than a flat spray.
+  // as a volume rather than a flat spray. The detail uniform grows them
+  // further as the camera closes in, so an approached node is aimable.
   gl_PointSize = mix(${ACTIVE_MIN_SIZE.toFixed(3)}, ${ACTIVE_MAX_SIZE.toFixed(3)}, prominence)
+    * mix(0.85, 1.45, detail)
     * (300.0 / -viewPosition.z);
   gl_Position = projectionMatrix * viewPosition;
 }
@@ -555,7 +562,7 @@ function buildActiveCloud(nodes: LitNode[], maxActivation: number): THREE.Points
   geometry.setAttribute('prominence', new THREE.BufferAttribute(prominences, 1))
 
   const material = new THREE.ShaderMaterial({
-    uniforms: { color: { value: ACTIVE_COLOR } },
+    uniforms: { color: { value: ACTIVE_COLOR }, detail: { value: 0 } },
     vertexShader: ACTIVE_VERTEX_SHADER,
     fragmentShader: ACTIVE_FRAGMENT_SHADER,
     transparent: true,
@@ -579,27 +586,43 @@ interface SceneHandles {
   brainstemGeometry: THREE.BufferGeometry
   material: THREE.MeshPhysicalMaterial
   lobeBoundaries: THREE.Group
-  bandRings: THREE.Group
   /** The atlas's node cloud, once an atlas has loaded. Null until then. */
   nodeCloud: THREE.Points | null
   /** The features the current trace lit, at the current scope. */
   activeCloud: THREE.Points | null
-  front: number
-  back: number
-  vertexBands: Uint8Array
-  vertexBandCount: number
-  /** Band colours as painted, before any activity glow is layered on. */
-  baseColors: Float32Array
-  /** Eased sweep position, in fractional band units. Never exceeds the target. */
-  sweep: number
-  /** Whether the last frame wrote a glow that has to be cleared. */
-  glowing: boolean
+  /** The lit areas, as soft masses at their centroids. */
+  areaCloud: THREE.Points | null
+  /**
+   * One absolutely-positioned label per drawn area, projected from its
+   * centroid every frame.
+   *
+   * DOM rather than a texture in the scene: the names are real text that has
+   * to stay crisp at any zoom, wrap, and be selectable — a canvas-drawn
+   * string is none of those. They are moved imperatively from the animation
+   * loop, never through React, so a rotating brain does not re-render the
+   * component 60 times a second.
+   */
+  areaLabels: {
+    element: HTMLDivElement
+    centroid: THREE.Vector3
+    /** Whether this trace lit anything inside the area — it wins collisions. */
+    lit: boolean
+    /** Measured once at creation; the text never changes after that. */
+    width: number
+    height: number
+  }[]
+  /** The lift currently applied to the shell, so an idle frame writes nothing. */
+  lift: number
+  /** 0 (furthest) to 1 (closest), recomputed each frame from the camera. */
+  detail: number
+  /** Orbit limits, for turning camera distance into `detail`. */
+  minDistance: number
+  maxDistance: number
 }
 
 export function Brain({ trace, selection, status, progress, onSelectLayer }: BrainProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const handlesRef = useRef<SceneHandles | null>(null)
-  const [hoveredBand, setHoveredBand] = useState<number | null>(null)
 
   // The atlas is a fixed table fetched once, not derived from the trace.
   // `undefined` while the fetch is in flight, `null` when there is no atlas to
@@ -632,10 +655,36 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
   // Which node the pointer is over, if any.
   const [hoveredNode, setHoveredNode] = useState<LitNode | null>(null)
 
+  // Which area's label the pointer is over. Carries the atlas's record and
+  // what this trace lit inside it, because the disclosure needs both.
+  const [hoveredArea, setHoveredArea] = useState<{
+    area: AtlasArea
+    lit: LitArea | null
+  } | null>(null)
+
+  // The label-text filter over the lit set. Empty means no filter at all,
+  // which is a different state from "a query that matched nothing".
+  const [query, setQuery] = useState('')
+
+  const labelsRef = useRef<HTMLDivElement>(null)
+
   // The features this trace lit. Positions come from `trace.layout`, never
   // from the atlas asset — see litSet's own note on why that distinction is
   // not cosmetic.
   const lit = useMemo<LitSet>(() => litSet(trace, scope, selection), [trace, scope, selection])
+
+  // The filter narrows what is drawn, so everything downstream — the cloud,
+  // the areas, the picking tree — reads the filtered set rather than the full
+  // one. A filtered view that still glowed with filtered-out features would
+  // be lying about what it is showing.
+  const filter = useMemo<LabelFilter>(() => filterByLabel(lit, trace, query), [lit, trace, query])
+  const drawn = filter.nodes
+
+  // Areas are aggregated from the members actually on screen.
+  const areas = useMemo<LitArea[]>(
+    () => litAreas({ ...lit, nodes: drawn }, atlas),
+    [lit, drawn, atlas],
+  )
 
   // Whether the trace's positions correspond to the atlas on screen. A
   // mismatch is not a warning to bury: the areas, names and neighbourhoods on
@@ -648,78 +697,59 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
   // progress reading never restarts the loop or rebuilds the scene.
   const activityRef = useRef<Activity>(IDLE)
 
-  const lensAvailable = trace !== null && hasLensData(trace)
+  // 6.5 — the selection decides what is lit whenever the selection is what
+  // changed. Clicking one grid cell means "this cell", so the brain narrows
+  // to it; picking a token means that token's whole column; the transport
+  // walks depth, which is only depth-shaped at cell scope; and a new trace
+  // returns to the documented default. Choosing a scope by hand still holds
+  // until the next selection arrives.
+  //
+  // Adjusted during render rather than in an effect: this is state derived
+  // from a prop change, so an effect would commit the old scope, paint it,
+  // and then correct itself — one frame of the wrong set lit.
+  const via = selection?.via
+  const moved = `${via ?? ''}:${selection?.layer ?? ''}:${selection?.position ?? ''}`
+  const [lastMoved, setLastMoved] = useState(moved)
+  if (moved !== lastMoved) {
+    setLastMoved(moved)
+    if (via === 'cell' || via === 'layer') setScope('cell')
+    else if (via === 'token') setScope('token')
+    else if (via === 'default') setScope('trace')
+  }
 
-  // What each band is showing. Recomputed when the trace or the selected token
-  // changes; never triggers a geometry or renderer rebuild.
-  const bandViews = useMemo<BandView[]>(() => {
-    if (trace === null || trace.steps.length === 0) {
-      return bandLayers(DEFAULT_BAND_COUNT, DEFAULT_BAND_COUNT).map((band) => ({
-        band,
-        state: null,
-        color: NEUTRAL,
-        isCrossover: false,
-        containsSelection: false,
-      }))
+  // Which layers the SAE pass actually ran on, for the whole trace.
+  //
+  // Deliberately not `lit.layersWithData`: at cell scope that set describes
+  // the one selected cell, so stepping onto a layer with no features would
+  // report the whole trace as featureless and disable the very control that
+  // steps back off it.
+  const featureLayers = useMemo(() => {
+    if (!trace) return []
+    const has = new Set<number>()
+    for (const step of trace.steps) {
+      for (const state of step.layers) if (state.features.length > 0) has.add(state.layer)
     }
-
-    const bands = bandLayers(trace.n_layers, DEFAULT_BAND_COUNT)
-    const crossover = crossoverLayer(trace)
-    const crossoverBand = crossover === null ? -1 : bandOfLayer(bands, crossover)
-    const position = Math.min(selection?.position ?? trace.steps.length - 1, trace.steps.length - 1)
-    const step = trace.steps[position]
-    const selectedBand = selection === null ? -1 : bandOfLayer(bands, selection.layer)
-
-    return bands.map((band) => {
-      const state = lensAvailable && step ? blendBand(step, band) : null
-      return {
-        band,
-        state,
-        // A band with no lens readout stays neutral rather than borrowing a
-        // class colour it has no evidence for.
-        color: state === null || state.klass === null ? NEUTRAL : classColor(state.klass, state.confidence),
-        isCrossover: band.index === crossoverBand,
-        containsSelection: band.index === selectedBand,
-      }
-    })
-  }, [trace, selection, lensAvailable])
-
-  const bandCount = bandViews.length
+    return [...has].sort((a, b) => a - b)
+  }, [trace])
 
   // The activity the brain is entitled to show, derived from the job's own
-  // reported state. Nothing here interpolates *past* a reading; the loop eases
-  // toward it and stops there.
+  // reported state. It counts, and never places: a layer counter is a number,
+  // not a position on the shell.
   const activity = useMemo<Activity>(() => {
     if (status === 'error' || status === 'idle' || status === 'done') return IDLE
     // Submitted, or warming up, and nothing reported yet.
     if (status === 'warming' || status === 'pending' || progress === null) {
-      return { kind: 'unknown', targetBand: 0, done: 0, total: 0 }
+      return { kind: 'unknown', done: 0, total: 0 }
     }
     if (progress.phase === 'generating') {
-      return {
-        kind: 'generating',
-        targetBand: 0,
-        done: progress.done,
-        total: progress.total,
-      }
+      return { kind: 'generating', done: progress.done, total: progress.total }
     }
-    // The lens phase counts layers, so a reading maps onto a band.
-    const layer = Math.max(0, progress.done - 1)
-    const perBand = progress.total / Math.max(bandCount, 1)
-    return {
-      kind: 'lens',
-      targetBand: Math.min(bandCount - 1, Math.floor(layer / Math.max(perBand, 1))),
-      done: progress.done,
-      total: progress.total,
-    }
-  }, [status, progress, bandCount])
+    // Every other phase counts layers.
+    return { kind: 'layers', done: progress.done, total: progress.total }
+  }, [status, progress])
 
   useEffect(() => {
     activityRef.current = activity
-    const handles = handlesRef.current
-    if (!handles) return
-    // A fresh run restarts the sweep from the front of the brain.
-    if (activity.kind === 'idle' || activity.kind === 'unknown') handles.sweep = 0
   }, [activity])
 
   // -- setup: runs once, and owns everything expensive ---------------------
@@ -769,21 +799,13 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
     scene.add(brainGroup)
 
     const geometry = buildBrainGeometry()
-    const position = geometry.attributes.position as THREE.BufferAttribute
 
-    // Band colour lives on the geometry as a vertex attribute, so repainting
-    // bands is a buffer write rather than a rebuild of the (expensive,
-    // noise-displaced) shell. Seeded to the glass tone the brain has with no
-    // trace loaded.
-    const colors = new Float32Array(position.count * 3)
-    colors.fill(0.902) // #E6E8EB, the interface's primary tone — never pure white.
-    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
-
-    // Translucent glass shell — see-through so the underlying fold structure
-    // (and the layer bands painted onto it) reads clearly against black.
+    // Translucent glass shell — see-through so the node cloud inside it, and
+    // the fold structure behind that, read clearly against black. One flat
+    // tone: nothing is painted onto the shell, because nothing the model does
+    // happens at a place on it.
     const material = new THREE.MeshPhysicalMaterial({
-      color: new THREE.Color(0xffffff), // white: the vertex colours do the tinting
-      vertexColors: true,
+      color: SHELL_COLOR.clone(),
       transparent: true,
       opacity: 0.38,
       roughness: 0.45,
@@ -798,23 +820,17 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
 
     // Lobe boundary lines (central sulcus, Sylvian fissure, longitudinal
     // fissure, ...). They are silhouette, not data: the component drops their
-    // opacity whenever bands are showing, so nobody reads a named anatomical
-    // region as the site of a layer range.
+    // opacity whenever nodes are on screen, so nobody reads a named anatomical
+    // region as the site of a feature.
     const lobeBoundaries = buildLobeBoundaries()
     brainGroup.add(lobeBoundaries)
 
-    // Band boundary rings, rebuilt when the band layout or the crossover
-    // layer changes.
-    const bandRings = new THREE.Group()
-    brainGroup.add(bandRings)
-
     // Brainstem: a short tapered stalk beneath the cerebellum, so the
-    // silhouette reads as a brain rather than a bare cerebral mass. Uses its
-    // own untinted material so band colours do not bleed onto it.
+    // silhouette reads as a brain rather than a bare cerebral mass. Its own
+    // material, so the working lift on the shell does not ride on the stem.
     const brainstemGeometry = new THREE.CylinderGeometry(0.075, 0.12, 0.4, 16)
     const brainstemMaterial = material.clone()
-    brainstemMaterial.vertexColors = false
-    brainstemMaterial.color = new THREE.Color(0xe6e8eb)
+    brainstemMaterial.color = SHELL_COLOR.clone()
     const brainstemMesh = new THREE.Mesh(brainstemGeometry, brainstemMaterial)
     brainstemMesh.position.set(0, -0.62, -0.45)
     brainstemMesh.rotation.x = THREE.MathUtils.degToRad(18)
@@ -837,7 +853,6 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
     composer.addPass(new RenderPass(scene, camera))
     composer.addPass(new OutputPass())
 
-    const { front, back } = depthRange(position)
     handlesRef.current = {
       renderer,
       composer,
@@ -848,16 +863,14 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
       brainstemGeometry,
       material,
       lobeBoundaries,
-      bandRings,
       nodeCloud: null,
       activeCloud: null,
-      front,
-      back,
-      vertexBands: new Uint8Array(0),
-      vertexBandCount: 0,
-      baseColors: colors,
-      sweep: 0,
-      glowing: false,
+      areaCloud: null,
+      areaLabels: [],
+      lift: 0,
+      detail: 0,
+      minDistance: controls.minDistance,
+      maxDistance: controls.maxDistance,
     }
 
     const resize = () => {
@@ -888,6 +901,7 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
       }
 
       applyActivity(handlesRef.current, activityRef.current)
+      applyDetail(handlesRef.current)
 
       controls.update()
       composer.render()
@@ -908,7 +922,6 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
         ;(line as THREE.Line).geometry.dispose()
         ;((line as THREE.Line).material as THREE.Material).dispose()
       })
-      disposeRings(bandRings)
       renderer.dispose()
       composer.dispose()
       handlesRef.current = null
@@ -938,9 +951,9 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
     if (!handles) return
     // A version mismatch means these positions describe a different atlas, so
     // nothing is drawn rather than drawn in the wrong place.
-    if (lit.nodes.length === 0 || !positionsUsable) return
+    if (drawn.length === 0 || !positionsUsable) return
 
-    const cloud = buildActiveCloud(lit.nodes, lit.maxActivation)
+    const cloud = buildActiveCloud(drawn, lit.maxActivation)
     handles.brainGroup.add(cloud)
     handles.activeCloud = cloud
 
@@ -956,12 +969,87 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
       handles.activeCloud = null
       if (idle) idle.opacity = NODE_IDLE_OPACITY
     }
-  }, [lit, positionsUsable])
+  }, [drawn, lit.maxActivation, positionsUsable])
+
+  // -- the area masses: rebuilt when what is lit inside them changes ------
+  useEffect(() => {
+    const handles = handlesRef.current
+    if (!handles || areas.length === 0 || !positionsUsable) return
+
+    const cloud = buildAreaCloud(areas)
+    // Behind the nodes in draw order, so a lit node always reads over the
+    // mass it belongs to rather than being washed out by it.
+    handles.brainGroup.add(cloud)
+    handles.areaCloud = cloud
+
+    return () => {
+      handles.brainGroup.remove(cloud)
+      cloud.geometry.dispose()
+      ;(cloud.material as THREE.Material).dispose()
+      handles.areaCloud = null
+    }
+  }, [areas, positionsUsable])
+
+  // -- the area labels: DOM, moved by the loop, rebuilt when the set changes
+  //
+  // A named area always carries its name, trace or no trace — that is what
+  // makes the idle brain legible. An unnamed one gets a label only when it is
+  // lit, so a glowing mass is never unexplained, and its text says only that
+  // it is unnamed: the atlas measured its members' labels and found no
+  // agreement to name it by, and inventing a summary here would be exactly
+  // the claim that measurement refused to make.
+  const labelled = useMemo(() => {
+    if (!atlas) return []
+    const byCluster = new Map(areas.map((entry) => [entry.area.cluster, entry]))
+    return atlas.areas
+      .filter((area) => area.name !== null || byCluster.has(area.cluster))
+      .map((area) => ({ area, lit: byCluster.get(area.cluster) ?? null }))
+  }, [atlas, areas])
+
+  useEffect(() => {
+    const handles = handlesRef.current
+    const container = labelsRef.current
+    if (!handles || !container) return
+
+    const made = labelled.map(({ area, lit: inside }) => {
+      const element = document.createElement('div')
+      element.className =
+        'pointer-events-auto absolute top-0 left-0 max-w-[9rem] cursor-default text-center ' +
+        'font-mono text-[10px] leading-3 whitespace-normal ' +
+        (area.name === null ? 'text-text-disabled italic' : 'text-text-primary')
+      // The shell behind a name is bright and uneven, so the contrast has to
+      // travel with the text rather than depend on what it happens to be over.
+      element.style.textShadow = '0 1px 2px rgba(6,7,9,0.95), 0 0 6px rgba(6,7,9,0.8)'
+      element.style.willChange = 'transform, opacity'
+      element.style.visibility = 'hidden'
+      element.textContent = area.name ?? 'unnamed area'
+      element.addEventListener('pointerenter', () => setHoveredArea({ area, lit: inside }))
+      element.addEventListener('pointerleave', () => setHoveredArea(null))
+      container.appendChild(element)
+      // Measured now, while it is in the document: a hidden element still has
+      // a box, and the text never changes after this.
+      const box = element.getBoundingClientRect()
+      return {
+        element,
+        centroid: new THREE.Vector3(...area.centroid),
+        lit: inside !== null,
+        width: box.width,
+        height: box.height,
+      }
+    })
+    handles.areaLabels = made
+
+    return () => {
+      made.forEach(({ element }) => element.remove())
+      handles.areaLabels = []
+      setHoveredArea(null)
+    }
+  }, [labelled])
 
   // -- picking: a 3-d tree over the active nodes, rebuilt on scope change --
   const tree = useMemo(
-    () => (lit.nodes.length > 0 && positionsUsable ? new KdTree(lit.nodes) : null),
-    [lit, positionsUsable],
+    () => (drawn.length > 0 && positionsUsable ? new KdTree(drawn) : null),
+    [drawn, positionsUsable],
   )
 
   useEffect(() => {
@@ -1025,265 +1113,88 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
     }
   }, [tree])
 
-  // -- paint: runs on every data change, rebuilds nothing expensive --------
+  // -- the shell recedes once there is data inside it ---------------------
   useEffect(() => {
     const handles = handlesRef.current
     if (!handles) return
 
-    const { geometry, material, lobeBoundaries, bandRings, front, back } = handles
-    const position = geometry.attributes.position as THREE.BufferAttribute
-    const colorAttribute = geometry.attributes.color as THREE.BufferAttribute
-    const bandCount = bandViews.length
-
-    // Only when the band layout itself changed (a trace with a different layer
-    // count), not when the selection moved.
-    if (handles.vertexBandCount !== bandCount) {
-      handles.vertexBands = assignVertexBands(position, front, back, bandCount)
-      handles.vertexBandCount = bandCount
-    }
-
-    const tint = bandViews.map((view) => {
-      const color = new THREE.Color()
-      color.setHSL(view.color.h, view.color.s, view.color.l)
-      // The band holding the selected layer is lifted so the shared selection
-      // is visible on the brain, and the crossover band is lifted less.
-      if (view.containsSelection) color.offsetHSL(0, 0.05, 0.14)
-      return color
-    })
-
-    // Written into `baseColors` rather than straight onto the attribute: the
-    // animation loop layers an activity glow on top of these every frame, so
-    // it needs the unglowed values to start from.
-    const base = handles.baseColors
-    for (let i = 0; i < position.count; i++) {
-      const color = tint[handles.vertexBands[i]] ?? tint[0]
-      base[i * 3] = color.r
-      base[i * 3 + 1] = color.g
-      base[i * 3 + 2] = color.b
-    }
-    ;(colorAttribute.array as Float32Array).set(base)
-    colorAttribute.needsUpdate = true
-    handles.glowing = false
-
-    // Bands need a touch more presence than the bare glass shell to read as
-    // colour at all; with no trace the brain keeps its original translucency.
-    material.opacity = lensAvailable ? 0.52 : 0.38
-
-    // Data on screen means the anatomy recedes.
-    const sulcusOpacity = lensAvailable ? 0.12 : 0.55
-    lobeBoundaries.children.forEach((line) => {
+    // Data on screen means the anatomy is silhouette. With no atlas there is
+    // nothing but the shell, so the folds are all there is to look at and
+    // they stay legible.
+    const sulcusOpacity = !atlas ? 0.55 : lit.nodes.length > 0 ? 0.12 : 0.2
+    handles.lobeBoundaries.children.forEach((line) => {
       const lineMaterial = (line as THREE.Line).material as THREE.LineBasicMaterial
       lineMaterial.opacity = sulcusOpacity
     })
-
-    disposeRings(bandRings)
-    if (lensAvailable) {
-      const span = front - back
-      bandViews.forEach((view) => {
-        // The ring at the band's leading edge; the last band's trailing edge is
-        // the occipital pole, which has no ring to draw.
-        if (view.band.index === 0) return
-        const z = front - (view.band.index / bandCount) * span
-        const points = ringPointsAtDepth(position, z)
-        if (points === null) return
-        const ringMaterial = new THREE.LineBasicMaterial({
-          color: view.isCrossover ? 0xe6e8eb : 0x6e7681,
-          transparent: true,
-          opacity: view.isCrossover ? 0.95 : 0.28,
-        })
-        bandRings.add(
-          new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), ringMaterial),
-        )
-      })
-    }
-  }, [bandViews, lensAvailable])
-
-  // -- hover: which band is the pointer over ------------------------------
-  useEffect(() => {
-    const container = containerRef.current
-    const handles = handlesRef.current
-    if (!container || !handles) return
-
-    const raycaster = new THREE.Raycaster()
-    const pointer = new THREE.Vector2()
-    const local = new THREE.Vector3()
-
-    const bandAtEvent = (event: PointerEvent | MouseEvent): number | null => {
-      const rect = container.getBoundingClientRect()
-      pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
-      pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
-      raycaster.setFromCamera(pointer, handles.camera)
-      const hit = raycaster.intersectObject(handles.brainMesh, false)[0]
-      if (!hit) return null
-      // The group rotates, so the hit has to come back into the geometry's
-      // own frame before its depth means anything.
-      local.copy(hit.point)
-      handles.brainMesh.worldToLocal(local)
-      return bandForDepth(local.z, handles.front, handles.back, handles.vertexBandCount || 1)
-    }
-
-    const onMove = (event: PointerEvent) => setHoveredBand(bandAtEvent(event))
-    const onLeave = () => setHoveredBand(null)
-    const onClick = (event: MouseEvent) => {
-      const index = bandAtEvent(event)
-      if (index === null || !onSelectLayer) return
-      const view = bandViews[index]
-      if (view) onSelectLayer(view.band.startLayer)
-    }
-
-    container.addEventListener('pointermove', onMove)
-    container.addEventListener('pointerleave', onLeave)
-    container.addEventListener('click', onClick)
-    return () => {
-      container.removeEventListener('pointermove', onMove)
-      container.removeEventListener('pointerleave', onLeave)
-      container.removeEventListener('click', onClick)
-    }
-  }, [bandViews, onSelectLayer])
-
-  const hovered = hoveredBand === null ? null : (bandViews[hoveredBand] ?? null)
+  }, [atlas, lit])
 
   return (
     <div className="relative h-full w-full">
       <div className="h-full w-full" ref={containerRef} />
 
-      <BrainLegend
-        atlas={atlas}
-        bandViews={bandViews}
-        lensAvailable={lensAvailable}
-        trace={trace}
-        onSelectLayer={onSelectLayer}
-      />
+      {/* Area names, over the canvas and moved by the animation loop. */}
+      <div className="pointer-events-none absolute inset-0 overflow-hidden" ref={labelsRef} />
+
+      <BrainLegend atlas={atlas} />
 
       <ActivityChip activity={activity} status={status} />
+      <ComputingNote activity={activity} />
 
       <FeaturePanel
         agreement={agreement}
+        areas={areas}
         atlas={atlas}
+        featureLayers={featureLayers}
+        filter={filter}
         lit={lit}
+        onQueryChange={setQuery}
         onScopeChange={setScope}
+        onSelectLayer={onSelectLayer}
+        query={query}
         scope={scope}
+        selection={selection}
         trace={trace}
       />
 
-      {hoveredNode ? <NodeDetail node={hoveredNode} trace={trace} /> : null}
-
-      {hovered ? <BandDetail view={hovered} /> : null}
-    </div>
-  )
-}
-
-function disposeRings(group: THREE.Group) {
-  ;[...group.children].forEach((child) => {
-    const line = child as THREE.Line
-    line.geometry.dispose()
-    ;(line.material as THREE.Material).dispose()
-    group.remove(line)
-  })
-}
-
-const CLASS_COPY: Record<string, string> = {
-  answer: 'holds the final answer',
-  echo: 'echoes the token here',
-  other: 'neither',
-}
-
-/**
- * The legend, and the disclaimer that makes the whole view honest: a band is a
- * range of transformer layers, not a brain region. Nothing here names an
- * anatomical structure, because none of them correspond to anything the model
- * computes.
- */
-function BrainLegend({
-  atlas,
-  bandViews,
-  lensAvailable,
-  trace,
-  onSelectLayer,
-}: {
-  atlas: Atlas | null | undefined
-  bandViews: BandView[]
-  lensAvailable: boolean
-  trace: Trace | null
-  onSelectLayer?: (layer: number) => void
-}) {
-  return (
-    <div className="pointer-events-none absolute top-3 left-3 max-w-[16rem] space-y-2 text-[11px]">
-      <AtlasNote atlas={atlas} />
-      <p className="text-text-tertiary font-medium tracking-[0.04em] uppercase">Layer bands</p>
-
-      {trace === null ? (
-        <p className="text-text-secondary leading-4">
-          Run a prompt to paint this brain with the model&apos;s layer-by-layer readouts.
-        </p>
-      ) : !lensAvailable ? (
-        <p className="text-const leading-4">
-          This trace has no logit-lens data, so the bands are unpainted. The lens pass did not
-          run for it.
-        </p>
-      ) : (
-        <ul className="divide-border-subtle border-border-subtle bg-bg-elevated pointer-events-auto divide-y rounded-[10px] border">
-          {bandViews.map((view) => (
-            <li key={view.band.index}>
-              <button
-                className={`flex w-full items-center gap-2 px-2 py-1 text-left transition-colors duration-150 ${
-                  view.containsSelection
-                    ? 'border-l-2 border-l-fn bg-fn/[0.06] pl-1.5'
-                    : 'hover:bg-white/[0.02]'
-                }`}
-                onClick={() => onSelectLayer?.(view.band.startLayer)}
-                type="button"
-              >
-                {/* The colour never stands alone: the class it encodes is
-                    spelled out in the same row. */}
-                <span
-                  aria-hidden="true"
-                  className="size-2 shrink-0 rounded-full"
-                  style={{ backgroundColor: cssColor(view.color) }}
-                />
-                <span className="text-text-primary font-mono tabular-nums">
-                  L{view.band.startLayer}–{view.band.endLayer}
-                </span>
-                <span className="text-text-tertiary truncate">
-                  {view.state?.klass ? CLASS_COPY[view.state.klass] : 'no data'}
-                </span>
-                {view.isCrossover ? (
-                  <span className="text-text-primary ml-auto shrink-0 font-mono">settles</span>
-                ) : null}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      <p className="text-text-tertiary leading-4">
-        A band is a range of transformer layers, front to back. It is not a brain region — no
-        anatomical area computes any of this.
-      </p>
+      {/* One detail panel, and the area wins: the pointer is over its label,
+          which sits above the cloud, so a node behind it is not what is being
+          asked about. */}
+      {hoveredArea ? (
+        <AreaDetail entry={hoveredArea} />
+      ) : hoveredNode ? (
+        <NodeDetail node={hoveredNode} trace={trace} />
+      ) : null}
     </div>
   )
 }
 
 /**
- * What the node cloud is, and what it is not allowed to claim.
+ * The legend, and the disclaimers that make the whole view honest.
  *
- * Every clause here is load-bearing. A node is a feature, not a place. Nearby
- * nodes really are similar and distant ones mean nothing, because UMAP
- * preserves neighbourhoods and distorts global distance — so the view offers
- * no axes, no coordinates and no scale, and the copy has to say why rather
- * than leave the absence to be noticed. And the sample is stated as a sample:
- * this file carries 20,000 of the atlas's features so the brain has structure
- * before a prompt, and it is not the set a trace's activations are read
- * against.
+ * Every clause is load-bearing. A node is one SAE feature, not a place. An
+ * area is a cluster of features whose directions in the residual stream are
+ * close together, not a region of a brain — and a blob on a brain is a very
+ * strong invitation to read it as one, so the denial is on screen rather than
+ * in a doc. Nearby nodes really are similar and distant ones mean nothing,
+ * because the projection preserves neighbourhoods and distorts global
+ * distance: hence no axes, no coordinates, no scale, and copy that says why
+ * instead of leaving the absence to be noticed. And the sample is stated as a
+ * sample: the idle asset carries a fraction of the atlas so the brain has
+ * structure before a prompt, and it is not the set a trace is read against.
  */
-function AtlasNote({ atlas }: { atlas: Atlas | null | undefined }) {
+function BrainLegend({ atlas }: { atlas: Atlas | null | undefined }) {
   if (atlas === undefined) {
-    return <p className="text-text-tertiary leading-4">Loading the feature atlas…</p>
+    return (
+      <div className="pointer-events-none absolute top-3 left-3 max-w-[16rem] rounded-[12px] bg-[#0D0E11]/80 p-2.5 text-[11px]">
+        <p className="text-text-tertiary leading-4">Loading the feature atlas…</p>
+      </div>
+    )
   }
 
+  // 4.2 — the shell alone, and the reason for it.
   if (atlas === null) {
     return (
-      <div className="space-y-1">
+      <div className="pointer-events-none absolute top-3 left-3 max-w-[16rem] space-y-1 rounded-[12px] bg-[#0D0E11]/80 p-2.5 text-[11px]">
         <p className="text-text-tertiary font-medium tracking-[0.04em] uppercase">Feature nodes</p>
         <p className="text-const leading-4">
           No feature atlas is available, so no nodes are drawn. Build one with{' '}
@@ -1297,60 +1208,77 @@ function AtlasNote({ atlas }: { atlas: Atlas | null | undefined }) {
   const named = namedAreaCount(atlas)
 
   return (
-    <div className="space-y-1">
-      <p className="text-text-tertiary font-medium tracking-[0.04em] uppercase">Feature nodes</p>
-      <p className="text-text-secondary leading-4">
-        {atlas.nodes.length.toLocaleString()} of {atlas.total.toLocaleString()} SAE features,
-        sampled — one dot per feature, across layers {layers.join(', ')}.
-      </p>
+    <div className="pointer-events-none absolute top-3 left-3 max-w-[16rem] space-y-2 rounded-[12px] bg-[#0D0E11]/80 p-2.5 text-[11px]">
+      <div className="space-y-1">
+        <p className="text-text-tertiary font-medium tracking-[0.04em] uppercase">Feature nodes</p>
+        <p className="text-text-secondary leading-4">
+          A node is one SAE feature — a single direction the sparse autoencoder reads out of the
+          residual stream.
+        </p>
+        <p className="text-text-secondary leading-4">
+          {atlas.nodes.length.toLocaleString()} of {atlas.total.toLocaleString()} features,
+          sampled — one dot each, across layers {layers.join(', ')}.
+        </p>
 
-      {/* What "near" means, which depends on the atlas's source. Stated rather
-          than left to be inferred: the two sources support different claims and
-          reading one as the other is the mistake worth preventing. */}
-      <p className="text-text-tertiary leading-4">
-        <span className="text-text-secondary">{sourceClaim(atlas.source)}</span>.{' '}
-        {atlas.source === 'labels'
-          ? 'That is a map of how features were described, not of what the model computes.'
-          : 'That is the model’s own geometry.'}
-      </p>
+        {/* What "near" means, which depends on the atlas's source. Stated rather
+            than left to be inferred: the two sources support different claims and
+            reading one as the other is the mistake worth preventing. */}
+        <p className="text-text-tertiary leading-4">
+          <span className="text-text-secondary">{sourceClaim(atlas.source)}</span>.{' '}
+          {atlas.source === 'labels'
+            ? 'That is a map of how features were described, not of what the model computes.'
+            : 'That is the model’s own geometry.'}
+        </p>
+      </div>
 
-      {/* The layout's fidelity as a number. A picture nobody measured is
-          decoration, so the measurement is on screen rather than in a log. */}
+      <div className="space-y-1">
+        <p className="text-text-tertiary font-medium tracking-[0.04em] uppercase">Areas</p>
+        <p className="text-text-secondary leading-4">
+          An area is a cluster of features whose residual-stream directions point close together —
+          a group of similar features, nothing more.
+        </p>
+        <p className="text-text-tertiary leading-4">
+          {atlas.areas.length} of them, {named === 0 ? 'none named' : `${named} named`} — an area
+          earns a name only when its features&apos; own labels agree more than a random group of
+          the same size.
+          {atlas.explainerAmi !== null && atlas.source === 'labels' ? (
+            <>
+              {' '}
+              Explainer influence{' '}
+              <span className="text-text-primary font-mono tabular-nums">
+                {atlas.explainerAmi.toFixed(3)}
+              </span>
+              : the areas are not an artifact of which model wrote the labels.
+            </>
+          ) : null}
+        </p>
+      </div>
+
+      {/* 5.4 — the layout's limits, and the measurement behind them. A picture
+          nobody measured is decoration, so the number is on screen rather than
+          in a log. */}
       {atlas.knnPreservation !== null ? (
         <p className="text-text-tertiary leading-4">
-          Of a feature&apos;s {atlas.knnK ?? 20} nearest neighbours,{' '}
+          Positions come from a projection that preserves what is nearby and distorts what is far:
+          of a feature&apos;s {atlas.knnK ?? 20} nearest neighbours,{' '}
           <span className="text-text-primary font-mono tabular-nums">
             {(atlas.knnPreservation * 100).toFixed(0)}%
           </span>{' '}
-          survive the flattening to three dimensions. Distance beyond a
-          neighbourhood is meaningless, which is why there is no scale to read.
+          survive the flattening to three dimensions. Distance beyond a neighbourhood is
+          meaningless, which is why there is no axis, no coordinate and no scale to read.
         </p>
       ) : (
         <p className="text-text-tertiary leading-4">
-          This atlas records no fidelity measurement, so how much of the original
-          structure survived is unknown.
+          Positions come from a projection that preserves what is nearby and distorts what is far.
+          This atlas records no fidelity measurement, so how much of the original structure
+          survived is unknown — and distance is not readable either way, which is why there is no
+          axis, no coordinate and no scale.
         </p>
       )}
 
       <p className="text-text-tertiary leading-4">
-        {atlas.areas.length} clusters, {named === 0 ? 'none named' : `${named} named`} — a cluster
-        earns a name only when its features&apos; own labels agree more than a random group of the
-        same size.
-        {atlas.explainerAmi !== null && atlas.source === 'labels' ? (
-          <>
-            {' '}
-            Explainer influence{' '}
-            <span className="text-text-primary font-mono tabular-nums">
-              {atlas.explainerAmi.toFixed(3)}
-            </span>
-            : the
-            areas are not an artifact of which model wrote the labels.
-          </>
-        ) : null}
-      </p>
-
-      <p className="text-text-tertiary leading-4">
-        A dot is a feature, not a place. No named brain region computes any of this.
+        Neither a node nor an area is a brain region. No named anatomical area computes any of
+        this; the shell is a container, not a map.
       </p>
       <p className="text-text-disabled font-mono text-[10px] leading-4">
         atlas {atlas.version} · {atlas.source}
@@ -1359,11 +1287,7 @@ function AtlasNote({ atlas }: { atlas: Atlas | null | undefined }) {
   )
 }
 
-/**
- * The per-band breakdown. A blended band's colour is one class and one number
- * standing in for several layers, so the layers it was blended from are always
- * available rather than the colour being the only story.
- */
+/** What each scope lights, said in words beside the control that sets it. */
 const SCOPE_COPY: Record<LitScope, { label: string; says: string }> = {
   cell: { label: 'Cell', says: 'one layer at one token' },
   token: { label: 'Token', says: 'every layer at one token' },
@@ -1381,25 +1305,41 @@ const SCOPE_COPY: Record<LitScope, { label: string; says: string }> = {
  */
 function FeaturePanel({
   agreement,
+  areas,
   atlas,
+  featureLayers,
+  filter,
   lit,
+  onQueryChange,
   onScopeChange,
+  onSelectLayer,
+  query,
   scope,
+  selection,
   trace,
 }: {
   agreement: ReturnType<typeof atlasAgreement>
+  areas: LitArea[]
   atlas: Atlas | null | undefined
+  featureLayers: number[]
+  filter: LabelFilter
   lit: LitSet
+  onQueryChange: (query: string) => void
   onScopeChange: (scope: LitScope) => void
+  onSelectLayer?: (layer: number) => void
+  query: string
   scope: LitScope
+  selection: { layer: number; position: number } | null
   trace: Trace | null
 }) {
   if (trace === null) return null
 
   const coverage = coverageNote(lit, atlas)
+  const filtering = filter.query !== ''
+  const matched = filter.nodes.length
 
   return (
-    <div className="pointer-events-none absolute top-3 right-3 max-w-[17rem] space-y-2 text-[11px]">
+    <div className="pointer-events-none absolute top-3 right-3 max-w-[17rem] space-y-2 rounded-[12px] bg-[#0D0E11]/80 p-2.5 text-[11px]">
       <p className="text-text-tertiary font-medium tracking-[0.04em] uppercase">Lit features</p>
 
       {/* 4.6 — the scope, and what it means, stated rather than implied. */}
@@ -1420,6 +1360,20 @@ function FeaturePanel({
         ))}
       </div>
       <p className="text-text-tertiary leading-4">{SCOPE_COPY[scope].says}</p>
+
+      <Transport
+        featureLayers={featureLayers}
+        onSelectLayer={onSelectLayer}
+        scope={scope}
+        selection={selection}
+        trace={trace}
+      />
+
+      <LabelSearch
+        filter={filter}
+        onQueryChange={onQueryChange}
+        query={query}
+      />
 
       {/* 4.5 — a mismatch is stated before any count, because if it holds the
           counts describe a different map. */}
@@ -1443,7 +1397,9 @@ function FeaturePanel({
         <dl className="text-text-secondary space-y-0.5 leading-4">
           <div className="flex justify-between gap-2">
             <dt>drawn</dt>
-            <dd className="text-text-primary font-mono tabular-nums">{lit.nodes.length}</dd>
+            <dd className="text-text-primary font-mono tabular-nums">
+              {filtering ? `${matched} / ${lit.nodes.length}` : lit.nodes.length}
+            </dd>
           </div>
           {/* 4.8 — the slice never reads as the whole. */}
           <div className="flex justify-between gap-2">
@@ -1469,6 +1425,8 @@ function FeaturePanel({
         </p>
       ) : null}
 
+      <AreaReadout areas={areas} />
+
       {/* 4.4 — a feature that fired but has nowhere honest to be drawn. */}
       {lit.unplaced.length > 0 ? (
         <div className="space-y-1">
@@ -1477,8 +1435,8 @@ function FeaturePanel({
             place {lit.unplaced.length === 1 ? 'is' : 'are'} not drawn — no position is invented
             for {lit.unplaced.length === 1 ? 'it' : 'them'}.
           </p>
-          <ul className="border-border-subtle bg-bg-elevated max-h-24 overflow-y-auto rounded-[10px] border">
-            {lit.unplaced.slice(0, 24).map((feature) => (
+          <ul className="border-border-subtle bg-bg-elevated rounded-[10px] border">
+            {lit.unplaced.slice(0, 8).map((feature) => (
               <li
                 className="flex justify-between gap-2 px-2 py-0.5 font-mono tabular-nums"
                 key={`${feature.layer}/${feature.feature}`}
@@ -1498,6 +1456,288 @@ function FeaturePanel({
 
       {/* 4.7 — the exclusion, and the reason for it. */}
       {lit.bosExcluded ? <p className="text-text-tertiary leading-4">{BOS_REASON}.</p> : null}
+    </div>
+  )
+}
+
+
+/**
+ * The areas this scope lit, and the two numbers that keep an area's glow
+ * honest: how its members were combined, and how many of them fired.
+ *
+ * Without the second number a bright area reads as "all of this lit up", when
+ * it is often one member of four hundred. The count is the difference between
+ * a finding and an illusion, so it sits beside every row rather than in a
+ * tooltip.
+ */
+function AreaReadout({ areas }: { areas: LitArea[] }) {
+  if (areas.length === 0) return null
+
+  return (
+    <div className="space-y-1">
+      <p className="text-text-tertiary leading-4">
+        {areas.length} area{areas.length === 1 ? '' : 's'} lit — brightness is the{' '}
+        <span className="text-text-primary font-mono">{AREA_AGGREGATION}</span> of each area&apos;s
+        active members, and how many were active is beside it.
+      </p>
+      <ul className="border-border-subtle bg-bg-elevated space-y-0.5 rounded-[10px] border px-2 py-1">
+        {areas.slice(0, 8).map((entry) => (
+          <li className="flex items-baseline justify-between gap-2" key={entry.area.cluster}>
+            <span
+              className={
+                entry.area.name === null
+                  ? 'text-text-disabled truncate italic'
+                  : 'text-text-secondary truncate'
+              }
+            >
+              {entry.area.name ?? 'unnamed area'}
+            </span>
+            <span className="text-text-tertiary shrink-0 font-mono tabular-nums">
+              {entry.active}/{entry.area.n_members}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+/**
+ * The label filter, and everything it has to admit to.
+ *
+ * Three states, all different and all stated: no query (everything lit is
+ * drawn), a query with matches (how many of how many), and a query with none
+ * — which must never look like an empty scope. Unlabelled features are
+ * reported separately because no query can ever match them: there is no text
+ * to match against, and letting them vanish silently would read as the filter
+ * having ruled them out.
+ */
+function LabelSearch({
+  filter,
+  onQueryChange,
+  query,
+}: {
+  filter: LabelFilter
+  onQueryChange: (query: string) => void
+  query: string
+}) {
+  const active = filter.labelled + filter.unlabelled
+  if (active === 0) return null
+
+  const filtering = filter.query !== ''
+  const nothingToSearch = filter.labelled === 0
+
+  return (
+    <div className="space-y-1">
+      <input
+        aria-label="Filter lit features by label text"
+        className="border-border-subtle bg-bg-elevated text-text-primary placeholder:text-text-disabled focus:border-fn/40 pointer-events-auto w-full rounded-[10px] border px-2 py-1 font-mono text-[11px] outline-none"
+        disabled={nothingToSearch}
+        onChange={(event) => onQueryChange(event.target.value)}
+        placeholder={nothingToSearch ? 'no labels to search' : 'filter by label…'}
+        type="search"
+        value={query}
+      />
+
+      {nothingToSearch ? (
+        <p className="text-const leading-4">
+          None of the active features carry an explanation, so there is nothing to match on.
+        </p>
+      ) : filtering ? (
+        <p
+          className={filter.nodes.length === 0 ? 'text-const leading-4' : 'text-text-tertiary leading-4'}
+        >
+          {filter.nodes.length === 0 ? (
+            <>No active feature&apos;s label matched “{filter.query}”.</>
+          ) : (
+            <>
+              <span className="text-text-primary font-mono tabular-nums">
+                {filter.nodes.length}
+              </span>{' '}
+              of {filter.labelled} labelled active features matched.
+            </>
+          )}
+        </p>
+      ) : null}
+
+      {filtering && filter.unlabelled > 0 ? (
+        <p className="text-text-tertiary leading-4">
+          {filter.unlabelled} active feature{filter.unlabelled === 1 ? '' : 's'} carr
+          {filter.unlabelled === 1 ? 'ies' : 'y'} no label and cannot be searched — they are
+          excluded while a filter is on.
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
+/**
+ * Stepping the selected layer, which is how depth is read now that it is not
+ * a spatial axis.
+ *
+ * It stops at both ends rather than wrapping: L25 followed by L0 would read
+ * as a cycle, and the residual stream does not loop. Using it narrows the
+ * brain to cell scope, because that is the only scope whose lit set depends
+ * on the layer at all — a transport that changed nothing visible would be a
+ * control that lies about what it does.
+ */
+function Transport({
+  featureLayers,
+  onSelectLayer,
+  scope,
+  selection,
+  trace,
+}: {
+  featureLayers: number[]
+  onSelectLayer?: (layer: number) => void
+  scope: LitScope
+  selection: { layer: number; position: number } | null
+  trace: Trace
+}) {
+  if (onSelectLayer === undefined || selection === null) return null
+
+  const layer = selection.layer
+  const last = trace.n_layers - 1
+  // 6.6 — inert, and saying why, on a trace the SAE pass never ran for.
+  const inert = featureLayers.length === 0
+  const canGoBack = !inert && layer > 0
+  const canGoOn = !inert && layer < last
+  const hasData = featureLayers.includes(layer)
+
+  return (
+    <div className="space-y-1">
+      <div className="border-border-subtle bg-bg-elevated pointer-events-auto flex items-center rounded-[10px] border">
+        <button
+          aria-label="Previous layer"
+          className="text-text-tertiary enabled:hover:bg-white/[0.02] disabled:text-text-disabled px-2 py-1 font-mono transition-colors duration-150 disabled:cursor-not-allowed"
+          disabled={!canGoBack}
+          onClick={() => onSelectLayer(layer - 1)}
+          type="button"
+        >
+          ◀
+        </button>
+        <span className="text-text-primary flex-1 text-center font-mono tabular-nums">
+          L{layer}
+          <span className="text-text-tertiary"> of {last}</span>
+        </span>
+        <button
+          aria-label="Next layer"
+          className="text-text-tertiary enabled:hover:bg-white/[0.02] disabled:text-text-disabled px-2 py-1 font-mono transition-colors duration-150 disabled:cursor-not-allowed"
+          disabled={!canGoOn}
+          onClick={() => onSelectLayer(layer + 1)}
+          type="button"
+        >
+          ▶
+        </button>
+      </div>
+
+      {inert ? (
+        <p className="text-const leading-4">
+          The transport is inert: this trace records no features, so stepping depth would change
+          nothing on the brain.
+        </p>
+      ) : !hasData ? (
+        <p className="text-const leading-4">
+          The SAE pass did not run at L{layer}, so nothing is lit from it.
+        </p>
+      ) : scope !== 'cell' ? (
+        <p className="text-text-tertiary leading-4">
+          Stepping narrows to cell scope — the only scope whose lit set depends on the layer.
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
+/**
+ * One area, under the pointer — and where its name came from.
+ *
+ * A name here is one member feature's own label standing for hundreds of
+ * others. That is the same lossiness a blended band had, and it is disclosed
+ * the same way: the member is named, so a reader can go and check whether the
+ * sentence describes the neighbourhood or just the one feature it was taken
+ * from. The measurement that let it be named at all — its members' label
+ * agreement against a shuffled baseline of the same size — is shown beside
+ * it, because "earned a name" is a threshold result and the threshold is the
+ * interesting part.
+ *
+ * An unnamed area shows its measurement too. It is not a gap in the data: it
+ * is the atlas having looked and found no agreement worth naming, which is a
+ * finding about the cluster and is reported as one.
+ */
+function AreaDetail({ entry }: { entry: { area: AtlasArea; lit: LitArea | null } }) {
+  const { area, lit } = entry
+  const source = area.name_source ?? null
+
+  return (
+    <div className="border-border-subtle bg-bg-elevated absolute bottom-3 left-3 max-w-[20rem] space-y-1 rounded-[10px] border px-2.5 py-2 text-[11px]">
+      <p className={area.name === null ? 'text-text-disabled italic' : 'text-text-secondary'}>
+        {area.name ?? 'unnamed area'}
+      </p>
+
+      <p className="text-text-tertiary font-mono tabular-nums">
+        area {area.cluster} · {area.n_members.toLocaleString()} features
+        {lit === null ? null : (
+          <>
+            {' '}
+            · <span className="text-text-primary">{lit.active} active</span> · peak{' '}
+            {lit.activation.toFixed(2)}
+          </>
+        )}
+      </p>
+
+      {/* Whose label this is. Without it the name reads as a summary of the
+          cluster, which nothing here measured it to be. */}
+      {area.name !== null ? (
+        source === null ? (
+          <p className="text-text-tertiary leading-4">
+            This atlas did not record which member the name came from.
+          </p>
+        ) : (
+          <p className="text-text-tertiary leading-4">
+            Named from{' '}
+            <span className="text-text-primary font-mono">
+              L{source[0]} #{source[1]}
+            </span>
+            &apos;s own label — the cluster&apos;s medoid, one member speaking for{' '}
+            {area.n_members.toLocaleString()}.
+          </p>
+        )
+      ) : null}
+
+      {area.coherence === null ? (
+        <p className="text-text-tertiary leading-4">
+          No naming was attempted: the label store held no embeddings to measure agreement with.
+        </p>
+      ) : (
+        <p className="text-text-tertiary leading-4">
+          Label agreement{' '}
+          <span className="text-text-primary font-mono tabular-nums">
+            {area.coherence.toFixed(3)}
+          </span>
+          {area.baseline_coherence === null ? null : (
+            <>
+              {' '}
+              against{' '}
+              <span className="font-mono tabular-nums">
+                {area.baseline_coherence.toFixed(3)}
+              </span>{' '}
+              for a random group of the same size
+            </>
+          )}
+          {area.name === null ? ' — not enough of a margin to earn a name.' : '.'}
+        </p>
+      )}
+
+      {area.name_withheld ? (
+        <p className="text-const leading-4">{area.name_withheld}</p>
+      ) : null}
+
+      {area.explainers ? (
+        <p className="text-text-disabled font-mono text-[10px] leading-4">
+          labelled by {area.explainers}
+        </p>
+      ) : null}
     </div>
   )
 }
@@ -1550,112 +1790,156 @@ function NodeDetail({ node, trace }: { node: LitNode; trace: Trace | null }) {
   )
 }
 
-function BandDetail({ view }: { view: BandView }) {
-  return (
-    <div className="border-border-strong bg-bg-elevated pointer-events-none absolute right-3 bottom-3 max-w-[16rem] rounded-[10px] border p-2.5 text-[11px]">
-      <p className="text-text-primary font-mono tabular-nums">
-        layers {view.band.startLayer}–{view.band.endLayer}
-        {view.isCrossover ? (
-          <span className="text-text-primary ml-2">· settles here</span>
-        ) : null}
-      </p>
-
-      {view.state === null || view.state.klass === null ? (
-        <p className="text-text-tertiary mt-1">No logit-lens readout for these layers.</p>
-      ) : (
-        <>
-          <p className="text-text-secondary mt-1">
-            blended as <span className="text-text-primary">{view.state.klass}</span> at{' '}
-            {(view.state.confidence * 100).toFixed(0)}% — from {view.state.counts.answer} answer,{' '}
-            {view.state.counts.echo} echo, {view.state.counts.other} other
-          </p>
-          <ol className="mt-1.5 space-y-0.5">
-            {view.state.layers.map((layer) => (
-              <li className="flex items-center gap-2 font-mono" key={layer.layer}>
-                <span className="text-text-tertiary w-8 tabular-nums">L{layer.layer}</span>
-                <span
-                  aria-hidden="true"
-                  className="size-2 shrink-0 rounded-full"
-                  style={{ backgroundColor: cssColor(classColor(layer.klass, layer.confidence)) }}
-                />
-                <span className="text-text-primary flex-1">{layer.klass}</span>
-                <span className="text-text-secondary tabular-nums">
-                  {(layer.confidence * 100).toFixed(0)}%
-                </span>
-              </li>
-            ))}
-          </ol>
-          {view.state.undecoded.length > 0 ? (
-            <p className="text-text-tertiary mt-1.5">
-              not decoded: {view.state.undecoded.map((l) => `L${l}`).join(', ')}
-            </p>
-          ) : null}
-        </>
-      )}
-    </div>
-  )
-}
-
 // --------------------------------------------------------------------------
 // activity rendering
 // --------------------------------------------------------------------------
 
-/** How fast the sweep closes on the last reported band, per frame. */
-const SWEEP_EASE = 0.1
-/** Width of the sweep's glow, in band units. */
-const SWEEP_WIDTH = 0.85
+/** How far the shell lifts while a job is working. */
+const WORKING_LIFT = 0.14
 
 /**
- * Layer the current activity onto the painted band colours.
+ * The shell's one concession to a job in flight: a flat, undifferentiated
+ * lift for as long as something is running.
  *
- * Two rules make this honest. The sweep eases *toward* the last reported band
- * and is clamped there, so the brain can lag the model but never runs ahead of
- * it. And only the lens phase gets a positional glow at all — every other
- * working state gets one undifferentiated pulse across the whole shell, which
- * says "busy" without naming a layer.
+ * It names no layer and no position. The old sweep walked a band per reported
+ * layer, and there are no bands left to walk — depth is not a spatial axis
+ * here, so there is nowhere on the shell a layer could be. Showing which
+ * layers have arrived is the nodes' job, on the features themselves.
  */
 function applyActivity(handles: SceneHandles | null, activity: Activity): void {
   if (!handles) return
-  const colorAttribute = handles.geometry.attributes.color as THREE.BufferAttribute
-  const target = colorAttribute.array as Float32Array
-  const base = handles.baseColors
+  const lift = activity.kind === 'idle' ? 0 : WORKING_LIFT
+  // One write per state change, not one per frame.
+  if (lift === handles.lift) return
+  handles.lift = lift
+  handles.material.color.setRGB(
+    Math.min(1, SHELL_COLOR.r + lift),
+    Math.min(1, SHELL_COLOR.g + lift),
+    Math.min(1, SHELL_COLOR.b + lift),
+  )
+}
 
-  if (activity.kind === 'idle') {
-    // Nothing running: restore the painted colours once, then leave the buffer
-    // alone so an idle brain costs no per-frame writes.
-    if (handles.glowing) {
-      target.set(base)
-      colorAttribute.needsUpdate = true
-      handles.glowing = false
-    }
+/** Hermite fade between two thresholds. */
+function smoothstep(edge0: number, edge1: number, x: number): number {
+  const t = Math.min(Math.max((x - edge0) / (edge1 - edge0), 0), 1)
+  return t * t * (3 - 2 * t)
+}
+
+/**
+ * The whole of the progressive disclosure, once per frame.
+ *
+ * Distance to the camera is the only input: far out, the area masses carry
+ * the picture and their names are readable, so the overview needs no single
+ * node's identity; close in, the masses thin out and the nodes grow into
+ * things worth aiming at. Nothing here is a React render — the brain turns at
+ * 60fps and re-rendering the component to move a label would cost more than
+ * everything else in this file put together.
+ */
+function applyDetail(handles: SceneHandles | null): void {
+  if (!handles) return
+
+  const { camera, brainGroup } = handles
+  const distance = camera.position.length()
+  const detail = detailLevel(distance, handles.minDistance, handles.maxDistance)
+  handles.detail = detail
+
+  const active = handles.activeCloud?.material as THREE.ShaderMaterial | undefined
+  if (active) active.uniforms.detail.value = detail
+  const areas = handles.areaCloud?.material as THREE.ShaderMaterial | undefined
+  if (areas) areas.uniforms.detail.value = detail
+  const idle = handles.nodeCloud?.material as THREE.PointsMaterial | undefined
+  // Scaled around the default framing (~0.62), so the idle cloud looks the
+  // way it always has until the camera actually moves.
+  if (idle) idle.size = NODE_SIZE * (0.72 + detail * 0.45)
+
+  if (handles.areaLabels.length === 0) return
+
+  const fade = 1 - smoothstep(LABEL_FADE_START, LABEL_FADE_END, detail)
+  if (fade <= 0.01) {
+    for (const { element } of handles.areaLabels) element.style.visibility = 'hidden'
     return
   }
 
-  if (activity.kind === 'lens') {
-    // Approach-only: `sweep` never exceeds the band the service last reported.
-    handles.sweep = Math.min(
-      activity.targetBand,
-      handles.sweep + (activity.targetBand - handles.sweep) * SWEEP_EASE,
+  const canvas = handles.renderer.domElement
+  const width = canvas.clientWidth
+  const height = canvas.clientHeight
+
+  brainGroup.updateMatrixWorld()
+  const world = new THREE.Vector3()
+  const candidates: { entry: SceneHandles['areaLabels'][number]; x: number; y: number; depth: number }[] = []
+
+  for (const entry of handles.areaLabels) {
+    world.copy(entry.centroid).applyMatrix4(brainGroup.matrixWorld)
+    const depth = camera.position.distanceTo(world)
+    world.project(camera)
+    if (world.z > 1) {
+      // Behind the camera entirely.
+      entry.element.style.visibility = 'hidden'
+      continue
+    }
+    candidates.push({
+      entry,
+      x: (world.x * 0.5 + 0.5) * width,
+      y: (-world.y * 0.5 + 0.5) * height,
+      depth,
+    })
+  }
+
+  // Who gets to speak when two names land on the same pixels: what the trace
+  // lit first, then whichever is nearer the camera. Without this the atlas's
+  // centroids — which really are close together, that being what the layout
+  // measured — stack into a wall of text that says nothing at all. A hidden
+  // name is not lost: rotate or zoom and it takes its turn.
+  candidates.sort((a, b) =>
+    a.entry.lit === b.entry.lit ? a.depth - b.depth : a.entry.lit ? -1 : 1,
+  )
+
+  const placed: { x: number; y: number; w: number; h: number }[] = []
+  for (const { entry, x, y, depth } of candidates) {
+    const w = entry.width + LABEL_GAP
+    const h = entry.height + LABEL_GAP
+    const clash = placed.some(
+      (box) =>
+        Math.abs(box.x - x) * 2 < box.w + w && Math.abs(box.y - y) * 2 < box.h + h,
     )
-  }
+    if (clash) {
+      entry.element.style.visibility = 'hidden'
+      continue
+    }
+    placed.push({ x, y, w, h })
 
-  // A steady lift, not a breathing one. The old sine pulse was a glow that
-  // loops forever, which says nothing the word beside it does not already say.
-  const pulse = 0.14
-  const positional = activity.kind === 'lens'
-
-  for (let i = 0; i < handles.vertexBands.length; i++) {
-    const band = handles.vertexBands[i]
-    const glow = positional
-      ? 0.9 * Math.exp(-(((band - handles.sweep) / SWEEP_WIDTH) ** 2))
-      : pulse
-    const offset = i * 3
-    target[offset] = Math.min(1, base[offset] + glow)
-    target[offset + 1] = Math.min(1, base[offset + 1] + glow)
-    target[offset + 2] = Math.min(1, base[offset + 2] + glow)
+    entry.element.style.visibility = 'visible'
+    entry.element.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0) translate(-50%, -50%)`
+    // A label on the far side of the shell dims, so the near ones read first.
+    const behind = smoothstep(distance - 0.6, distance + 1.0, depth)
+    entry.element.style.opacity = (fade * (1 - behind * 0.55)).toFixed(3)
   }
-  colorAttribute.needsUpdate = true
-  handles.glowing = true
+}
+
+/**
+ * What a reported layer means for the picture, while the job is still running.
+ *
+ * The service reports how far a layer-counting phase has got, but a trace's
+ * features only reach the browser with the finished trace — there is no
+ * partial-feature channel. So the honest reading of "the pass has reached
+ * layer 14" is that layer 14 is *being computed*, not that anything from it
+ * can be lit: no activation for it has been received, and lighting nodes on
+ * the strength of a counter would be inventing the very data the counter is
+ * counting towards.
+ */
+function ComputingNote({ activity }: { activity: Activity }) {
+  if (activity.kind !== 'layers' || activity.total === 0) return null
+
+  return (
+    <div className="border-border-subtle bg-[#0D0E11]/85 text-text-tertiary pointer-events-none absolute top-12 right-3 max-w-[15rem] rounded-[10px] border px-2.5 py-2 text-[11px] leading-4">
+      <p>
+        Computing layer{' '}
+        <span className="text-text-primary font-mono tabular-nums">{activity.done}</span> of{' '}
+        {activity.total}. Its features arrive with the finished trace, so nothing is lit from it
+        yet — the brain never runs ahead of what the service has sent.
+      </p>
+    </div>
+  )
 }
 
 /**
@@ -1668,7 +1952,7 @@ function ActivityChip({ activity, status }: { activity: Activity; status: RunSta
   const copy =
     activity.kind === 'generating'
       ? `generating · token ${activity.done} of ${activity.total}`
-      : activity.kind === 'lens'
+      : activity.kind === 'layers'
         ? `reading every layer · ${activity.done} of ${activity.total}`
         : status === 'warming'
           ? 'loading the model…'

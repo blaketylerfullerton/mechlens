@@ -53,6 +53,17 @@ export interface AtlasNode {
 export interface AtlasArea {
   cluster: number
   name: string | null
+  /**
+   * `[layer, feature]` of the member whose own label became `name` — the
+   * cluster's medoid.
+   *
+   * Carried so the view can disclose *whose* label is speaking. An area name
+   * is one member's sentence standing for hundreds of features, which is the
+   * same lossiness a blended band had, and it is disclosed the same way:
+   * by naming the member it came from rather than letting the name read as a
+   * summary of the cluster. Null whenever `name` is null.
+   */
+  name_source?: [number, number] | null
   n_members: number
   centroid: [number, number, number]
   spread: number
@@ -251,6 +262,11 @@ export function positionBuffer(nodes: AtlasNode[]): Float32Array {
 /** Which layers this atlas actually covers, ascending. */
 export function atlasLayers(atlas: Atlas): number[] {
   return [...new Set(atlas.nodes.map((node) => node.layer))].sort((a, b) => a - b)
+}
+
+/** The atlas's areas by cluster id, for joining against a node's `cluster`. */
+export function areasByCluster(atlas: Atlas): Map<number, AtlasArea> {
+  return new Map(atlas.areas.map((area) => [area.cluster, area]))
 }
 
 /**

@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 
 import {
   CodeBlock,
@@ -10,6 +10,15 @@ import {
 import type { RunState } from '@/hooks/useTrace'
 import { API_BASE_URL } from '@/lib/api-client'
 import type { Feature, LayerState, TokenStep, TopToken, Trace } from '@/lib/api-types'
+import type { LayerClassification, LensClass } from '@/lib/lens'
+import {
+  NEUTRAL,
+  classColor,
+  classifyLayer,
+  crossoverLayer,
+  cssColor,
+  hasLensData,
+} from '@/lib/lens'
 
 type TraceViewerProps = {
   trace: Trace | null
@@ -54,6 +63,39 @@ function heatColor(value: number, maximum: number): { backgroundColor: string } 
   const ratio = maximum > 0 ? Math.min(value / maximum, 1) : 0
   return {
     backgroundColor: `hsl(220.8 ${(10 + ratio * 90).toFixed(1)}% ${(9 + ratio * 66.5).toFixed(1)}%)`,
+  }
+}
+
+/**
+ * What the map's colour encodes. Two different quantities, never mixed: a
+ * continuous L2 norm, or a three-way classification of the lens readout. They
+ * share no scale, so they are modes rather than layers of one picture.
+ */
+type ColorMode = 'residual' | 'lens'
+
+/**
+ * What each lens class means, spelled out wherever its colour appears.
+ *
+ * `echo` earns the longest gloss because it is the trap this classification
+ * exists to expose: early layers on gemma-2-2b "predict" the token already at
+ * the position, because the residual is still mostly that token's embedding.
+ * A reader who takes that for early certainty has learnt the opposite of what
+ * the trace shows.
+ */
+const CLASS_COPY: Record<LensClass, string> = {
+  answer: 'holds the final answer',
+  echo: 'echoes the token here',
+  other: 'neither',
+}
+
+const CLASSES: LensClass[] = ['answer', 'echo', 'other']
+
+/** The cell's fill in lens mode. A cell with no readout is neutral, not a class. */
+function lensColor(classification: LayerClassification | null): { backgroundColor: string } {
+  return {
+    backgroundColor: cssColor(
+      classification === null ? NEUTRAL : classColor(classification.klass, classification.confidence),
+    ),
   }
 }
 
@@ -384,9 +426,32 @@ export function TraceViewer({
     return Math.min(...trace.steps.flatMap((step) => step.layers.map((layer) => layer.resid_norm)))
   }, [trace])
 
+  // Residual magnitude is the default because every trace has it; the lens
+  // classification exists only when the lens pass ran.
+  const [colorMode, setColorMode] = useState<ColorMode>('residual')
+
+  const lensAvailable = trace !== null && hasLensData(trace)
+
+  // Every cell's class, computed once per trace rather than per render of the
+  // grid. Indexed [position][layer], mirroring the grid's own nesting.
+  const classifications = useMemo<(LayerClassification | null)[][]>(() => {
+    if (!trace || !lensAvailable) return []
+    return trace.steps.map((step) =>
+      Array.from({ length: trace.n_layers }, (_, layer) => classifyLayer(step, layer)),
+    )
+  }, [trace, lensAvailable])
+
+  // Where the answer settles, for the marker on the layer axis. Null when the
+  // pass did not run, or when it recorded that the answer never crosses.
+  const crossover = useMemo(() => (trace === null ? null : crossoverLayer(trace)), [trace])
+
   if (!trace || trace.steps.length === 0 || selection === null) {
     return <EmptyState composer={composer} error={error} status={status} />
   }
+
+  // A trace with no lens data cannot be in lens mode, whatever the toggle was
+  // left on by the trace before it.
+  const mode: ColorMode = lensAvailable ? colorMode : 'residual'
 
   const currentSelection = selection
   const selectedStep = trace.steps[currentSelection.position]
@@ -458,28 +523,84 @@ export function TraceViewer({
               wraps what the reader looks into and nothing else. */}
           <div className="border-border-subtle min-w-0 rounded-[16px] border bg-[#0D0E11] p-1">
             <section className="border-border-subtle bg-bg-surface overflow-hidden rounded-[12px] border">
-              <div className="border-border-subtle flex flex-col justify-between gap-2 border-b p-3 sm:flex-row sm:items-center">
-                <div>
-                  <h2 className="text-text-primary text-[13px] font-medium">Residual-stream map</h2>
-                  <p className="text-text-tertiary mt-1 text-[12px]">
-                    L2 norm of the residual at each layer and token, as captured.
-                  </p>
-                </div>
-                {/* The ramp with its endpoints as numbers: a colour nobody can
-                    convert back to a value is decoration. */}
-                <div className="text-text-tertiary flex shrink-0 items-center gap-2 font-mono text-[11px] tabular-nums">
-                  <span>{formatNumber(minimumResidualNorm)}</span>
-                  <span aria-hidden="true" className="flex h-2.5 w-24">
-                    {Array.from({ length: 12 }, (_, step) => (
-                      <span
-                        className="flex-1"
-                        key={step}
-                        style={heatColor(step / 11, 1)}
-                      />
+              <div className="border-border-subtle space-y-2 border-b p-3">
+                <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-start">
+                  <div className="min-w-0">
+                    <h2 className="text-text-primary text-[13px] font-medium">
+                      Residual-stream map
+                    </h2>
+                    <p className="text-text-tertiary mt-1 text-[12px]">
+                      {mode === 'residual'
+                        ? 'L2 norm of the residual at each layer and token, as captured.'
+                        : 'What each layer’s logit-lens readout holds at each token.'}
+                    </p>
+                  </div>
+
+                  {/* Two quantities, one grid. The control names which is on
+                      screen rather than leaving the colours to be guessed at. */}
+                  <div className="border-border-subtle bg-bg-elevated flex rounded-[10px] border text-[11px]">
+                    {(['residual', 'lens'] as const).map((option) => (
+                      <button
+                        className={`px-2 py-1 font-mono transition-colors duration-150 first:rounded-l-[9px] last:rounded-r-[9px] ${
+                          option === mode
+                            ? 'bg-fn/[0.10] text-text-primary'
+                            : option === 'lens' && !lensAvailable
+                              ? 'text-text-disabled cursor-not-allowed'
+                              : 'text-text-tertiary hover:bg-white/[0.02]'
+                        }`}
+                        disabled={option === 'lens' && !lensAvailable}
+                        key={option}
+                        onClick={() => setColorMode(option)}
+                        title={
+                          option === 'lens' && !lensAvailable
+                            ? 'This trace has no logit-lens readouts — the lens pass did not run.'
+                            : undefined
+                        }
+                        type="button"
+                      >
+                        {option}
+                      </button>
                     ))}
-                  </span>
-                  <span>{formatNumber(maximumResidualNorm)}</span>
+                  </div>
                 </div>
+
+                {mode === 'residual' ? (
+                  /* The ramp with its endpoints as numbers: a colour nobody
+                     can convert back to a value is decoration. */
+                  <div className="text-text-tertiary flex items-center gap-2 font-mono text-[11px] tabular-nums">
+                    <span>{formatNumber(minimumResidualNorm)}</span>
+                    <span aria-hidden="true" className="flex h-2.5 w-24">
+                      {Array.from({ length: 12 }, (_, step) => (
+                        <span className="flex-1" key={step} style={heatColor(step / 11, 1)} />
+                      ))}
+                    </span>
+                    <span>{formatNumber(maximumResidualNorm)}</span>
+                  </div>
+                ) : (
+                  /* Three classes, each colour printed beside its own name —
+                     the colour never carries the meaning on its own. */
+                  <ul className="text-text-tertiary flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
+                    {CLASSES.map((klass) => (
+                      <li className="flex items-center gap-1.5" key={klass}>
+                        <span
+                          aria-hidden="true"
+                          className="size-2 shrink-0 rounded-full"
+                          style={{ backgroundColor: cssColor(classColor(klass, 1)) }}
+                        />
+                        <span className="text-text-secondary font-mono">{klass}</span>
+                        <span>{CLASS_COPY[klass]}</span>
+                      </li>
+                    ))}
+                    <li className="flex items-center gap-1.5">
+                      <span
+                        aria-hidden="true"
+                        className="size-2 shrink-0 rounded-full"
+                        style={{ backgroundColor: cssColor(NEUTRAL) }}
+                      />
+                      <span>no readout</span>
+                    </li>
+                  </ul>
+                )}
               </div>
               <div className="mask-fade-b max-h-[58vh] overflow-auto p-3">
                 <div className="min-w-max" style={{ display: 'grid', gridTemplateColumns: gridColumns }}>
@@ -504,17 +625,41 @@ export function TraceViewer({
 
                   {Array.from({ length: trace.n_layers }, (_, layer) => (
                     <div className="contents" key={layer}>
-                      <div className="bg-bg-surface border-border-subtle text-text-disabled sticky left-0 z-10 border-b px-2 py-1 text-right font-mono text-[10px] tabular-nums">
+                      <div
+                        className={`bg-bg-surface border-border-subtle sticky left-0 z-10 border-b px-2 py-1 text-right font-mono text-[10px] tabular-nums ${
+                          layer === crossover ? 'text-text-primary' : 'text-text-disabled'
+                        }`}
+                      >
                         L{layer}
+                        {/* The crossover layer, marked on the axis it belongs
+                            to. One trace-level number, drawn once, not a class
+                            per cell — see the note under the map. */}
+                        {layer === crossover ? (
+                          <span className="text-fn ml-1" title="The answer settles here">
+                            <span aria-hidden="true">◀</span>
+                            <span className="sr-only"> the answer settles here</span>
+                          </span>
+                        ) : null}
                       </div>
-                      {trace.steps.map((step) => {
+                      {trace.steps.map((step, position) => {
                         const state = step.layers[layer]
                         const isSelected =
                           currentSelection.layer === layer &&
                           currentSelection.position === step.step
+                        const classification = classifications[position]?.[layer] ?? null
+                        const reading =
+                          mode === 'lens'
+                            ? classification === null
+                              ? 'no lens readout'
+                              : `${classification.klass}, ${CLASS_COPY[classification.klass]}, at ${
+                                  classification.confidence < 0.005
+                                    ? 'under 1'
+                                    : (classification.confidence * 100).toFixed(0)
+                                }%`
+                            : `residual norm ${formatNumber(state.resid_norm)}`
                         return (
                           <button
-                            aria-label={`Layer ${layer}, token ${step.step}, residual norm ${formatNumber(state.resid_norm)}`}
+                            aria-label={`Layer ${layer}, token ${step.step}, ${reading}`}
                             aria-pressed={isSelected}
                             className={`m-px min-h-7 rounded-xs border transition-colors duration-150 ${
                               isSelected
@@ -523,10 +668,14 @@ export function TraceViewer({
                             }`}
                             key={`${layer}-${step.step}`}
                             onClick={() => onSelectCell(layer, step.step)}
-                            style={heatColor(state.resid_norm, maximumResidualNorm)}
+                            style={
+                              mode === 'lens'
+                                ? lensColor(classification)
+                                : heatColor(state.resid_norm, maximumResidualNorm)
+                            }
                             type="button"
                           >
-                            <span className="sr-only">{formatNumber(state.resid_norm)}</span>
+                            <span className="sr-only">{reading}</span>
                           </button>
                         )
                       })}
@@ -548,10 +697,34 @@ export function TraceViewer({
           </aside>
         </div>
 
-        <p className="text-text-tertiary max-w-[70ch] text-[12px] leading-[1.5]">
-          This view shows observed model states. Residual magnitude is not a semantic score or a
-          causal explanation.
-        </p>
+        {mode === 'lens' ? (
+          <div className="text-text-tertiary max-w-[70ch] space-y-1.5 text-[12px] leading-[1.5]">
+            <p>
+              Each cell is that layer&apos;s logit-lens top-1 token, classified: the token the
+              model finally emits here, the token already at this position, or neither. Colour
+              intensity is the readout&apos;s own probability.
+            </p>
+            <p>
+              {/* The one reading error this classification exists to prevent. */}
+              An <span className="text-text-secondary font-mono">echo</span> is not early
+              certainty. Early layers hold the current token because the residual is still mostly
+              that token&apos;s embedding, so a wall of echo near the input is the expected
+              behaviour of the residual stream, not the model knowing an answer.
+            </p>
+            <p>
+              {crossover === null
+                ? 'No crossover layer is marked: the lens pass recorded none, so the answer never reached half the positions.'
+                : `The marker on the axis is L${crossover}, the first layer where at least half the positions already hold the final answer. It is one number for the whole trace, not a per-cell claim.`}{' '}
+              A lens readout is a decode of an intermediate state, not a decision the model made
+              at that layer.
+            </p>
+          </div>
+        ) : (
+          <p className="text-text-tertiary max-w-[70ch] text-[12px] leading-[1.5]">
+            This view shows observed model states. Residual magnitude is not a semantic score or a
+            causal explanation.
+          </p>
+        )}
       </div>
     </main>
   )
