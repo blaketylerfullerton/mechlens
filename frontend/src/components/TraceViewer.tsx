@@ -66,7 +66,7 @@ export function TraceViewer({
   }
 
   return (
-    <main className="enter min-h-full">
+    <main className="enter @container min-h-full">
       <div className="space-y-4">
         <TraceHeader trace={trace} />
 
@@ -76,7 +76,12 @@ export function TraceViewer({
           steps={trace.steps}
         />
 
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
+        {/* A container query, not a viewport one: this column is 25% of the
+            window when the brain is open and the full width when the grid is
+            collapsed, so the window size says nothing about whether there is
+            room for two columns here. Split only once *this* column is past
+            42rem, which leaves the map at least 20rem of its own. */}
+        <div className="grid items-start gap-4 @2xl:grid-cols-[minmax(0,1fr)_20rem]">
           <ResidualMap
             map={map}
             onSelectCell={onSelectCell}
