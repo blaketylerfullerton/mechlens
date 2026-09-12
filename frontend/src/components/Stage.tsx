@@ -2,7 +2,7 @@ import { useState } from 'react'
 
 import { Brain } from '@/components/Brain'
 import { ResidualMap } from '@/components/trace/ResidualMap'
-import { TokenStrip } from '@/components/trace/TokenStrip'
+import { TraceResponse } from '@/components/trace/TraceResponse'
 import { TraceHeader } from '@/components/trace/TraceHeader'
 import { useResidualMap } from '@/components/trace/useResidualMap'
 import type { RunState } from '@/hooks/useTrace'
@@ -30,7 +30,7 @@ function ViewToggle({ view, onChange }: { view: View; onChange: (view: View) => 
       {(['brain', 'grid'] as const).map((option) => (
         <button
           aria-pressed={option === view}
-          className={`px-2 py-1 font-mono transition-colors duration-150 first:rounded-l-[2px] last:rounded-r-[2px] ${
+          className={`px-2 py-1 transition-colors duration-150 first:rounded-l-[2px] last:rounded-r-[2px] ${
             option === view
               ? 'bg-fn/[0.10] text-text-primary'
               : 'text-text-tertiary hover:bg-white/[0.02]'
@@ -47,6 +47,8 @@ function ViewToggle({ view, onChange }: { view: View; onChange: (view: View) => 
 }
 
 type StageProps = {
+  inspectorOpen: boolean
+  onToggleInspector: () => void
   followingLatest: boolean
   onFollowLatest: () => void
   trace: Trace | null
@@ -68,6 +70,8 @@ type StageProps = {
  * before their object.
  */
 export function Stage({
+  inspectorOpen,
+  onToggleInspector,
   followingLatest,
   onFollowLatest,
   trace,
@@ -87,42 +91,23 @@ export function Stage({
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
       {loaded ? (
-        <div className="flex items-baseline justify-between gap-4">
-          <TraceHeader trace={trace} />
-          <ViewToggle onChange={setView} view={view} />
-        </div>
-      ) : null}
-
-      {loaded ? (
-        <div className="border-border-subtle rounded-sm border p-3">
-          <div className="text-text-tertiary mb-2 flex items-center justify-between text-[11px]">
-            <span role="status">
-              {status === 'running'
-                ? progress?.phase === 'generating' ? 'Live · generating and analyzing' : 'Finalizing trace measurements'
-                : status === 'error' ? 'Interrupted · showing available data' : 'Completion'}
-            </span>
-            {status === 'running' ? (
-              <button type="button" onClick={onFollowLatest} aria-pressed={followingLatest}
-                className="text-fn px-2 py-1">
-                {followingLatest ? 'Following latest' : 'Follow latest'}
-              </button>
-            ) : null}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <TraceHeader trace={trace} status={status} progress={progress} />
+          <div className="flex items-center gap-3">
+            <ViewToggle onChange={setView} view={view} />
+            <button type="button" aria-expanded={inspectorOpen} aria-controls="trace-inspector"
+              onClick={onToggleInspector}
+              className="text-text-secondary hover:text-text-primary rounded-xs px-2 py-1 text-[12px]">
+              Inspector
+            </button>
           </div>
-          <p className="text-text-primary max-h-24 overflow-y-auto whitespace-pre-wrap font-mono text-[13px]">
-            {trace.completion || 'Waiting for the first token…'}
-          </p>
-          {status === 'running' ? (
-            <p className="text-text-tertiary mt-2 text-[11px]">
-              Select a token to inspect it. Its activations arrive on the next model step; analysis fills in afterward.
-            </p>
-          ) : null}
         </div>
       ) : null}
 
       {/* The one frame treatment: an outer frame holding an inner surface,
           hairline on both, 4px gap, radii concentric (6 − 4 = 2). It wraps what
           the reader looks *into*, and now there is exactly one of those. */}
-      <div className="border-border-subtle min-h-0 flex-1 rounded-[6px] border bg-[#0D0E11] p-1">
+      <div className="border-border-subtle min-h-[22rem] flex-1 rounded-[6px] border bg-[#0D0E11] p-1">
         <div className="border-border-subtle bg-bg-surface relative h-full min-w-0 overflow-hidden rounded-[2px] border">
           {/* Hidden rather than unmounted, and absolutely placed at the same
               size so the renderer never sees a resize. The camera is a held
@@ -155,10 +140,13 @@ export function Stage({
       </div>
 
       {loaded ? (
-        <TokenStrip
+        <TraceResponse
+          trace={trace}
+          running={status === 'running'}
+          followingLatest={followingLatest}
+          onFollowLatest={onFollowLatest}
           onSelect={onSelectPosition}
-          selectedPosition={selection.position}
-          steps={trace.steps}
+          selection={selection}
         />
       ) : null}
     </div>

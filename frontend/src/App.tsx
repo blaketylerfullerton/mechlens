@@ -33,6 +33,7 @@ export interface Selection {
 function App() {
   const { error, progress, run, status, trace } = useTrace()
   const [selection, setSelection] = useState<Selection | null>(null)
+  const [inspectorOpen, setInspectorOpen] = useState(false)
 
   // Resolved once, here, so every surface gets the *same* default for a new
   // trace instead of each falling back on its own.
@@ -50,6 +51,7 @@ function App() {
   const selectCell = useCallback(
     (layer: number, position: number) => {
       if (!trace) return
+      setInspectorOpen(true)
       setSelection({ layer, position, traceId: trace.trace_id, via: 'cell' })
     },
     [trace],
@@ -60,6 +62,7 @@ function App() {
   const selectPosition = useCallback(
     (position: number) => {
       if (!trace || !currentSelection) return
+      setInspectorOpen(true)
       setSelection({
         layer: currentSelection.layer,
         position,
@@ -84,41 +87,15 @@ function App() {
     [trace, currentSelection],
   )
 
-  // The rail is collapsible, but only once there is a trace to inspect. With
-  // no trace the right column holds the composer and the empty state — the one
-  // action at rest — and collapsing that would hide the only thing to do.
-  const [railOpen, setRailOpen] = useState(true)
-  const collapsed = railOpen === false && trace !== null
-
-  // Two widths, not four.
-  //
-  // At rest the right column *is* the product: what this is, and the three
-  // prompts that start it. That wants half the window — squeezing it into a
-  // quarter put a 36px headline in a 26rem column.
-  //
-  // With a trace it is the inspector: one vertical stack of panels, whose
-  // natural width is the width of a panel. A fixed 24rem, so it stops changing
-  // size as the stage grows, and the stage takes everything left over — which
-  // is the whole point of moving the grid onto it.
   const resting = trace === null
 
   return (
     <div className="text-text-primary bg-bg-base min-h-svh">
-      {/* Stacks under lg so neither surface gets clipped on a narrow screen.
-          Collapsing is an lg-and-up affordance: on a stacked column a 2.5rem
-          rail is not a smaller version of the inspector, it is a bar in the
-          way. */}
-      <div className="mx-auto flex min-h-svh max-w-[1800px] flex-col gap-4 px-4 pt-5 pb-8 sm:px-6 lg:flex-row lg:gap-5 lg:px-8">
-        {/* Sticky and viewport-height on a wide screen, rather than growing
-            with whatever is beside it. The brain anchors its own overlays — the
-            legend, the lit-feature panel, the hover detail — to its own edges,
-            and a column that grew put those below the fold. */}
-        <div
-          className={`flex h-[52svh] min-w-0 shrink-0 flex-col lg:sticky lg:top-5 lg:h-[calc(100svh-3.25rem)] lg:min-w-[22rem] ${
-            resting ? 'lg:w-1/2' : 'lg:flex-1'
-          }`}
-        >
+      <div className="mx-auto flex min-h-svh max-w-[1800px] flex-col gap-5 px-4 py-5 sm:px-6 lg:flex-row lg:px-8">
+        <main className={`flex min-h-[38rem] min-w-0 flex-col lg:sticky lg:top-5 lg:h-[calc(100svh-2.5rem)] ${resting ? 'lg:w-1/2' : 'lg:flex-1'}`}>
           <Stage
+            inspectorOpen={inspectorOpen}
+            onToggleInspector={() => setInspectorOpen((open) => !open)}
             onFollowLatest={() => setSelection(null)}
             followingLatest={selection?.traceId !== trace?.trace_id}
             onSelectCell={selectCell}
@@ -129,86 +106,37 @@ function App() {
             status={status}
             trace={trace}
           />
-        </div>
+          {error && trace ? <p role="alert" className="text-err mt-2 text-[13px]">{error}</p> : null}
+        </main>
 
-        <div
-          className={`min-w-0 lg:sticky lg:top-5 lg:h-[calc(100svh-3.25rem)] ${
-            collapsed
-              ? 'flex-1 lg:w-10 lg:flex-none'
-              : resting
-                ? 'flex-1'
-                : 'flex-1 lg:w-96 lg:flex-none'
-          }`}
-        >
-          {/* The rail the inspector collapses to. Only at lg, and only with a
-              trace — it is the same control as the chevron above, wearing the
-              width it has left. */}
-          {collapsed ? (
-            <button
-              aria-expanded="false"
-              aria-label="Show the inspector"
-              className="border-border-subtle bg-bg-surface text-text-tertiary hover:text-text-primary hover:border-border-strong hidden h-full w-10 flex-col items-center gap-3 rounded-[6px] border transition-colors duration-150 lg:flex"
-              onClick={() => setRailOpen(true)}
-              type="button"
-            >
-              <Chevron className="mt-3 rotate-180" />
-              <span className="[writing-mode:vertical-rl] font-mono text-[11px] tracking-[0.04em]">
-                inspector
-              </span>
-            </button>
-          ) : null}
-
-          {/* The composer lives inside the empty state, under the facts
-              block — so it is there when there is nothing to look at, and gone
-              the moment a prompt is submitted and the trace takes the page
-              over. */}
-          <div className={`flex h-full min-h-0 flex-col ${collapsed ? 'lg:hidden' : ''}`}>
-            {trace ? (
-              <div className="mb-2 hidden shrink-0 justify-end lg:flex">
-                <button
-                  aria-expanded="true"
-                  aria-label="Hide the inspector"
-                  className="text-text-tertiary hover:text-text-primary inline-flex items-center gap-1.5 rounded-xs px-2 py-1 font-mono text-[11px] transition-colors duration-150"
-                  onClick={() => setRailOpen(false)}
-                  type="button"
-                >
-                  Hide
-                  <Chevron />
-                </button>
+        {resting || inspectorOpen ? (
+          <section id="trace-inspector" aria-label={resting ? 'Start a trace' : 'Inspector'}
+            className={`min-w-0 lg:sticky lg:top-5 lg:h-[calc(100svh-2.5rem)] ${resting ? 'flex-1' : 'border-border-subtle border-t pt-4 lg:w-80 lg:shrink-0 lg:border-t-0 lg:border-l lg:pt-0 lg:pl-5'}`}>
+            <div className="flex h-full min-h-0 flex-col">
+              {!resting ? (
+                <div className="mb-4 flex shrink-0 items-center justify-between">
+                  <h2 className="text-[13px] font-medium">Inspector</h2>
+                  <button type="button" aria-label="Close inspector"
+                    onClick={() => setInspectorOpen(false)}
+                    className="text-text-secondary hover:text-text-primary rounded-xs px-2 py-1 text-[13px]">
+                    Close
+                  </button>
+                </div>
+              ) : null}
+              <div className="min-h-0 flex-1">
+                <TraceViewer
+                  composer={<ChatPanel error={error} onTraceRequest={run} status={status} />}
+                  error={resting ? error : null}
+                  selection={currentSelection}
+                  status={status}
+                  trace={trace}
+                />
               </div>
-            ) : null}
-
-            <div className="min-h-0 flex-1">
-              <TraceViewer
-                composer={<ChatPanel error={error} onTraceRequest={run} status={status} />}
-                error={error}
-                selection={currentSelection}
-                status={status}
-                trace={trace}
-              />
             </div>
-          </div>
-        </div>
+          </section>
+        ) : null}
       </div>
     </div>
-  )
-}
-
-/** Stroke, monochrome, 16px — the one icon this layout needs. */
-function Chevron({ className = '' }: { className?: string }) {
-  return (
-    <svg
-      aria-hidden="true"
-      className={`size-4 shrink-0 ${className}`}
-      fill="none"
-      stroke="currentColor"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth="1.5"
-      viewBox="0 0 24 24"
-    >
-      <path d="M9 6l6 6-6 6" />
-    </svg>
   )
 }
 
