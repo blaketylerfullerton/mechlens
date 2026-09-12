@@ -1,3 +1,5 @@
+import { useState } from 'react'
+
 import type { RunState } from '@/hooks/useTrace'
 import type { ChatStatus } from 'ai'
 import {
@@ -8,8 +10,16 @@ import {
   PromptInputTextarea,
   type PromptInputMessage,
 } from '@/components/ai-elements/prompt-input'
-import { Suggestion, Suggestions } from '@/components/ai-elements/suggestion'
 
+/**
+ * The three prompts, and why these three.
+ *
+ * Each one produces a trace worth looking at, which is the whole job of a
+ * starter: a first run that resolves into nothing teaches the reader that the
+ * tool shows nothing. Golden Gate is the one the README walks through, France
+ * is the shortest fact that still crosses layers, and `2 + 2 =` is the case
+ * where the answer appears late and the early layers are visibly wrong.
+ */
 const STARTER_PROMPTS = [
   'The Golden Gate Bridge is located in the city of',
   'The capital of France is',
@@ -36,27 +46,22 @@ function inputStatus(status: RunState, error: string | null): ChatStatus {
   return 'ready'
 }
 
-// Says which of the two waits this is. They look identical from the outside —
-// nothing is happening on screen either way — but only one of them is the
-// model actually running the prompt.
-function statusCopy(status: RunState): string {
-  if (status === 'warming') return 'Loading the model — this is slow the first time'
-  if (status === 'pending') return 'Queued'
-  if (status === 'running') return 'Capturing the model run'
-  return 'Run a prompt through the local trace service'
-}
-
-// Colour never carries the state on its own: the dot always sits beside the
-// word it is colouring.
-function statusTone(status: RunState, error: string | null): string {
-  if (error) return 'bg-err'
-  if (status === 'running') return 'bg-fn'
-  if (isRunning(status)) return 'bg-const'
-  return 'bg-rule'
-}
-
+/**
+ * The one action at rest.
+ *
+ * Three prompts anyone can run with one click, and nothing else at rung 1.
+ * Composing a prompt is a decision, and a first-time reader has no basis for
+ * making it — they do not yet know what a good prompt for this tool looks
+ * like, because they have not seen a trace. So the blank textarea is rung 3,
+ * behind "write your own", and the three rows are the thing on screen.
+ *
+ * No status line here: `TraceViewer`'s own `StatusLine` sits directly below
+ * this in the empty state and already says which wait a wait is. Two status
+ * readouts one above the other were saying the same thing twice.
+ */
 export function ChatPanel({ error, onTraceRequest, status }: ChatPanelProps) {
   const isBusy = isRunning(status)
+  const [ownOpen, setOwnOpen] = useState(false)
 
   const handleSubmit = (message: PromptInputMessage, event: { preventDefault: () => void }) => {
     event.preventDefault()
@@ -66,43 +71,91 @@ export function ChatPanel({ error, onTraceRequest, status }: ChatPanelProps) {
   }
 
   return (
-    // Sits inline under the facts block, in the flow of the empty state — the
-    // page owns the position, this owns the card. The highest layer, so it is
-    // lighter than what it sits over and edged with the strong hairline. No
-    // shadow: on #0A0B0D a shadow is either invisible or reads as grime.
-    <div className="border-border-strong bg-bg-elevated w-full rounded-[16px] border p-3">
-      <div className="text-text-tertiary mb-2 flex items-center justify-between gap-3 px-1 text-[12px]">
-        <span className="flex min-w-0 items-center gap-2">
-          <span
-            aria-hidden="true"
-            className={`size-1.5 shrink-0 rounded-full ${statusTone(status, error)}`}
-          />
-          <span className="truncate">{statusCopy(status)}</span>
-        </span>
-        <span className="shrink-0 font-mono text-[11px] tabular-nums">max_tokens={MAX_TOKENS}</span>
-      </div>
-      <PromptInput onSubmit={handleSubmit}>
-        <PromptInputBody>
-          <PromptInputTextarea disabled={isBusy} placeholder="Enter a prompt to trace…" />
-        </PromptInputBody>
-        <PromptInputFooter>
-          <span className="text-text-tertiary px-2 text-[11px]">
-            <span className="font-mono">gemma-2-2b</span> · residual capture
-          </span>
-          <PromptInputSubmit disabled={isBusy} status={inputStatus(status, error)} />
-        </PromptInputFooter>
-      </PromptInput>
-      <Suggestions className="mt-2">
+    <div className="w-full">
+      {/* Hairline rows, not cards and not chips. The prompt is set in mono
+          because it is text the reader could type; the row around it is the
+          control, so its affordance is sans. */}
+      <ul className="border-border-subtle divide-border-subtle divide-y border-y">
         {STARTER_PROMPTS.map((prompt) => (
-          <Suggestion
-            className="border-border-subtle text-text-secondary hover:border-border-strong hover:text-text-primary rounded-md px-3 font-sans"
-            disabled={isBusy}
-            key={prompt}
-            onClick={() => onTraceRequest(prompt, MAX_TOKENS)}
-            suggestion={prompt}
-          />
+          <li key={prompt}>
+            <button
+              className="group hover:bg-fn/[0.04] focus-visible:bg-fn/[0.04] flex w-full items-center gap-3 px-1 py-3 text-left transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={isBusy}
+              onClick={() => onTraceRequest(prompt, MAX_TOKENS)}
+              type="button"
+            >
+              <span className="text-text-primary min-w-0 flex-1 font-mono text-[13px] leading-5">
+                {prompt}
+              </span>
+              <ArrowRight className="text-text-disabled group-hover:text-fn shrink-0 transition-colors duration-150" />
+            </button>
+          </li>
         ))}
-      </Suggestions>
+      </ul>
+
+      {/* Rung 3: reachable, not present. */}
+      <div className="mt-4">
+        <button
+          aria-expanded={ownOpen}
+          className="text-text-tertiary hover:text-text-primary inline-flex items-center gap-1.5 text-[13px] transition-colors duration-150"
+          onClick={() => setOwnOpen((open) => !open)}
+          type="button"
+        >
+          <Chevron className={ownOpen ? 'rotate-90' : ''} />
+          Write your own
+        </button>
+
+        {ownOpen ? (
+          <div className="border-border-strong bg-bg-elevated mt-3 rounded-[6px] border p-3">
+            <PromptInput onSubmit={handleSubmit}>
+              <PromptInputBody>
+                <PromptInputTextarea disabled={isBusy} placeholder="Enter a prompt to trace…" />
+              </PromptInputBody>
+              <PromptInputFooter>
+                <span className="text-text-tertiary px-2 font-mono text-[11px] tabular-nums">
+                  gemma-2-2b · max_tokens={MAX_TOKENS}
+                </span>
+                <PromptInputSubmit disabled={isBusy} status={inputStatus(status, error)} />
+              </PromptInputFooter>
+            </PromptInput>
+          </div>
+        ) : null}
+      </div>
     </div>
+  )
+}
+
+/** Stroke, monochrome, 16px. */
+function ArrowRight({ className = '' }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden="true"
+      className={`size-4 ${className}`}
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="1.5"
+      viewBox="0 0 24 24"
+    >
+      <path d="M5 12h14M13 6l6 6-6 6" />
+    </svg>
+  )
+}
+
+function Chevron({ className = '' }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden="true"
+      className={`size-3.5 shrink-0 transition-transform duration-150 ${className}`}
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="1.5"
+      viewBox="0 0 24 24"
+    >
+      <path d="M9 6l6 6-6 6" />
+    </svg>
   )
 }

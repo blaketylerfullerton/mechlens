@@ -1,6 +1,6 @@
 ---
 name: terminal-dark
-description: "A visual direction for developer-facing interfaces: dark-first surfaces, hairline borders, layered near-blacks instead of shadows, syntax colours as the entire accent system, monospace used as a material rather than a costume, and real code and data treated as the primary visual. Use when the user is building or restyling anything developer-adjacent — a tool, console, CLI site, editor, dashboard, docs, internal app — or mentions dark-first design, terminals, syntax highlighting, or wanting something that reads as software rather than marketing. This skill sets look and feel only; it prescribes no page or app structure."
+description: "A visual direction for developer-facing interfaces: dark-first surfaces and a Swiss/International-Style composition — one modular grid, flush-left type, numbered sections, hairline borders and layered surfaces instead of shadows, a syntax palette as the entire accent system with one hue leading, two radii, monospace as a material rather than a costume, real code and data as the primary visual, zero ornament, and a calm default view — one primary object and one action at rest, with controls and methodology on a disclosure ladder (§1.1) but never the measurements that qualify a visible claim. A product and its marketing page share one ground (§2.3); a measured light re-derivation exists for projects that are light throughout. Use when building or restyling anything developer-adjacent — a tool, console, CLI site, editor, dashboard, docs, internal app, or its marketing page — or when the user mentions dark-first design, terminals, syntax highlighting, Swiss or Bauhaus design, grid-based or typographic layout, or wanting something that reads as software rather than marketing. This skill sets look and feel only; it prescribes no page or app structure."
 ---
 
 # Terminal Dark
@@ -24,9 +24,9 @@ Design dark-first. Light mode is optional and secondary, and it is a re-derivati
 an inversion. Read the anti-patterns (§10) before you write a line, then build the
 colour system first; every other rule depends on it.
 
-## 1. The three commitments
+## 1. The four commitments
 
-> Show the real thing. Respect the reader. Design in the dark.
+> Show the real thing. Respect the reader. Design in the dark. Ask nothing at rest.
 
 1. **Real data is the visual.** The most persuasive element is a block
    that compiles, or a table with values someone would act on. It replaces the
@@ -35,6 +35,50 @@ colour system first; every other rule depends on it.
    colours are chosen together for a dark canvas.
 3. **Density is respect.** Developers scan fast and resent padding. Tight leading, real
    specifics, no three words floating in 90vh of nothing.
+4. **Calm at rest (§1.1).** Density is about how tightly you set what you show. It is not
+   a licence to show everything. The interface at rest presents one object and one
+   action; everything else is reachable and nothing else is present.
+
+Commitments 3 and 4 are not in tension, and reading them as opposites produces the two
+classic failures. Show few things, set them densely. The target is a cockpit at idle —
+instrument-grade, fully legible, and quiet until you touch it — not a dashboard
+shouting every metric it has, and not three words floating in whitespace.
+
+### 1.1 The disclosure ladder
+
+Reduce **decisions**, not facts. A user should never have to work out what to do next.
+
+Every element sits on exactly one rung. Putting something on a lower rung than it
+belongs is clutter; putting it higher is hiding.
+
+| Rung | What lives here | Persistence |
+|---|---|---|
+| **1 · Rest** | The primary object, and the single action that starts the work | Always |
+| **2 · Pointing** | Detail about the thing under the cursor or selected | Transient |
+| **3 · Asked for** | Panels, settings and alternate modes the user opened | Until closed |
+| **4 · Deep** | Raw numbers, methodology, diagnostics, provenance | One click from 3 |
+
+- **One primary object.** The thing the tool exists to show gets the canvas. Everything
+  else is furniture around it and is sized like furniture.
+- **One action at rest.** If a first-time user cannot tell what to do in two seconds,
+  rung 1 is overfull. Cut until one action is obvious.
+- **A control appears with its object, not before it.** A transport with nothing to
+  move, a legend for colours not on screen, a filter over an empty set: all are rung 3
+  material sitting on rung 1. Render them when their object exists.
+- **Earn a permanent control.** Anything visible at rest must be needed in most sessions.
+  A setting most users never change is rung 3, and a setting nobody changes twice is a
+  default, not a control.
+- **Empty states carry rung 1.** With nothing loaded, the screen says what this shows and
+  the one command that fills it. This is the highest-value copy in the product.
+- **Disclosure is not animation.** Revealing means the thing was not rendered before, not
+  that it was faded to 40% or tucked behind a hover that hides on touch.
+
+**The floor, and it is not negotiable: never hide a measurement that qualifies a claim
+already on screen.** Confidence, coverage, error bars, "n of m drawn", "this is a
+6-layer pilot" — if the claim is at rung 1, its caveat is at rung 1 or 2. Controls,
+methodology and raw tables hide; caveats do not. A picture nobody measured is
+decoration, and a measurement the interface buried is worse — it is a decoration that
+knows better. This rule outranks every other item in §1.1.
 
 ## 2. Colour
 
@@ -81,6 +125,99 @@ Syntax palette (the ONLY accent colours, used in UI)
   destructive is `text-[#F07178]` on a hairline border, filled only inside a confirm.
 - **No gradients.** The only exceptions are `mask-image` fades (§6.2, §11), which paint
   nothing.
+
+### 2.1 Seven syntax colours, but not seven UI colours
+
+The palette has seven hues because *code* has seven roles. Interface chrome does not.
+Keep the full palette for tokenisation and restrict everything else:
+
+- **Chrome takes `syntax-func` and greys only.** Links, focus rings, selection, active
+  tabs, the one marked row, the one accent chart series. One hue, so the accent still
+  means something when it appears.
+- **`syntax-error` is the one other UI colour**, and only for destructive and failed.
+- **`syntax-string`, `syntax-const`, `syntax-number` reach chrome only as status**, each
+  paired with a word (§12), never as a second decorative accent.
+- **`syntax-keyword` never leaves code.** A purple that means "keyword" in a block and
+  "primary button" three inches away is two systems wearing one palette.
+
+The test: if you removed every colour but `func`, `err` and the greys, would the
+interface still say the same things? If not, colour is carrying meaning that a word,
+shape, or position should be carrying.
+
+### 2.2 Swiss composition — and it is not a light/dark choice
+
+This direction already borrows the International Style: grid, hairline rule, one accent,
+no ornament, type doing the work. That style was made on paper because paper was the
+medium — **none of it requires a light ground.** The grid, the rules, the flush-left
+setting and the single accent all work on `#0A0B0D`. Do not reach for white because you
+reached for Swiss; they are separate decisions and only one of them is a style.
+
+Apply these on whichever ground the project is on, and most heavily on document
+surfaces — landing pages, docs, changelogs, reports:
+
+- **One modular grid, and let it show.** A micro label in a narrow left column, content
+  flush-left in a wide right column, both on the same grid. Asymmetric, never a centred
+  stack of headings.
+- **A hairline between every band.** The rule replaces the card, the section background
+  and the shadow all at once.
+- **Flush left, ragged right.** No centred body copy, no justified text.
+- **Number the sections** in `micro` mono. Honest wayfinding, and the style's signature.
+- **One large flush-left `h1`** at `leading-[1.05]`, `font-semibold` still the ceiling,
+  everything else small. Hierarchy comes from position and scale, not from weight.
+- **Ornament is zero.** No texture, no generative shader, no animated noise, no blob, no
+  radial-mask vignette. If an element carries no information, it is not on the page. A
+  decorative pill repeating a word already on screen is ornament too.
+
+### 2.3 One project, one ground
+
+**A product and its marketing page share a ground.** Pick the ground from what the
+product is, then use it everywhere:
+
+- **The landing page exists to show the app.** Its screenshots are the app's screenshots,
+  and §8 already bans a light-mode screenshot on a dark canvas — the reverse is just as
+  bad, a near-black product shot punched into paper. If the app is dark, the page is dark.
+- **The click from page into product should not change the lights.** Two grounds means a
+  flash-bang on the one interaction the page is built to cause.
+- Ground is a product decision, not a per-surface one. The cost of splitting is that
+  every shared component needs two truths, and the reader learns the brand has none.
+
+If the project *is* light — a document tool, a data product whose users print things, a
+site with no dark app behind it — here is the re-derivation. **Re-derived, never
+inverted:** a lightness-flipped `#C3E88D` is a pastel nobody can read, so each hue was
+re-picked at a new lightness and measured. Same token *names*, so components move
+between grounds unchanged.
+
+```
+Light (only if the whole project is light)
+  bg-base        #F2F3F5   paper: the canvas
+  bg-surface     #F8F9FA   raised surfaces
+  bg-elevated    #FDFDFE   menus, popovers, the highest layer
+  border-subtle  #DFE2E6   hairlines
+  border-strong  #C3C8CF   focused inputs, active tabs, emphasised dividers
+  text-primary   #1A1C20   15.3:1 on base
+  text-secondary #4A4F57   7.3:1
+  text-tertiary  #5F656F   5.2:1 — darkened from #6B7280, which fails here
+  text-disabled  #A0A6AE
+
+Syntax palette re-picked for paper (each ≥4.5:1 on bg-surface)
+  kw      #6E31A8   7.3:1
+  str     #3F6212   6.7:1
+  fn      #2757C4   5.9:1  — the one leading accent
+  num     #9A3412   6.8:1
+  comment #5F656F   5.2:1
+  const   #7A5200   6.4:1
+  err     #B3261E   6.1:1
+  rule    #7E8691   3.4:1  — graphical, so the floor is 3:1
+```
+
+- **Depth still comes from layers and hairlines.** Light UI is where the drop shadow
+  lives, and it stays banned: three papers and a rule, in that order.
+- **Never `#FFFFFF` for a large surface**, the same reason the dark canvas is never
+  `#000000`.
+- **Solid primary is ink** (`#1A1C20` on `#F8F9FA`), never accent-filled — the dark rule
+  with the values swapped.
+- **Declare `color-scheme`** and commit: light-only, not a `dark:` toggle of a dark
+  design, and not the inverse either.
 
 ## 3. Monospace: material, not decoration
 
@@ -185,11 +322,16 @@ surface, hairline on both, `4px` gap.
 </div>
 ```
 
-- **Radii are concentric: `inner = outer − gap`.** `16 − 4 = 12`. Eyeballing it produces
-  a visible wobble where the arcs disagree. Scale: `16` outer frame, `12` inner surface
-  and dialogs, `10` nested panel, `8` buttons and inputs, `6` tabs and chips, `2` inline
-  code. Never `rounded-3xl` on a technical surface; `rounded-full` only on avatars and
-  status dots.
+- **Two radii, near-square.** A radius is a concession to the pixel grid, not a style,
+  so the whole scale is `2px` for everything — surfaces, dialogs, panels, buttons,
+  inputs, tabs, chips, inline code — and `6px` for the outer half of the frame above,
+  and nothing else. Map every alias a component library exposes (`md`, `lg`, `xl`,
+  `2xl`…) onto `2px` so a vendored part cannot reintroduce a radius from another system.
+- **Radii stay concentric: `inner = outer − gap`.** `6 − 4 = 2`. Eyeballing it produces a
+  visible wobble where the arcs disagree.
+- A six-value radius scale is five more decisions than the design needs, and every extra
+  value is a chance for two surfaces to disagree. Never `rounded-3xl` on a technical
+  surface; `rounded-full` only on avatars and status dots.
 - **The frame wraps what the reader looks *into*** — the editor, terminal, diff, table,
   chart. Prose, toolbars and forms never get a frame.
 - **One frame treatment throughout.** Two read as two different products.
@@ -305,6 +447,12 @@ Each alone is enough to break the style. Most are agent defaults.
 7. Filled accent buttons that outshout links, selection and status.
 8. Status as filled pills in six saturated colours.
 9. Aurora, mesh, or animated-blob backgrounds.
+9a. A generative shader, animated noise, or a radial-mask vignette behind copy.
+9b. A syntax hue doing decorative UI work outside code — `kw` on a button, three
+    accents competing (§2.1).
+9c. A light ground built by inverting the dark values rather than re-deriving and
+    measuring them (§2.3).
+9d. A marketing page on the opposite ground from the app it advertises (§2.3).
 
 **Code and data**
 10. Code that does not compile, pseudocode, or lorem-ipsum-in-code.
@@ -332,10 +480,29 @@ Each alone is enough to break the style. Most are agent defaults.
 28. A fabricated dashboard or 3D-tilted browser mockup.
 29. Boxed cards where a vertical hairline rule would have done the same job.
 30. Two different frame treatments, or an inner radius that is not `outer − gap`.
+30a. A radius scale with more than the two values in §6.1.
+30b. A decorative pill or badge that repeats a word already on screen and adds nothing.
+30c. Centred body copy, or a centred stack of headings where the grid in §2.2 applies.
+30d. Reaching for a light ground because the brief said "Swiss" (§2.2).
 31. A surface ending at a hard edge mid-content instead of masking out.
 32. Isometric line art, stacked plates, floating cubes.
 33. Figures whose proportions were drawn rather than computed.
 34. Bars built from block glyphs (`█▉▊`) instead of a 1px rule in a `ch` track.
+
+**Disclosure (§1.1)**
+34a. More than one action competing to be the obvious next step at rest.
+34b. A control rendered before the thing it controls exists — a transport with nothing
+     to move, a legend for colours not on screen, a filter over an empty set.
+34c. Floating panels anchored to canvas corners instead of one panel on the grid;
+     two of them able to occupy the same anchor.
+34d. A translucent panel over a canvas whose content changes, so the text contrast is
+     whatever happens to be rendered behind it.
+34e. Settings visible at rest that most users never change.
+34f. An empty state that says what is missing but not the one action that fixes it.
+34g. **Hiding a measurement that qualifies a claim already on screen** — the confidence,
+     the coverage, the "n of m drawn", the "this is a pilot". The one thing disclosure
+     may never take.
+34h. Disclosure faked with opacity or a hover that does not exist on touch.
 
 **Motion**
 35. Count-up animations on numbers.
@@ -374,8 +541,8 @@ Code does not reflow, and forcing it to wrap destroys meaning. Solve this explic
   confirmation and background updates.
 - **Full `prefers-reduced-motion`:** type-on becomes instant full text, fades become
   static, value flashes become a static marker.
-- **Light mode, if it exists, is re-derived:** `#F7F8FA` surfaces, `#1A1C20` text, syntax
-  colours re-picked to pass on light. Never a pure inversion.
+- **A light ground, if the project has one, is the re-derivation in §2.3** — measured
+  values, not a pure inversion, and light-only rather than a `dark:` toggle.
 
 ## 13. Performance
 
@@ -411,8 +578,39 @@ Code does not reflow, and forcing it to wrap destroys meaning. Solve this explic
   --color-const: #FFCB6B;
   --color-err:   #F07178;
 
+  --color-rule:  #6E7681;
+
+  /* Two radii (§6.1). Every library alias collapses onto the 2px value. */
+  --radius-xs: 2px;  --radius-sm: 2px;  --radius-md: 2px;
+  --radius-lg: 2px;  --radius-xl: 2px;  --radius-2xl: 2px;
+  --radius-frame: 6px;   /* the outer half of the frame, and nothing else */
+
   --font-sans: "Inter", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+```
+
+If — and only if — the whole project is light (§2.3), the same block with re-picked
+values under the same token *names*, plus `color-scheme: light`:
+
+```css
+@theme {
+  --color-bg-base:      #F2F3F5;
+  --color-bg-surface:   #F8F9FA;
+  --color-bg-elevated:  #FDFDFE;
+  --color-border-subtle:#DFE2E6;
+  --color-border-strong:#C3C8CF;
+  --color-text-primary: #1A1C20;
+  --color-text-secondary:#4A4F57;
+  --color-text-tertiary:#5F656F;
+
+  --color-kw:    #6E31A8;
+  --color-str:   #3F6212;
+  --color-fn:    #2757C4;
+  --color-num:   #9A3412;
+  --color-const: #7A5200;
+  --color-err:   #B3261E;
+  --color-rule:  #7E8691;
 }
 ```
 
@@ -431,7 +629,13 @@ again. Do not report completion with known failures.
 - [ ] Canvas is `#0A0B0D`, not `#000000`; text is `#E6E8EB`, not `#FFFFFF`.
 - [ ] Depth comes from layered surfaces and hairlines, not shadows.
 - [ ] The only accents are syntax-palette colours; one leads; status uses the same theme.
+- [ ] Chrome uses `fn`, `err` and greys only; `kw` never left a code block (§2.1).
 - [ ] Computed `background-image` gradients are zero; any fade is `mask-image`.
+- [ ] Zero ornament: no shader, animated noise, vignette, or element carrying no
+      information.
+- [ ] Ground matches the product it belongs to; no surface disagrees (§2.3).
+- [ ] On a light ground: values are the measured §2.3 set, not inverted darks; no
+      surface is `#FFFFFF`; `color-scheme` is declared.
 
 **Code and data**
 - [ ] Highlighting is correctly tokenised using the §2 palette.
@@ -445,11 +649,23 @@ again. Do not report completion with known failures.
 
 **Form**
 - [ ] Every frame uses the same outer/inner pair; inner radius equals `outer − gap`.
+- [ ] Exactly two radii exist in the whole build; grep for arbitrary `rounded-[…px]`
+      values that drifted off the scale.
 - [ ] Hairline rules and definition lists are used where boxed cards were the reflex.
 - [ ] Surfaces that continue past their bounds mask out rather than cutting off.
 - [ ] Figures are computed from real numbers; quantities are 1px rules in `ch` tracks.
       Zoom to 400% and confirm no notched or stepped edges.
 - [ ] No fabricated screenshot, tilted mockup, or isometric line art.
+
+**Disclosure**
+- [ ] At rest the screen shows one primary object and one obvious action; a first-time
+      user knows what to do in two seconds.
+- [ ] Every control's object exists before the control renders.
+- [ ] Each element is on the right rung: nothing permanent that most sessions ignore,
+      nothing buried that qualifies a visible claim.
+- [ ] Panels sit on the grid, opaque, and cannot collide.
+- [ ] Every caveat on a rung-1 claim is still at rung 1 or 2. Check this last and check
+      it honestly — it is the rule this section is most likely to have eaten.
 
 **Motion**
 - [ ] Nothing loops, shimmers, pulses, or counts up. Copy feedback is instant.

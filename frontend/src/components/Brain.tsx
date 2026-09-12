@@ -14,14 +14,13 @@ import {
   positionBuffer,
   sourceClaim,
 } from '@/lib/atlas'
-import type { LabelFilter, LitArea, LitNode, LitScope, LitSet } from '@/lib/lit'
+import type { LitArea, LitNode, LitScope, LitSet } from '@/lib/lit'
 import {
   AGGREGATION,
   AREA_AGGREGATION,
   BOS_REASON,
   atlasAgreement,
   coverageNote,
-  filterByLabel,
   litAreas,
   litSet,
   prominence,
@@ -638,9 +637,6 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
     lit: LitArea | null
   } | null>(null)
 
-  // The label-text filter over the lit set. Empty means no filter at all,
-  // which is a different state from "a query that matched nothing".
-  const [query, setQuery] = useState('')
 
   const labelsRef = useRef<HTMLDivElement>(null)
 
@@ -649,12 +645,7 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
   // not cosmetic.
   const lit = useMemo<LitSet>(() => litSet(trace, scope, selection), [trace, scope, selection])
 
-  // The filter narrows what is drawn, so everything downstream — the cloud,
-  // the areas, the picking tree — reads the filtered set rather than the full
-  // one. A filtered view that still glowed with filtered-out features would
-  // be lying about what it is showing.
-  const filter = useMemo<LabelFilter>(() => filterByLabel(lit, trace, query), [lit, trace, query])
-  const drawn = filter.nodes
+  const drawn = lit.nodes
 
   // A new lit set invalidates the pin: it names one node in the set being
   // replaced, and holding it open would leave a panel — and a ring in the
@@ -1210,28 +1201,33 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
       {/* Area names, over the canvas and moved by the animation loop. */}
       <div className="pointer-events-none absolute inset-0 overflow-hidden" ref={labelsRef} />
 
-      <BrainLegend atlas={atlas} />
+      <BrainLegend atlas={atlas} resting={trace === null} />
 
-      <ActivityChip activity={activity} status={status} />
-      <ComputingNote activity={activity} />
+      {/* One right-hand column, not three things each claiming `top-3 right-3`.
+          The chip appears while a run is in flight and the panel appears once
+          a trace exists, so re-running with a trace already loaded put both at
+          the same anchor — they overlapped, and the count was the thing that
+          lost. Stacked in source order and spaced by the container, so
+          whichever of them is mounted lands under the one above it. */}
+      <div className="pointer-events-none absolute top-3 right-3 flex max-w-[17rem] flex-col items-end gap-2">
+        <ActivityChip activity={activity} status={status} />
+        <ComputingNote activity={activity} />
 
-      <FeaturePanel
-        agreement={agreement}
-        areas={areas}
-        atlas={atlas}
-        featureLayers={featureLayers}
-        filter={filter}
-        lit={lit}
-        onQueryChange={setQuery}
-        onScopeChange={setScope}
-        onSelectLayer={stepLayer}
-        onTogglePlay={togglePlay}
-        playing={playing}
-        query={query}
-        scope={scope}
-        selection={selection}
-        trace={trace}
-      />
+        <FeaturePanel
+          agreement={agreement}
+          areas={areas}
+          atlas={atlas}
+          featureLayers={featureLayers}
+          lit={lit}
+          onScopeChange={setScope}
+          onSelectLayer={stepLayer}
+          onTogglePlay={togglePlay}
+          playing={playing}
+          scope={scope}
+          selection={selection}
+          trace={trace}
+        />
+      </div>
 
       {/* One detail panel. A pin outranks everything, because it is the one
           state the reader asked for out loud. Below it the area wins over a
@@ -1262,7 +1258,23 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
  * sample: the idle asset carries a fraction of the atlas so the brain has
  * structure before a prompt, and it is not the set a trace is read against.
  */
-function BrainLegend({ atlas }: { atlas: Atlas | null | undefined }) {
+function BrainLegend({
+  atlas,
+  resting,
+}: {
+  atlas: Atlas | null | undefined
+  /**
+   * True before any trace exists — the first thing a reader ever sees here.
+   *
+   * The counts chip below is the right label for someone who already knows
+   * what a node and an area are. For someone who does not, "12,345 nodes · 32
+   * areas" is two counts of things they have no concept for, sitting on the
+   * largest object on screen. At rest the same control says what the cloud is
+   * and what will happen to it instead, and the counts come back once a trace
+   * has taught them the words.
+   */
+  resting: boolean
+}) {
   // Collapsed by default. Every clause below is still on the page, one click
   // away — but a permanent wall of prose over the canvas was reading as the
   // subject, and the cloud it disclaims was reading as its background.
@@ -1270,7 +1282,7 @@ function BrainLegend({ atlas }: { atlas: Atlas | null | undefined }) {
 
   if (atlas === undefined) {
     return (
-      <div className="pointer-events-none absolute top-3 left-3 rounded-[10px] bg-[#0D0E11]/80 px-2 py-1 text-[11px]">
+      <div className="border-border-subtle bg-bg-elevated pointer-events-none absolute top-3 left-3 rounded-[2px] border px-2 py-1 text-[11px]">
         <p className="text-text-tertiary leading-4">Loading the feature atlas…</p>
       </div>
     )
@@ -1279,7 +1291,7 @@ function BrainLegend({ atlas }: { atlas: Atlas | null | undefined }) {
   // 4.2 — nothing to draw, and the reason for it.
   if (atlas === null) {
     return (
-      <div className="pointer-events-none absolute top-3 left-3 max-w-[16rem] space-y-1 rounded-[12px] bg-[#0D0E11]/80 p-2.5 text-[11px]">
+      <div className="border-border-subtle bg-bg-elevated pointer-events-none absolute top-3 left-3 max-w-[16rem] space-y-1 rounded-[2px] border p-2.5 text-[11px]">
         <p className="text-text-tertiary font-medium tracking-[0.04em] uppercase">Feature nodes</p>
         <p className="text-const leading-4">
           No feature atlas is available, so no nodes are drawn. Build one with{' '}
@@ -1292,12 +1304,43 @@ function BrainLegend({ atlas }: { atlas: Atlas | null | undefined }) {
   const layers = atlasLayers(atlas)
   const named = namedAreaCount(atlas)
 
-  // The resting state: what is on screen, counted, and the way back to why.
+  // Before a trace: what the cloud is, and the sentence that connects it to
+  // the prompt box in the other column. Prose, so it is sans and selectable —
+  // only the affordance is a control.
+  if (!open && resting) {
+    return (
+      <div className="border-border-subtle bg-bg-elevated absolute top-3 left-3 max-w-[19rem] space-y-2 rounded-[2px] border p-2.5">
+        <p className="text-text-secondary text-[12px] leading-[1.5]">
+          A sample of gemma-2-2b&apos;s features &mdash;{' '}
+          <span className="text-text-primary font-mono tabular-nums">
+            {atlas.nodes.length.toLocaleString()}
+          </span>{' '}
+          of{' '}
+          <span className="text-text-primary font-mono tabular-nums">
+            {atlas.total.toLocaleString()}
+          </span>
+          , arranged so similar ones sit together. Run a prompt to light the ones that
+          fire.
+        </p>
+        <button
+          aria-expanded={false}
+          className="text-text-tertiary hover:text-text-primary pointer-events-auto text-[12px] underline decoration-dotted underline-offset-2 transition-colors duration-150"
+          onClick={() => setOpen(true)}
+          type="button"
+        >
+          What is this?
+        </button>
+      </div>
+    )
+  }
+
+  // With a trace on screen, the compact label: what is drawn, counted, and the
+  // way back to why.
   if (!open) {
     return (
       <button
         aria-expanded={false}
-        className="border-border-subtle bg-[#0D0E11]/80 text-text-tertiary hover:text-text-primary hover:border-border-strong absolute top-3 left-3 rounded-[10px] border px-2 py-1 font-mono text-[11px] tabular-nums transition-colors duration-150"
+        className="border-border-subtle bg-bg-elevated text-text-tertiary hover:text-text-primary hover:border-border-strong absolute top-3 left-3 rounded-[2px] border px-2 py-1 font-mono text-[11px] tabular-nums transition-colors duration-150"
         onClick={() => setOpen(true)}
         type="button"
       >
@@ -1308,7 +1351,7 @@ function BrainLegend({ atlas }: { atlas: Atlas | null | undefined }) {
   }
 
   return (
-    <div className="border-border-subtle pointer-events-auto absolute top-3 left-3 max-h-[calc(100%-1.5rem)] max-w-[16rem] space-y-2 overflow-y-auto rounded-[12px] border bg-[#0D0E11]/95 p-2.5 text-[11px]">
+    <div className="border-border-subtle pointer-events-auto absolute top-3 left-3 max-h-[calc(100%-1.5rem)] max-w-[16rem] space-y-2 overflow-y-auto bg-bg-elevated rounded-[2px] border p-2.5 text-[11px]">
       <div className="space-y-1">
         <div className="flex items-baseline justify-between gap-2">
           <p className="text-text-tertiary font-medium tracking-[0.04em] uppercase">
@@ -1420,14 +1463,11 @@ function FeaturePanel({
   areas,
   atlas,
   featureLayers,
-  filter,
   lit,
-  onQueryChange,
   onScopeChange,
   onSelectLayer,
   onTogglePlay,
   playing,
-  query,
   scope,
   selection,
   trace,
@@ -1436,14 +1476,11 @@ function FeaturePanel({
   areas: LitArea[]
   atlas: Atlas | null | undefined
   featureLayers: number[]
-  filter: LabelFilter
   lit: LitSet
-  onQueryChange: (query: string) => void
   onScopeChange: (scope: LitScope) => void
   onSelectLayer?: (layer: number) => void
   onTogglePlay: () => void
   playing: boolean
-  query: string
   scope: LitScope
   selection: { layer: number; position: number } | null
   trace: Trace | null
@@ -1451,18 +1488,16 @@ function FeaturePanel({
   if (trace === null) return null
 
   const coverage = coverageNote(lit, atlas)
-  const filtering = filter.query !== ''
-  const matched = filter.nodes.length
 
   return (
-    <div className="pointer-events-none absolute top-3 right-3 max-w-[17rem] space-y-2 rounded-[12px] bg-[#0D0E11]/80 p-2.5 text-[11px]">
+    <div className="border-border-subtle bg-bg-elevated pointer-events-none w-full space-y-2 rounded-[2px] border p-2.5 text-[11px]">
       <p className="text-text-tertiary font-medium tracking-[0.04em] uppercase">Lit features</p>
 
       {/* 4.6 — the scope, and what it means, stated rather than implied. */}
-      <div className="border-border-subtle bg-bg-elevated pointer-events-auto flex rounded-[10px] border">
+      <div className="border-border-subtle bg-bg-elevated pointer-events-auto flex rounded-[2px] border">
         {(['cell', 'token', 'trace'] as const).map((option) => (
           <button
-            className={`flex-1 px-2 py-1 font-mono transition-colors duration-150 first:rounded-l-[9px] last:rounded-r-[9px] ${
+            className={`flex-1 px-2 py-1 font-mono transition-colors duration-150 first:rounded-l-[2px] last:rounded-r-[2px] ${
               option === scope
                 ? 'bg-fn/[0.10] text-text-primary'
                 : 'text-text-tertiary hover:bg-white/[0.02]'
@@ -1487,12 +1522,6 @@ function FeaturePanel({
         trace={trace}
       />
 
-      <LabelSearch
-        filter={filter}
-        onQueryChange={onQueryChange}
-        query={query}
-      />
-
       {/* 4.5 — a mismatch is stated before any count, because if it holds the
           counts describe a different map. */}
       {agreement.kind === 'mismatch' ? (
@@ -1512,31 +1541,29 @@ function FeaturePanel({
           {lit.emptyReason ?? 'nothing lit at this scope'}
         </p>
       ) : (
-        <dl className="text-text-secondary space-y-0.5 leading-4">
+        <dl className="text-text-secondary leading-4">
+          {/* 4.8 — the slice never reads as the whole, and it says so on the
+              same line as the count it qualifies rather than one below it.
+              `drawn` alone reads as "this many fired"; the SAE pass keeps the
+              strongest 16 of a mean 78, so that reading is wrong by a factor
+              of five. Two rows became one without the caveat moving off
+              screen — which is the only kind of simplification this number is
+              allowed to get. */}
           <div className="flex justify-between gap-2">
             <dt>drawn</dt>
             <dd className="text-text-primary font-mono tabular-nums">
-              {filtering ? `${matched} / ${lit.nodes.length}` : lit.nodes.length}
+              {lit.nodes.length}
+              {lit.fired === null ? (
+                ''
+              ) : (
+                <span className="text-text-tertiary"> of {lit.fired} fired</span>
+              )}
             </dd>
           </div>
-          {/* 4.8 — the slice never reads as the whole. */}
-          <div className="flex justify-between gap-2">
-            <dt>shown of fired</dt>
-            <dd className="text-text-primary font-mono tabular-nums">
-              {lit.shown}
-              {lit.fired === null ? '' : ` / ${lit.fired}`}
-            </dd>
-          </div>
-          {lit.aggregation !== null ? (
-            <div className="flex justify-between gap-2">
-              <dt>combined by</dt>
-              <dd className="text-text-primary font-mono">{AGGREGATION}</dd>
-            </div>
-          ) : null}
         </dl>
       )}
 
-      <AreaReadout areas={areas} />
+      <SetDetail aggregation={lit.aggregation} areas={areas} />
 
       <Caveats coverage={coverage} lit={lit} />
     </div>
@@ -1604,7 +1631,7 @@ function Caveats({ coverage, lit }: { coverage: string | null; lit: LitSet }) {
             place {lit.unplaced.length === 1 ? 'is' : 'are'} not drawn — no position is invented
             for {lit.unplaced.length === 1 ? 'it' : 'them'}.
           </p>
-          <ul className="border-border-subtle bg-bg-elevated rounded-[10px] border">
+          <ul className="border-border-subtle bg-bg-elevated rounded-[2px] border">
             {lit.unplaced.slice(0, 8).map((feature) => (
               <li
                 className="flex justify-between gap-2 px-2 py-0.5 font-mono tabular-nums"
@@ -1631,6 +1658,57 @@ function Caveats({ coverage, lit }: { coverage: string | null; lit: LitSet }) {
 
 
 /**
+ * Everything about the lit set that is not the count itself.
+ *
+ * How the scope combined a feature it met more than once, and which areas it
+ * lit — both true, neither needed to read the picture. They were sitting open
+ * under the count, and a reader who wanted to know how many features were
+ * drawn had to walk past a four-hundred-row area list to find out.
+ *
+ * The area counts stay inside rather than being dropped: a bright area reads
+ * as "all of this lit up" when it is often one member of four hundred, so the
+ * count is the difference between a finding and an illusion. Folded, not
+ * deleted — and the trigger says how many there are, so the reader knows
+ * whether opening it is worth the click.
+ */
+function SetDetail({
+  aggregation,
+  areas,
+}: {
+  aggregation: LitSet['aggregation']
+  areas: LitArea[]
+}) {
+  const [open, setOpen] = useState(false)
+
+  if (aggregation === null && areas.length === 0) return null
+
+  return (
+    <div className="space-y-1">
+      <button
+        aria-expanded={open}
+        className="text-text-tertiary hover:text-text-primary pointer-events-auto font-mono transition-colors duration-150"
+        onClick={() => setOpen((value) => !value)}
+        type="button"
+      >
+        {open ? '\u2212' : '+'} {areas.length === 0 ? 'detail' : `${areas.length} area${areas.length === 1 ? '' : 's'} lit`}
+      </button>
+
+      {open ? (
+        <div className="space-y-1">
+          {aggregation !== null ? (
+            <div className="text-text-secondary flex justify-between gap-2 leading-4">
+              <span>combined by</span>
+              <span className="text-text-primary font-mono">{AGGREGATION}</span>
+            </div>
+          ) : null}
+          <AreaReadout areas={areas} />
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+/**
  * The areas this scope lit, and the two numbers that keep an area's glow
  * honest: how its members were combined, and how many of them fired.
  *
@@ -1649,7 +1727,7 @@ function AreaReadout({ areas }: { areas: LitArea[] }) {
         <span className="text-text-primary font-mono">{AREA_AGGREGATION}</span> of each area&apos;s
         active members, and how many were active is beside it.
       </p>
-      <ul className="border-border-subtle bg-bg-elevated space-y-0.5 rounded-[10px] border px-2 py-1">
+      <ul className="border-border-subtle bg-bg-elevated space-y-0.5 rounded-[2px] border px-2 py-1">
         {areas.slice(0, 8).map((entry) => (
           <li className="flex items-baseline justify-between gap-2" key={entry.area.cluster}>
             <span
@@ -1667,75 +1745,6 @@ function AreaReadout({ areas }: { areas: LitArea[] }) {
           </li>
         ))}
       </ul>
-    </div>
-  )
-}
-
-/**
- * The label filter, and everything it has to admit to.
- *
- * Three states, all different and all stated: no query (everything lit is
- * drawn), a query with matches (how many of how many), and a query with none
- * — which must never look like an empty scope. Unlabelled features are
- * reported separately because no query can ever match them: there is no text
- * to match against, and letting them vanish silently would read as the filter
- * having ruled them out.
- */
-function LabelSearch({
-  filter,
-  onQueryChange,
-  query,
-}: {
-  filter: LabelFilter
-  onQueryChange: (query: string) => void
-  query: string
-}) {
-  const active = filter.labelled + filter.unlabelled
-  if (active === 0) return null
-
-  const filtering = filter.query !== ''
-  const nothingToSearch = filter.labelled === 0
-
-  return (
-    <div className="space-y-1">
-      <input
-        aria-label="Filter lit features by label text"
-        className="border-border-subtle bg-bg-elevated text-text-primary placeholder:text-text-disabled focus:border-fn/40 pointer-events-auto w-full rounded-[10px] border px-2 py-1 font-mono text-[11px] outline-none"
-        disabled={nothingToSearch}
-        onChange={(event) => onQueryChange(event.target.value)}
-        placeholder={nothingToSearch ? 'no labels to search' : 'filter by label…'}
-        type="search"
-        value={query}
-      />
-
-      {nothingToSearch ? (
-        <p className="text-const leading-4">
-          None of the active features carry an explanation, so there is nothing to match on.
-        </p>
-      ) : filtering ? (
-        <p
-          className={filter.nodes.length === 0 ? 'text-const leading-4' : 'text-text-tertiary leading-4'}
-        >
-          {filter.nodes.length === 0 ? (
-            <>No active feature&apos;s label matched “{filter.query}”.</>
-          ) : (
-            <>
-              <span className="text-text-primary font-mono tabular-nums">
-                {filter.nodes.length}
-              </span>{' '}
-              of {filter.labelled} labelled active features matched.
-            </>
-          )}
-        </p>
-      ) : null}
-
-      {filtering && filter.unlabelled > 0 ? (
-        <p className="text-text-tertiary leading-4">
-          {filter.unlabelled} active feature{filter.unlabelled === 1 ? '' : 's'} carr
-          {filter.unlabelled === 1 ? 'ies' : 'y'} no label and cannot be searched — they are
-          excluded while a filter is on.
-        </p>
-      ) : null}
     </div>
   )
 }
@@ -1783,7 +1792,7 @@ function Transport({
 
   return (
     <div className="space-y-1">
-      <div className="border-border-subtle bg-bg-elevated pointer-events-auto flex items-center rounded-[10px] border">
+      <div className="border-border-subtle bg-bg-elevated pointer-events-auto flex items-center rounded-[2px] border">
         <button
           aria-label="Previous layer"
           className={step}
@@ -1871,7 +1880,7 @@ function AreaDetail({ entry }: { entry: { area: AtlasArea; lit: LitArea | null }
   const source = area.name_source ?? null
 
   return (
-    <div className="border-border-subtle bg-bg-elevated absolute bottom-3 left-3 max-w-[20rem] space-y-1 rounded-[10px] border px-2.5 py-2 text-[11px]">
+    <div className="border-border-subtle bg-bg-elevated absolute bottom-3 left-3 max-w-[20rem] space-y-1 rounded-[2px] border px-2.5 py-2 text-[11px]">
       <p className={area.name === null ? 'text-text-disabled italic' : 'text-text-secondary'}>
         {area.name ?? 'unnamed area'}
       </p>
@@ -1970,7 +1979,7 @@ function NodeDetail({
   return (
     <div
       className={
-        'bg-bg-elevated absolute bottom-3 left-3 max-w-[20rem] space-y-1 rounded-[10px] ' +
+        'bg-bg-elevated absolute bottom-3 left-3 max-w-[20rem] space-y-1 rounded-[2px] ' +
         'border px-2.5 py-2 text-[11px] ' +
         // A pinned panel is a held state, so it says so with its border rather
         // than with a word: the reader needs to know it will not close on its
@@ -2146,7 +2155,7 @@ function ComputingNote({ activity }: { activity: Activity }) {
   if (activity.kind !== 'layers' || activity.total === 0) return null
 
   return (
-    <div className="border-border-subtle bg-[#0D0E11]/85 text-text-tertiary pointer-events-none absolute top-12 right-3 max-w-[15rem] rounded-[10px] border px-2.5 py-2 text-[11px] leading-4">
+    <div className="border-border-subtle bg-bg-elevated text-text-tertiary pointer-events-none max-w-[15rem] rounded-[2px] border px-2.5 py-2 text-[11px] leading-4">
       <p>
         Computing layer{' '}
         <span className="text-text-primary font-mono tabular-nums">{activity.done}</span> of{' '}
@@ -2180,7 +2189,7 @@ function ActivityChip({ activity, status }: { activity: Activity; status: RunSta
     // filled pill, and never a pulse: the words already say it is working.
     <div
       aria-live="polite"
-      className="border-border-strong bg-bg-elevated text-text-secondary pointer-events-none absolute top-3 right-3 rounded-sm border px-2.5 py-1 font-mono text-[10px] tabular-nums"
+      className="border-border-strong bg-bg-elevated text-text-secondary pointer-events-none rounded-sm border px-2.5 py-1 font-mono text-[10px] tabular-nums"
     >
       <span aria-hidden="true" className="bg-fn mr-1.5 inline-block size-1.5 rounded-full" />
       {copy}

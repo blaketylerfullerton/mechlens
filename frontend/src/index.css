@@ -47,17 +47,24 @@
        floor applies: 4.08:1 on bg-surface. */
     --color-rule: #6e7681;
 
-    /* Concentric radii: inner = outer − gap, with a 4px gap.
-       16 outer frame · 12 inner surface and dialogs · 10 nested panel ·
-       8 buttons and inputs · 6 tabs and chips · 2 inline code. */
+    /* Two radii, near-square. Swiss form is orthogonal: a radius is a
+       concession to the pixel grid, not a style, so there is one value for
+       everything (2px) and one exception (6px) for the outer half of the
+       double-border frame — 6 − 4 = 2 keeps the arcs concentric across the
+       4px gap. Six values were five more decisions than the design needed.
+
+       Every shadcn alias collapses onto 2px so a vendored component cannot
+       reintroduce a radius that belongs to a different system. */
     --radius-xs: 2px;
-    --radius-sm: 6px;
-    --radius-md: 8px;
-    --radius-lg: 10px;
-    --radius-xl: 12px;
-    --radius-2xl: 16px;
-    --radius-3xl: 16px;
-    --radius-4xl: 16px;
+    --radius-sm: 2px;
+    --radius-md: 2px;
+    --radius-lg: 2px;
+    --radius-xl: 2px;
+    --radius-2xl: 2px;
+    --radius-3xl: 2px;
+    --radius-4xl: 2px;
+    /* The frame's outer edge, and nothing else. */
+    --radius-frame: 6px;
 
     --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
     --font-mono: "JetBrains Mono Variable", ui-monospace, "SFMono-Regular", monospace;
@@ -138,7 +145,7 @@
     --chart-4: #545b66;
     --chart-5: #2a2e37;
 
-    --radius: 8px;
+    --radius: 2px;
 
     --sidebar: #101216;
     --sidebar-foreground: #e6e8eb;
@@ -227,10 +234,9 @@
     }
 }
 
-/* Unlayered so it wins over the design system's default `rounded-none` on
-   buttons and input groups. 8px for buttons and inputs, 12px for the input
-   group that frames the prompt — the same scale everything else uses, so no
-   surface has a radius that belongs to a different system. */
+/* Unlayered so it wins over the design system's own radius on buttons and
+   input groups. Both land on the single 2px value — a control does not get a
+   softer corner than the surface it sits on. */
 [data-slot="button"] {
     border-radius: var(--radius-md);
 }
