@@ -46,7 +46,10 @@ function Nav() {
       <Container className="flex h-14 items-center justify-between">
         {/* The wordmark is the one place mono stands in for a logotype. Nav
             items beside it are sans — mono on a nav item is the costume. */}
-        <span className="font-mono text-sm tracking-tight">mechlens</span>
+        <span className="inline-flex items-center gap-2 font-mono text-sm tracking-tight">
+          <img src="/logo.svg" alt="" width={24} height={24} />
+          mechlens
+        </span>
         <a
           className="text-text-secondary hover:text-fn inline-flex items-center gap-2 text-sm transition-colors duration-150"
           href={REPO}

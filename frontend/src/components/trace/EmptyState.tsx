@@ -51,7 +51,8 @@ export function EmptyState({
   return (
     <main className="enter flex min-h-full items-start justify-center py-6">
       <section className="w-full max-w-2xl">
-        <p className="text-text-tertiary text-[11px] font-medium tracking-[0.04em] uppercase">
+        <p className="text-text-tertiary flex items-center gap-2 text-[11px] font-medium tracking-[0.04em] uppercase">
+          <img src="/logo.svg" alt="" width={24} height={24} />
           mechlens · gemma-2-2b
         </p>
         <h1 className="text-text-primary mt-3 text-[28px] leading-[1.1] font-semibold sm:text-[36px]">

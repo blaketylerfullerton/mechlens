@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, getTraceJob, postTrace } from '@/lib/api-client'
 import type { JobProgress, JobStatus, TracePass, Trace } from '@/lib/api-types'
+import { readLastTrace, saveLastTrace } from '@/lib/trace-storage'
 import { atlasLayers, loadAtlas } from '@/lib/atlas'
 
 // Live snapshots expose text and measurements while the worker is running.
@@ -28,6 +29,7 @@ export interface UseTraceResult {
   status: RunState
   trace: Trace | null
   error: string | null
+  storageNotice: string | null
   progress: JobProgress | null
   run: (prompt: string, maxTokens: number) => void
 }
@@ -40,9 +42,24 @@ export function useTrace(): UseTraceResult {
   const [status, setStatus] = useState<RunState>('idle')
   const [trace, setTrace] = useState<Trace | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [storageNotice, setStorageNotice] = useState<string | null>(null)
   const [progress, setProgress] = useState<JobProgress | null>(null)
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const generationRef = useRef(0)
+
+  useEffect(() => {
+    let cancelled = false
+    const generation = generationRef.current
+    readLastTrace().then((saved) => {
+      if (!cancelled && generation === generationRef.current && saved) {
+        setTrace(saved)
+        setStatus('done')
+      }
+    }).catch(() => {
+      if (!cancelled) setStorageNotice('Browser storage is unavailable. This session will not survive a reload.')
+    })
+    return () => { cancelled = true }
+  }, [])
 
   // Which layers to run the SAE pass on: the ones the atlas can actually
   // place. Derived from the atlas rather than hardcoded, so a trace never
@@ -85,6 +102,13 @@ export function useTrace(): UseTraceResult {
           if (job.partial_trace) setTrace(job.partial_trace)
           if (job.status === 'done') {
             setTrace(job.trace)
+            if (job.trace) {
+              saveLastTrace(job.trace).then(() => {
+                if (generation === generationRef.current) setStorageNotice(null)
+              }).catch(() => {
+                if (generation === generationRef.current) setStorageNotice('This trace could not be saved in this browser. It will be lost on reload.')
+              })
+            }
           } else if (job.status === 'error') {
             setError(job.error ?? 'trace job failed')
           } else {
@@ -148,5 +172,5 @@ export function useTrace(): UseTraceResult {
     [submit],
   )
 
-  return { status, trace, error, progress, run }
+  return { status, trace, error, storageNotice, progress, run }
 }

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 
 import { Brain } from '@/components/Brain'
 import { ResidualMap } from '@/components/trace/ResidualMap'
@@ -47,6 +47,7 @@ function ViewToggle({ view, onChange }: { view: View; onChange: (view: View) => 
 }
 
 type StageProps = {
+  composer: ReactNode
   inspectorOpen: boolean
   onToggleInspector: () => void
   followingLatest: boolean
@@ -70,6 +71,7 @@ type StageProps = {
  * before their object.
  */
 export function Stage({
+  composer,
   inspectorOpen,
   onToggleInspector,
   followingLatest,
@@ -102,7 +104,14 @@ export function Stage({
             </button>
           </div>
         </div>
-      ) : null}
+      ) : (
+        <div className="flex min-h-7 items-center gap-4">
+          <h1 className="text-text-primary text-[13px] font-medium">mechlens</h1>
+          <span role="status" className="text-text-secondary text-[12px]">
+            {status === 'warming' ? 'Loading model' : status === 'pending' ? 'Trace queued' : status === 'running' ? 'Generating' : status === 'error' ? 'Ready to retry' : 'Ready'}
+          </span>
+        </div>
+      )}
 
       {/* The one frame treatment: an outer frame holding an inner surface,
           hairline on both, 4px gap, radii concentric (6 − 4 = 2). It wraps what
@@ -148,7 +157,12 @@ export function Stage({
           onSelect={onSelectPosition}
           selection={selection}
         />
-      ) : null}
+      ) : (
+        <div className="border-border-subtle flex min-h-24 items-center border-t pt-3">
+          <p className="text-text-secondary text-[13px]">Enter a prompt to watch the response form and explore what happens inside the model.</p>
+        </div>
+      )}
+      <div className="shrink-0">{composer}</div>
     </div>
   )
 }

@@ -31,7 +31,7 @@ export interface Selection {
 }
 
 function App() {
-  const { error, progress, run, status, trace } = useTrace()
+  const { error, storageNotice, progress, run, status, trace } = useTrace()
   const [selection, setSelection] = useState<Selection | null>(null)
   const [inspectorOpen, setInspectorOpen] = useState(false)
 
@@ -87,13 +87,13 @@ function App() {
     [trace, currentSelection],
   )
 
-  const resting = trace === null
 
   return (
     <div className="text-text-primary bg-bg-base min-h-svh">
       <div className="mx-auto flex min-h-svh max-w-[1800px] flex-col gap-5 px-4 py-5 sm:px-6 lg:flex-row lg:px-8">
-        <main className={`flex min-h-[38rem] min-w-0 flex-col lg:sticky lg:top-5 lg:h-[calc(100svh-2.5rem)] ${resting ? 'lg:w-1/2' : 'lg:flex-1'}`}>
+        <main className="flex min-h-[38rem] min-w-0 flex-col lg:sticky lg:top-5 lg:h-[calc(100svh-2.5rem)] lg:flex-1">
           <Stage
+            composer={<ChatPanel error={error} onTraceRequest={run} status={status} />}
             inspectorOpen={inspectorOpen}
             onToggleInspector={() => setInspectorOpen((open) => !open)}
             onFollowLatest={() => setSelection(null)}
@@ -106,14 +106,14 @@ function App() {
             status={status}
             trace={trace}
           />
-          {error && trace ? <p role="alert" className="text-err mt-2 text-[13px]">{error}</p> : null}
+          {error ? <p role="alert" className="text-err mt-2 text-[13px]">{error}</p> : null}
+          {storageNotice ? <p role="status" className="text-text-secondary mt-2 text-[12px]">{storageNotice}</p> : null}
         </main>
 
-        {resting || inspectorOpen ? (
-          <section id="trace-inspector" aria-label={resting ? 'Start a trace' : 'Inspector'}
-            className={`min-w-0 lg:sticky lg:top-5 lg:h-[calc(100svh-2.5rem)] ${resting ? 'flex-1' : 'border-border-subtle border-t pt-4 lg:w-80 lg:shrink-0 lg:border-t-0 lg:border-l lg:pt-0 lg:pl-5'}`}>
+        {trace && inspectorOpen ? (
+          <section id="trace-inspector" aria-label="Inspector"
+            className="border-border-subtle min-w-0 border-t pt-4 lg:sticky lg:top-5 lg:h-[calc(100svh-2.5rem)] lg:w-80 lg:shrink-0 lg:border-t-0 lg:border-l lg:pt-0 lg:pl-5">
             <div className="flex h-full min-h-0 flex-col">
-              {!resting ? (
                 <div className="mb-4 flex shrink-0 items-center justify-between">
                   <h2 className="text-[13px] font-medium">Inspector</h2>
                   <button type="button" aria-label="Close inspector"
@@ -122,11 +122,9 @@ function App() {
                     Close
                   </button>
                 </div>
-              ) : null}
               <div className="min-h-0 flex-1">
                 <TraceViewer
-                  composer={<ChatPanel error={error} onTraceRequest={run} status={status} />}
-                  error={resting ? error : null}
+                  error={null}
                   selection={currentSelection}
                   status={status}
                   trace={trace}
