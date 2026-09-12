@@ -54,10 +54,12 @@ export function ResidualMap({
   const gridColumns = `4rem repeat(${trace.steps.length}, minmax(2rem, 1fr))`
 
   return (
-    /* The same frame the brain gets: outer 16, inner 12, 4px gap. It wraps what
-       the reader looks into and nothing else. */
-    <div className="border-border-subtle min-w-0 rounded-[6px] border bg-[#0D0E11] p-1">
-      <section className="border-border-subtle bg-bg-surface overflow-hidden rounded-[2px] border">
+    /* No frame of its own any more: this fills the stage's frame, which is the
+       same frame the brain fills, because it is the same object seen another
+       way. Two framed grids side by side were two primary objects, and the
+       narrower of them was never wide enough to read. */
+    <section className="flex h-full min-h-0 flex-col">
+      <div className="shrink-0">
         <MapLegend
           lensAvailable={map.lensAvailable}
           maximumResidualNorm={map.maximumResidualNorm}
@@ -65,27 +67,31 @@ export function ResidualMap({
           mode={mode}
           onChangeMode={map.setMode}
         />
+      </div>
 
-        <div className="mask-fade-b max-h-[58vh] overflow-auto p-3">
-          <div className="min-w-max" style={{ display: 'grid', gridTemplateColumns: gridColumns }}>
-            <div className="bg-bg-surface text-text-tertiary sticky left-0 z-10 px-2 py-2 text-right text-[10px] font-medium tracking-[0.04em] uppercase">
-              layer
-            </div>
-            {trace.steps.map((step) => (
-              <button
-                aria-label={`Select token ${step.step}`}
-                className={`border-border-subtle border-b px-1 py-2 font-mono text-[10px] tabular-nums transition-colors duration-150 ${
-                  step.step === selection.position
-                    ? 'text-fn'
-                    : 'text-text-disabled hover:text-text-secondary'
-                }`}
-                key={step.step}
-                onClick={() => onSelectPosition(step.step)}
-                type="button"
-              >
-                {step.step}
-              </button>
-            ))}
+      {/* The grid and the notes under it scroll together: the caveats say what
+          the colours above mean, and a caveat parked in another column is a
+          caveat nobody read. */}
+      <div className="mask-fade-b min-h-0 flex-1 overflow-auto p-3">
+        <div className="min-w-max" style={{ display: 'grid', gridTemplateColumns: gridColumns }}>
+          <div className="bg-bg-surface text-text-tertiary sticky left-0 z-10 px-2 py-2 text-right text-[10px] font-medium tracking-[0.04em] uppercase">
+            layer
+          </div>
+          {trace.steps.map((step) => (
+            <button
+              aria-label={`Select token ${step.step}`}
+              className={`border-border-subtle border-b px-1 py-2 font-mono text-[10px] tabular-nums transition-colors duration-150 ${
+                step.step === selection.position
+                  ? 'text-fn'
+                  : 'text-text-disabled hover:text-text-secondary'
+              }`}
+              key={step.step}
+              onClick={() => onSelectPosition(step.step)}
+              type="button"
+            >
+              {step.step}
+            </button>
+          ))}
 
             {Array.from({ length: trace.n_layers }, (_, layer) => (
               <div className="contents" key={layer}>
@@ -126,10 +132,13 @@ export function ResidualMap({
                 })}
               </div>
             ))}
-          </div>
         </div>
-      </section>
-    </div>
+
+        <div className="mt-4">
+          <MapNotes crossover={crossover} mode={mode} />
+        </div>
+      </div>
+    </section>
   )
 }
 

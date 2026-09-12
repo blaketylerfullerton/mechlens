@@ -5,10 +5,6 @@ import type { Trace } from '@/lib/api-types'
 
 import { EmptyState } from './trace/EmptyState'
 import { Inspector } from './trace/Inspector'
-import { MapNotes, ResidualMap } from './trace/ResidualMap'
-import { TokenStrip } from './trace/TokenStrip'
-import { TraceHeader } from './trace/TraceHeader'
-import { useResidualMap } from './trace/useResidualMap'
 
 type TraceViewerProps = {
   trace: Trace | null
@@ -20,8 +16,6 @@ type TraceViewerProps = {
    * is also when this component renders its empty state.
    */
   selection: { layer: number; position: number } | null
-  onSelectCell: (layer: number, position: number) => void
-  onSelectPosition: (position: number) => void
   /**
    * The prompt composer, rendered inside the empty state directly under the
    * facts block. Passed in rather than imported so this component keeps
@@ -32,22 +26,17 @@ type TraceViewerProps = {
 }
 
 /**
- * The trace page, and nothing but its composition: header, token strip, the
- * residual map beside the inspector, the caveats under both. Every piece lives
- * in `./trace`; what stays here is the arrangement and the two conditions
- * under which there is no page to arrange.
+ * The right-hand rail: everything about the one cell the reader has selected,
+ * and nothing else.
+ *
+ * It used to be a whole second page in a quarter-width column — a page header,
+ * the token strip, the residual grid, this inspector and the map's caveats,
+ * stacked. The grid and the strip are axes of the primary object and have
+ * moved onto it (`Stage`); the header became a line above it. What is left is
+ * a single vertical stack of panels, which is a shape that is happy at a fixed
+ * 24rem and was never happy sharing one.
  */
-export function TraceViewer({
-  trace,
-  status,
-  error,
-  selection,
-  onSelectCell,
-  onSelectPosition,
-  composer,
-}: TraceViewerProps) {
-  const map = useResidualMap(trace)
-
+export function TraceViewer({ trace, status, error, selection, composer }: TraceViewerProps) {
   if (!trace || trace.steps.length === 0 || selection === null) {
     return <EmptyState composer={composer} error={error} status={status} />
   }
@@ -66,34 +55,12 @@ export function TraceViewer({
   }
 
   return (
-    <main className="enter @container min-h-full">
-      <div className="space-y-4">
-        <TraceHeader trace={trace} />
-
-        <TokenStrip
-          onSelect={onSelectPosition}
-          selectedPosition={selection.position}
-          steps={trace.steps}
-        />
-
-        {/* A container query, not a viewport one: this column is 25% of the
-            window when the brain is open and the full width when the grid is
-            collapsed, so the window size says nothing about whether there is
-            room for two columns here. Split only once *this* column is past
-            42rem, which leaves the map at least 20rem of its own. */}
-        <div className="grid items-start gap-4 @2xl:grid-cols-[minmax(0,1fr)_20rem]">
-          <ResidualMap
-            map={map}
-            onSelectCell={onSelectCell}
-            onSelectPosition={onSelectPosition}
-            selection={selection}
-            trace={trace}
-          />
-          <Inspector state={selectedState} step={selectedStep} />
-        </div>
-
-        <MapNotes crossover={map.crossover} mode={map.mode} />
+    <div className="enter flex h-full min-h-0 flex-col">
+      {/* Its own scroll, so a long feature list never drags the stage beside it
+          taller than the window. */}
+      <div className="mask-fade-b min-h-0 flex-1 overflow-y-auto">
+        <Inspector state={selectedState} step={selectedStep} />
       </div>
-    </main>
+    </div>
   )
 }

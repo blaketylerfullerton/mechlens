@@ -72,6 +72,16 @@ export interface BrainProps {
   progress: JobProgress | null
   /** The transport steps the shared selection's layer. */
   onSelectLayer?: (layer: number) => void
+  /**
+   * True while something else holds the stage — the grid view, today.
+   *
+   * The scene stays mounted rather than unmounting, because the camera is a
+   * held state: a reader orbits to a cluster, checks the grid, and coming back
+   * to a reset camera would make the toggle cost something. Mounted and hidden
+   * is only cheap if it stops drawing, hence this — the loop keeps its frame
+   * callback alive so it can resume, and renders nothing meanwhile.
+   */
+  paused?: boolean
 }
 
 // --------------------------------------------------------------------------
@@ -582,9 +592,26 @@ interface SceneHandles {
   maxDistance: number
 }
 
-export function Brain({ trace, selection, status, progress, onSelectLayer }: BrainProps) {
+export function Brain({
+  trace,
+  selection,
+  status,
+  progress,
+  onSelectLayer,
+  paused = false,
+}: BrainProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const handlesRef = useRef<SceneHandles | null>(null)
+
+  // Read by the animation loop, which is set up once and must not tear down
+  // and rebuild the scene every time the stage switches views. Written from an
+  // effect rather than during render: the loop is an external system, and the
+  // one frame it may still draw before the flag lands is drawn into a
+  // container that is already hidden.
+  const pausedRef = useRef(paused)
+  useEffect(() => {
+    pausedRef.current = paused
+  }, [paused])
 
   // The atlas is a fixed table fetched once, not derived from the trace.
   // `undefined` while the fetch is in flight, `null` when there is no atlas to
@@ -887,17 +914,25 @@ export function Brain({ trace, selection, status, progress, onSelectLayer }: Bra
 
     let frameId: number
     const clock = new THREE.Clock()
+    // Accumulated from per-frame deltas rather than read off the clock, so a
+    // pause holds the turn where it was instead of letting wall-clock time run
+    // on underneath and snapping the brain round on the way back.
+    let spin = 0
     const animate = () => {
-      const elapsed = clock.getElapsedTime()
+      frameId = requestAnimationFrame(animate)
+
+      const delta = clock.getDelta()
+      if (pausedRef.current) return
+      spin += delta
+
       if (!userDriven) {
-        brainGroup.rotation.y = stillness.matches ? 0.35 : elapsed * 0.04
+        brainGroup.rotation.y = stillness.matches ? 0.35 : spin * 0.04
       }
 
       applyDetail(handlesRef.current)
 
       controls.update()
       composer.render()
-      frameId = requestAnimationFrame(animate)
     }
     animate()
 

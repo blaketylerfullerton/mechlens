@@ -1,18 +1,19 @@
 import { useCallback, useMemo, useState } from 'react'
 
-import { Brain, type SelectionVia } from '@/components/Brain'
+import type { SelectionVia } from '@/components/Brain'
 import { ChatPanel } from '@/components/ChatPanel'
+import { Stage } from '@/components/Stage'
 import { TraceViewer } from '@/components/TraceViewer'
 import { useTrace } from '@/hooks/useTrace'
 
 /**
  * The selected (layer, token) cell, tagged with the trace it belongs to.
  *
- * Owned here rather than inside `TraceViewer` because the brain and the grid
- * both read it and both change it — two copies of this would let the two
- * surfaces disagree about what is selected, which is the one thing a shared
- * selection exists to prevent. The `traceId` tag is what makes a stale
- * selection detectable when a new trace lands.
+ * Owned here rather than inside `Stage` because the brain, the grid and the
+ * inspector rail all read it and the first two both change it — two copies of
+ * this would let the surfaces disagree about what is selected, which is the
+ * one thing a shared selection exists to prevent. The `traceId` tag is what
+ * makes a stale selection detectable when a new trace lands.
  */
 export interface Selection {
   layer: number
@@ -33,7 +34,7 @@ function App() {
   const { error, progress, run, status, trace } = useTrace()
   const [selection, setSelection] = useState<Selection | null>(null)
 
-  // Resolved once, here, so both surfaces get the *same* default for a new
+  // Resolved once, here, so every surface gets the *same* default for a new
   // trace instead of each falling back on its own.
   const currentSelection = useMemo<Selection | null>(() => {
     if (!trace || trace.steps.length === 0) return null
@@ -83,108 +84,107 @@ function App() {
     [trace, currentSelection],
   )
 
-  // The grid is collapsible, but only once there is a trace in it. With no
-  // trace the right column holds the composer and the empty state — the one
+  // The rail is collapsible, but only once there is a trace to inspect. With
+  // no trace the right column holds the composer and the empty state — the one
   // action at rest — and collapsing that would hide the only thing to do.
-  const [gridOpen, setGridOpen] = useState(true)
-  const collapsed = gridOpen === false && trace !== null
+  const [railOpen, setRailOpen] = useState(true)
+  const collapsed = railOpen === false && trace !== null
 
-  // The brain dominates once there is something lit in it. Before that the
-  // right column holds the whole first-run experience — what this is, and the
-  // three prompts that start it — and squeezing that into a quarter of the
-  // window put a 36px headline in a 26rem column and left the largest object
-  // on screen as the least explained one. So the split follows the content:
-  // 60/40 at rest, 75/25 with a trace, and the full width when the grid is
-  // folded away. Animated, because it moves on its own rather than on a click.
-  const brainWidth = collapsed
-    ? 'lg:w-[calc(100%-3.75rem)]'
-    : trace === null
-      ? 'lg:w-[60%]'
-      : 'lg:w-[75%]'
+  // Two widths, not four.
+  //
+  // At rest the right column *is* the product: what this is, and the three
+  // prompts that start it. That wants half the window — squeezing it into a
+  // quarter put a 36px headline in a 26rem column.
+  //
+  // With a trace it is the inspector: one vertical stack of panels, whose
+  // natural width is the width of a panel. A fixed 24rem, so it stops changing
+  // size as the stage grows, and the stage takes everything left over — which
+  // is the whole point of moving the grid onto it.
+  const resting = trace === null
 
   return (
     <div className="text-text-primary bg-bg-base min-h-svh">
-      {/* Stacks under lg so neither surface gets clipped on a narrow screen;
-          the grid keeps its own scroll container either way. Collapsing is an
-          lg-and-up affordance: on a stacked column a 2.5rem rail is not a
-          smaller version of the grid, it is just a bar in the way. */}
+      {/* Stacks under lg so neither surface gets clipped on a narrow screen.
+          Collapsing is an lg-and-up affordance: on a stacked column a 2.5rem
+          rail is not a smaller version of the inspector, it is a bar in the
+          way. */}
       <div className="mx-auto flex min-h-svh max-w-[1800px] flex-col gap-4 px-4 pt-5 pb-8 sm:px-6 lg:flex-row lg:gap-5 lg:px-8">
-        {/* The one frame treatment, used here and on the residual map: an outer
-            frame holding an inner surface, hairline on both, 4px gap, radii
-            concentric (6 − 4 = 2). It wraps what the reader looks *into* and
-            nothing else. */}
         {/* Sticky and viewport-height on a wide screen, rather than growing
-            with the trace beside it. The brain anchors its own overlays — the
-            legend, the lit-feature panel, the hover detail — to its bottom
-            edge, and a column that grew to the height of a long trace put
-            that edge below the fold: the detail panel for whatever you were
-            pointing at rendered somewhere you could not see. */}
+            with whatever is beside it. The brain anchors its own overlays — the
+            legend, the lit-feature panel, the hover detail — to its own edges,
+            and a column that grew put those below the fold. */}
         <div
-          className={`border-border-subtle flex h-[42svh] shrink-0 rounded-[6px] border bg-[#0D0E11] p-1 transition-[width] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] lg:sticky lg:top-5 lg:h-[calc(100svh-3.25rem)] lg:min-w-[22rem] ${brainWidth}`}
+          className={`flex h-[52svh] min-w-0 shrink-0 flex-col lg:sticky lg:top-5 lg:h-[calc(100svh-3.25rem)] lg:min-w-[22rem] ${
+            resting ? 'lg:w-1/2' : 'lg:flex-1'
+          }`}
         >
-          <div className="border-border-subtle bg-bg-surface min-w-0 flex-1 overflow-hidden rounded-[2px] border">
-            <Brain
-              onSelectLayer={selectLayer}
-              progress={progress}
-              selection={currentSelection}
-              status={status}
-              trace={trace}
-            />
-          </div>
+          <Stage
+            onSelectCell={selectCell}
+            onSelectLayer={selectLayer}
+            onSelectPosition={selectPosition}
+            progress={progress}
+            selection={currentSelection}
+            status={status}
+            trace={trace}
+          />
         </div>
 
         <div
-          className={`min-w-0 ${collapsed ? 'flex-1 lg:w-10 lg:flex-none' : 'flex-1'}`}
+          className={`min-w-0 lg:sticky lg:top-5 lg:h-[calc(100svh-3.25rem)] ${
+            collapsed
+              ? 'flex-1 lg:w-10 lg:flex-none'
+              : resting
+                ? 'flex-1'
+                : 'flex-1 lg:w-96 lg:flex-none'
+          }`}
         >
-          {/* The rail the grid collapses to. Only at lg, and only with a
+          {/* The rail the inspector collapses to. Only at lg, and only with a
               trace — it is the same control as the chevron above, wearing the
               width it has left. */}
           {collapsed ? (
             <button
               aria-expanded="false"
-              aria-label="Show the trace grid"
-              className="border-border-subtle bg-bg-surface text-text-tertiary hover:text-text-primary hover:border-border-strong sticky top-5 hidden h-[calc(100svh-3.25rem)] w-10 flex-col items-center gap-3 rounded-[6px] border transition-colors duration-150 lg:flex"
-              onClick={() => setGridOpen(true)}
+              aria-label="Show the inspector"
+              className="border-border-subtle bg-bg-surface text-text-tertiary hover:text-text-primary hover:border-border-strong hidden h-full w-10 flex-col items-center gap-3 rounded-[6px] border transition-colors duration-150 lg:flex"
+              onClick={() => setRailOpen(true)}
               type="button"
             >
               <Chevron className="mt-3 rotate-180" />
               <span className="[writing-mode:vertical-rl] font-mono text-[11px] tracking-[0.04em]">
-                trace
+                inspector
               </span>
             </button>
           ) : null}
 
           {/* The composer lives inside the empty state, under the facts
-              block — so it is there when there is nothing to look at, and
-              gone the moment a prompt is submitted and the trace takes the
-              page over. */}
-          <div className={collapsed ? 'lg:hidden' : ''}>
-            {/* Hidden rather than unmounted, so collapsing and reopening does
-                not throw away the grid's scroll position. */}
+              block — so it is there when there is nothing to look at, and gone
+              the moment a prompt is submitted and the trace takes the page
+              over. */}
+          <div className={`flex h-full min-h-0 flex-col ${collapsed ? 'lg:hidden' : ''}`}>
             {trace ? (
-              <div className="mb-2 hidden justify-end lg:flex">
+              <div className="mb-2 hidden shrink-0 justify-end lg:flex">
                 <button
                   aria-expanded="true"
-                  aria-label="Hide the trace grid"
+                  aria-label="Hide the inspector"
                   className="text-text-tertiary hover:text-text-primary inline-flex items-center gap-1.5 rounded-xs px-2 py-1 font-mono text-[11px] transition-colors duration-150"
-                  onClick={() => setGridOpen(false)}
+                  onClick={() => setRailOpen(false)}
                   type="button"
                 >
-                  <Chevron />
                   Hide
+                  <Chevron />
                 </button>
               </div>
             ) : null}
 
-            <TraceViewer
-              composer={<ChatPanel error={error} onTraceRequest={run} status={status} />}
-              error={error}
-              onSelectCell={selectCell}
-              onSelectPosition={selectPosition}
-              selection={currentSelection}
-              status={status}
-              trace={trace}
-            />
+            <div className="min-h-0 flex-1">
+              <TraceViewer
+                composer={<ChatPanel error={error} onTraceRequest={run} status={status} />}
+                error={error}
+                selection={currentSelection}
+                status={status}
+                trace={trace}
+              />
+            </div>
           </div>
         </div>
       </div>
