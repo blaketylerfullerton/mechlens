@@ -43,9 +43,9 @@ function App() {
       layer: trace.n_layers - 1,
       position: trace.steps.length - 1,
       traceId: trace.trace_id,
-      via: 'default',
+      via: status === 'running' ? 'token' : 'default',
     }
-  }, [trace, selection])
+  }, [trace, selection, status])
 
   const selectCell = useCallback(
     (layer: number, position: number) => {
@@ -119,6 +119,8 @@ function App() {
           }`}
         >
           <Stage
+            onFollowLatest={() => setSelection(null)}
+            followingLatest={selection?.traceId !== trace?.trace_id}
             onSelectCell={selectCell}
             onSelectLayer={selectLayer}
             onSelectPosition={selectPosition}

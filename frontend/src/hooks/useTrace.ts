@@ -3,10 +3,7 @@ import { ApiError, getTraceJob, postTrace } from '@/lib/api-client'
 import type { JobProgress, JobStatus, TracePass, Trace } from '@/lib/api-types'
 import { atlasLayers, loadAtlas } from '@/lib/atlas'
 
-// Fast enough to resolve the lens phase, which decodes a layer roughly every
-// 90ms on gemma-2-2b: at 500ms the brain's depth sweep jumped in blocks of
-// five or six layers. This is a localhost GET returning four small fields, and
-// it only runs while a job is in flight.
+// Live snapshots expose text and measurements while the worker is running.
 const POLL_INTERVAL_MS = 150
 // The model loads on a warm-up thread after the server starts, so an early
 // submit gets a 503 rather than a job id. Wait it out instead of making the
@@ -70,6 +67,7 @@ export function useTrace(): UseTraceResult {
   useEffect(
     () => () => {
       if (timeoutRef.current) clearTimeout(timeoutRef.current)
+      generationRef.current += 1
     },
     [],
   )
@@ -84,6 +82,7 @@ export function useTrace(): UseTraceResult {
           // guarantees a reading never goes backwards within a phase, so the
           // latest response is always the one to show.
           setProgress(job.progress)
+          if (job.partial_trace) setTrace(job.partial_trace)
           if (job.status === 'done') {
             setTrace(job.trace)
           } else if (job.status === 'error') {
@@ -105,6 +104,7 @@ export function useTrace(): UseTraceResult {
     function submit(prompt: string, maxTokens: number, generation: number) {
       postTrace({
         prompt,
+        live: true,
         max_tokens: maxTokens,
         passes: REQUESTED_PASSES,
         sae_layers: saeLayersRef.current,

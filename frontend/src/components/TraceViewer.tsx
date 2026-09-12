@@ -56,10 +56,11 @@ export function TraceViewer({ trace, status, error, selection, composer }: Trace
 
   return (
     <div className="enter flex h-full min-h-0 flex-col">
+      {error ? <p role="alert" className="text-err mb-2 text-[13px]">{error}</p> : null}
       {/* Its own scroll, so a long feature list never drags the stage beside it
           taller than the window. */}
       <div className="mask-fade-b min-h-0 flex-1 overflow-y-auto">
-        <Inspector state={selectedState} step={selectedStep} />
+        <Inspector state={selectedState} step={selectedStep} running={status === 'running'} />
       </div>
     </div>
   )

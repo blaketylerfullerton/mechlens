@@ -26,7 +26,9 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Callable, Literal
+from typing import Callable, Literal, Protocol
+
+from ..schema import Trace
 
 JobStatus = Literal["pending", "running", "done", "error"]
 
@@ -52,7 +54,9 @@ class JobProgress:
 
 
 # What a job callable is handed so it can publish progress: (phase, done, total).
-Reporter = Callable[[JobPhase, int, int], None]
+class Reporter(Protocol):
+    def __call__(self, phase: JobPhase, done: int, total: int) -> None: ...
+    def publish(self, trace: Trace) -> None: ...
 
 # A unit of work for the worker. It takes a `Reporter`; a job with nothing to
 # report simply ignores the argument.
@@ -71,6 +75,7 @@ class JobRecord:
     id: str
     status: JobStatus = "pending"
     result: object | None = None
+    partial_trace: Trace | None = None
     error: str | None = None
     created_at: float = field(default_factory=time.time)
     # None until the job publishes its first reading, so "queued" stays
@@ -117,7 +122,15 @@ def _reporter_for(job: JobRecord) -> Reporter:
                 return
         job.progress = JobProgress(phase=phase, done=done, total=total)
 
-    return report
+    class Publisher:
+        def __call__(self, phase: JobPhase, done: int, total: int) -> None:
+            report(phase, done, total)
+
+        def publish(self, trace: Trace) -> None:
+            # Never expose a document the worker will keep mutating.
+            job.partial_trace = trace.model_copy(deep=True)
+
+    return Publisher()
 
 
 def _run_one(job_id: str, fn: JobFn) -> None:
@@ -132,6 +145,7 @@ def _run_one(job_id: str, fn: JobFn) -> None:
     try:
         job.result = fn(_reporter_for(job))
         job.status = "done"
+        job.partial_trace = None
     except Exception as exc:  # noqa: BLE001 - reported on the job, not raised
         job.error = str(exc)
         job.status = "error"

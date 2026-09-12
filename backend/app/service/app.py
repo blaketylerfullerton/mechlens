@@ -27,7 +27,7 @@ from transformer_lens import HookedTransformer
 import numpy as np
 
 from .. import atlas, model_cache
-from ..capture import generate_trace
+from ..capture import CaptureResult, generate_trace
 from ..labels import LabelStore, feature_url
 from ..passes import apply
 from ..passes.labels import LabelsPass
@@ -175,12 +175,71 @@ def create_app(
                 ) from exc
 
         def run(report: jobs.Reporter) -> Trace:
+            live_trace: Trace | None = None
+            live_saes: dict[int, object] = {}
+
+            def publish_capture(captured: CaptureResult) -> None:
+                nonlocal live_trace
+                current = captured.trace
+                start = len(live_trace.steps) if live_trace is not None else 0
+                if live_trace is not None:
+                    current.steps[:start] = live_trace.steps
+                    current.labels = dict(live_trace.labels)
+                    current.layout = dict(live_trace.layout)
+                    current.passes = list(live_trace.passes)
+                report.publish(current)  # Text and probabilities before analysis.
+
+                # Only encode newly captured positions. Existing positions are
+                # causal and immutable; decoding the whole prefix each time
+                # would make the analysis cost quadratic.
+                chunk = current.model_copy(deep=True)
+                chunk.steps = chunk.steps[start:]
+                chunk.passes = []
+                chunk.labels = {}
+                chunk.layout = {}
+                residuals = captured.residuals[start:]
+
+                def publish_analysis() -> None:
+                    current.steps[start:] = chunk.steps
+                    current.labels.update(chunk.labels)
+                    current.layout.update(chunk.layout)
+                    # Chunk statistics are not whole-trace measurements. Preserve
+                    # dictionary/atlas identity, but leave diagnostics to finalization.
+                    records = {record.name: record for record in current.passes}
+                    for record in chunk.passes:
+                        record.stats = {}
+                        record.params["partial"] = True
+                        records[record.name] = record
+                    current.passes = list(records.values())
+                    report.publish(current)
+
+                if wants_sae:
+                    layers = sae_layers if sae_layers is not None else list(range(m.cfg.n_layers))
+                    for layer in layers:
+                        if layer not in live_saes:
+                            live_saes[layer] = sae_provider(layer)
+                    apply(SAEPass(layers=layers, saes=live_saes, device=str(m.cfg.device),
+                                  hook=captured.hook, verbose=False), chunk, residuals)
+                    if any(state.features for step in chunk.steps for state in step.layers):
+                        with open_label_store() as store:
+                            if wants_labels:
+                                apply(LabelsPass(store=store, verbose=False), chunk, residuals)
+                            apply(LayoutPass(store=store, atlas_version=atlas_version,
+                                             source=atlas_source, verbose=False), chunk, residuals)
+                if wants_sae:
+                    publish_analysis()
+                if wants_lens:
+                    apply(LogitLensPass(model=m, hook=captured.hook, verbose=False), chunk, residuals)
+                publish_analysis()
+                live_trace = current
+
             with _forward_lock:
                 result = generate_trace(
                     m,
                     req.prompt,
                     max_new_tokens=req.max_tokens,
                     on_progress=lambda done, total: report("generating", done, total),
+                    on_capture=publish_capture if req.live else None,
                 )
 
                 # Before the lens, so the phases a client observes stay in
@@ -270,7 +329,8 @@ def create_app(
         if job is None:
             raise HTTPException(status_code=404, detail="unknown job id")
         return JobStatusResponse(
-            status=job.status, trace=job.result, error=job.error, progress=job.progress
+            status=job.status, trace=job.result, error=job.error, progress=job.progress,
+            partial_trace=job.partial_trace
         )
 
     @app.post("/steer", response_model=JobResponse)

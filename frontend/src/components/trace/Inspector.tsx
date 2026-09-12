@@ -46,17 +46,12 @@ function FeatureList({ features }: { features: Feature[] }) {
 }
 
 /** The lens pass can be skipped per layer; say so rather than showing nothing. */
-function NoReadout() {
+function NoReadout({ running }: { running: boolean }) {
   return (
     <section className="border-border-subtle bg-bg-surface rounded-[2px] border border-dashed p-3">
       <SectionLabel>Layer readout</SectionLabel>
       <p className="text-text-secondary text-[13px] leading-[1.55]">
-        This layer has no logit-lens readout, so there is nothing to decode here. The lens pass
-        did not run for it — request it with{' '}
-        <code className="border-border-subtle bg-bg-elevated text-text-primary rounded-xs border px-1 py-0.5 font-mono text-[12px]">
-          "passes": ["lens"]
-        </code>
-        .
+        {running ? 'Layer predictions are being computed for this position.' : 'No layer predictions are available for this position.'}
       </p>
     </section>
   )
@@ -66,7 +61,7 @@ function NoReadout() {
  * Everything about the one (layer, token) cell the reader has selected, plus
  * the position's own next-token distribution. The right-hand column.
  */
-export function Inspector({ state, step }: { state: LayerState; step: TokenStep }) {
+export function Inspector({ state, step, running = false }: { state: LayerState; step: TokenStep; running?: boolean }) {
   return (
     <aside className="space-y-3">
       <section className="border-fn/30 bg-fn/[0.05] rounded-[2px] border p-3">
@@ -86,7 +81,7 @@ export function Inspector({ state, step }: { state: LayerState; step: TokenStep 
           <Distribution tokens={state.logit_lens.top_k} />
         </Panel>
       ) : (
-        <NoReadout />
+        <NoReadout running={running} />
       )}
 
       {state.features.length > 0 ? (

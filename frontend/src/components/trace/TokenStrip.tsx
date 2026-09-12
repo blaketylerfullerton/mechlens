@@ -1,3 +1,5 @@
+import { useEffect, useRef } from 'react'
+
 import type { TokenStep } from '@/lib/api-types'
 
 import { visibleToken } from './format'
@@ -12,6 +14,11 @@ export function TokenStrip({
   selectedPosition: number
   onSelect: (position: number) => void
 }) {
+  const selectedRef = useRef<HTMLButtonElement | null>(null)
+  useEffect(() => {
+    selectedRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [selectedPosition])
+
   return (
     <section>
       <SectionLabel
@@ -37,6 +44,7 @@ export function TokenStrip({
 
             return (
               <button
+                ref={isSelected ? selectedRef : undefined}
                 aria-label={`Select token ${step.step}: ${step.token.text || 'empty token'}`}
                 aria-pressed={isSelected}
                 className={`rounded-sm border px-2 py-1.5 font-mono text-[12px] transition-colors duration-150 ${tone}`}

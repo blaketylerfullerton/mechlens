@@ -140,6 +140,7 @@ export interface NodePosition {
 export type TracePass = 'lens' | 'sae' | 'labels'
 
 export interface TraceRequest {
+  live?: boolean
   prompt: string
   max_tokens: number
   // `labels` without `sae` is a 422: the label pass labels the features the
@@ -188,6 +189,7 @@ export interface JobProgress {
 }
 
 export interface JobStatusResponse {
+  partial_trace?: Trace | null
   status: JobStatus
   trace: Trace | null
   error: string | null

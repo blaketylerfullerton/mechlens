@@ -130,6 +130,7 @@ def generate_trace(
     trace_id: str | None = None,
     intervention: Intervention | None = None,
     on_progress: ProgressCallback | None = None,
+    on_capture: Callable[[CaptureResult], None] | None = None,
 ) -> CaptureResult:
     """Greedily generate from `prompt`, capturing every layer at every token.
 
@@ -144,11 +145,18 @@ def generate_trace(
     *steered* activations. `None` (the default) is exactly today's
     unsteered behavior.
 
+    `on_capture` receives a fresh trace snapshot and a borrowed residual slice
+    after each step. Only forwarded positions have measurements; completion
+    can contain one additional token. The callback must not mutate residuals.
+
     `on_progress`, when given, is called once per completed step with the
     number of tokens generated so far and the budget (see `ProgressCallback`).
     It is advisory output only: nothing downstream reads it, and passing
     `None` leaves the loop byte-for-byte the behaviour it has without it.
     """
+    # Snapshots contain only positions already forwarded. Completion may be one
+    # token ahead: its activations do not exist until the next forward pass.
+    trace_id = trace_id or uuid.uuid4().hex[:12]
     cfg = model.cfg
     n_layers, d_model = cfg.n_layers, cfg.d_model
 
@@ -165,6 +173,51 @@ def generate_trace(
     filled = 0  # positions whose residuals are already stored
     stop_reason = "max_tokens"
     t0 = time.time()
+
+    def snapshot() -> CaptureResult:
+        n_tokens = filled
+        token_ids = tokens[0].tolist()
+        token_texts = model.to_str_tokens(tokens[0])
+
+        steps = [
+            TokenStep(
+                step=pos,
+                token=TokenInfo(
+                    position=pos,
+                    token_id=token_ids[pos],
+                    text=token_texts[pos],
+                    source="prompt" if pos < n_prompt else "generated",
+                ),
+                logits=summaries[pos],
+                layers=[
+                    LayerState(
+                        layer=layer,
+                        resid_norm=float(np.linalg.norm(residuals[pos, layer])),
+                    )
+                    for layer in range(n_layers)
+                ],
+            )
+            for pos in range(n_tokens)
+        ]
+
+        trace = Trace(
+            trace_id=trace_id,
+            model=cfg.model_name,
+            device=str(model.cfg.device),
+            dtype=str(cfg.dtype),
+            normalization=cfg.normalization_type,
+            n_layers=n_layers,
+            d_model=d_model,
+            prompt=prompt,
+            completion=model.to_string(tokens[0, n_prompt:]),
+            n_prompt_tokens=n_prompt,
+            n_generated_tokens=len(token_ids) - n_prompt,
+            stop_reason=stop_reason,
+            elapsed_s=time.time() - t0,
+            steps=steps,
+        )
+
+        return CaptureResult(trace=trace, residuals=residuals[:n_tokens])
 
     if intervention is not None:
         layer, hook_fn = intervention
@@ -206,6 +259,8 @@ def generate_trace(
                 summaries[seq - 1] = logit_summary(model, last_logits, top_k, chosen_id=None)
                 if on_progress is not None:
                     on_progress(step, max_new_tokens)
+                if on_capture is not None:
+                    on_capture(snapshot())
                 break
 
             summaries[seq - 1] = logit_summary(model, last_logits, top_k, chosen_id=next_id)
@@ -216,53 +271,10 @@ def generate_trace(
             # caller could actually read out of the trace, not tokens in flight.
             if on_progress is not None:
                 on_progress(step + 1, max_new_tokens)
+            if on_capture is not None:
+                on_capture(snapshot())
     finally:
         if intervention is not None:
             model.reset_hooks()
 
-    elapsed = time.time() - t0
-
-    n_tokens = filled
-    residuals = residuals[:n_tokens]
-    token_ids = tokens[0].tolist()
-    token_texts = model.to_str_tokens(tokens[0])
-
-    steps = [
-        TokenStep(
-            step=pos,
-            token=TokenInfo(
-                position=pos,
-                token_id=token_ids[pos],
-                text=token_texts[pos],
-                source="prompt" if pos < n_prompt else "generated",
-            ),
-            logits=summaries[pos],
-            layers=[
-                LayerState(
-                    layer=layer,
-                    resid_norm=float(np.linalg.norm(residuals[pos, layer])),
-                )
-                for layer in range(n_layers)
-            ],
-        )
-        for pos in range(n_tokens)
-    ]
-
-    trace = Trace(
-        trace_id=trace_id or uuid.uuid4().hex[:12],
-        model=cfg.model_name,
-        device=str(model.cfg.device),
-        dtype=str(cfg.dtype),
-        normalization=cfg.normalization_type,
-        n_layers=n_layers,
-        d_model=d_model,
-        prompt=prompt,
-        completion=model.to_string(tokens[0, n_prompt:]),
-        n_prompt_tokens=n_prompt,
-        n_generated_tokens=n_tokens - n_prompt,
-        stop_reason=stop_reason,
-        elapsed_s=elapsed,
-        steps=steps,
-    )
-
-    return CaptureResult(trace=trace, residuals=residuals)
+    return snapshot()

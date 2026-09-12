@@ -47,6 +47,8 @@ function ViewToggle({ view, onChange }: { view: View; onChange: (view: View) => 
 }
 
 type StageProps = {
+  followingLatest: boolean
+  onFollowLatest: () => void
   trace: Trace | null
   selection: Selection | null
   status: RunState
@@ -66,6 +68,8 @@ type StageProps = {
  * before their object.
  */
 export function Stage({
+  followingLatest,
+  onFollowLatest,
   trace,
   selection,
   status,
@@ -86,6 +90,32 @@ export function Stage({
         <div className="flex items-baseline justify-between gap-4">
           <TraceHeader trace={trace} />
           <ViewToggle onChange={setView} view={view} />
+        </div>
+      ) : null}
+
+      {loaded ? (
+        <div className="border-border-subtle rounded-sm border p-3">
+          <div className="text-text-tertiary mb-2 flex items-center justify-between text-[11px]">
+            <span role="status">
+              {status === 'running'
+                ? progress?.phase === 'generating' ? 'Live · generating and analyzing' : 'Finalizing trace measurements'
+                : status === 'error' ? 'Interrupted · showing available data' : 'Completion'}
+            </span>
+            {status === 'running' ? (
+              <button type="button" onClick={onFollowLatest} aria-pressed={followingLatest}
+                className="text-fn px-2 py-1">
+                {followingLatest ? 'Following latest' : 'Follow latest'}
+              </button>
+            ) : null}
+          </div>
+          <p className="text-text-primary max-h-24 overflow-y-auto whitespace-pre-wrap font-mono text-[13px]">
+            {trace.completion || 'Waiting for the first token…'}
+          </p>
+          {status === 'running' ? (
+            <p className="text-text-tertiary mt-2 text-[11px]">
+              Select a token to inspect it. Its activations arrive on the next model step; analysis fills in afterward.
+            </p>
+          ) : null}
         </div>
       ) : null}
 

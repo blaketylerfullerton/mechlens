@@ -303,3 +303,30 @@ def test_a_dropped_record_does_not_kill_the_worker():
     _wait_for(after)
     assert jobs.get(after).result == "after"
     assert jobs.get(orphan) is None
+
+
+def test_partial_snapshot_is_detached_and_survives_failure():
+    from factories import make_result
+
+    ready, release = threading.Event(), threading.Event()
+    trace = make_result().trace
+
+    def run(report):
+        report.publish(trace)
+        trace.completion = "mutated after publication"
+        ready.set()
+        release.wait(2)
+        raise ValueError("analysis failed")
+
+    job_id = jobs.submit(run)
+    try:
+        assert ready.wait(2)
+        job = jobs.get(job_id)
+        assert job.status == "running"
+        assert job.result is None
+        assert job.partial_trace.completion != trace.completion
+    finally:
+        release.set()
+    _wait_for(job_id)
+    assert job.status == "error"
+    assert job.partial_trace is not None

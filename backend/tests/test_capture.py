@@ -241,3 +241,25 @@ def test_progress_callback_works_alongside_an_intervention(model):
     assert seen == [1, 2, 3, 3]
     assert model.hook_dict[f"blocks.{layer}.hook_resid_post"].fwd_hooks == []
     np.testing.assert_array_equal(steered.residuals, baseline.residuals)
+
+
+def test_live_capture_alignment_and_stable_snapshots(model):
+    snapshots = []
+    result = generate_trace(model, PROMPT, max_new_tokens=3, stop_at_eos=False,
+                            on_capture=snapshots.append)
+    assert len(snapshots) == 4
+    n_prompt = result.trace.n_prompt_tokens
+    for index, snapshot in enumerate(snapshots):
+        trace = snapshot.trace
+        assert trace.trace_id == result.trace.trace_id
+        assert len(trace.steps) == n_prompt + index
+        assert snapshot.residuals.shape[0] == len(trace.steps)
+        assert trace.n_generated_tokens == min(index + 1, 3)
+        assert [s.token.token_id for s in trace.steps] == [
+            s.token.token_id for s in result.trace.steps[:len(trace.steps)]
+        ]
+        np.testing.assert_array_equal(snapshot.residuals, result.residuals[:len(trace.steps)])
+        if index < 3:
+            assert trace.steps[-1].logits.chosen.token_id == result.trace.steps[n_prompt + index].token.token_id
+    assert snapshots[-1].trace.steps[-1].logits.chosen is None
+    assert snapshots[-1].trace.completion == result.trace.completion

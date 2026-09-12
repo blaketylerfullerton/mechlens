@@ -935,3 +935,74 @@ def test_steer_jobs_still_poll_through_the_same_endpoint(client):
     assert body["status"] == "done"
     assert body["trace"]["steering"] == {"layer": 2, "feature_idx": 5, "coefficient": 1.0}
     assert body["error"] is None
+
+
+def test_live_trace_publishes_before_analysis_finishes(tiny_model, tmp_path, monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    seen = []
+    snapshots = []
+    original_reporter = jobs._reporter_for
+
+    def recording_reporter(job):
+        reporter = original_reporter(job)
+        publish = reporter.publish
+
+        def record(trace):
+            publish(trace)
+            snapshots.append(job.partial_trace)
+
+        reporter.publish = record
+        return reporter
+
+    monkeypatch.setattr(jobs, "_reporter_for", recording_reporter)
+
+    class RecordingSAE(FakeSAE):
+        def encode(self, x):
+            seen.append(x.shape[0])
+            return super().encode(x)
+
+    sae = RecordingSAE(16, tiny_model.cfg.d_model)
+
+    def provider(layer):
+        entered.set()
+        assert release.wait(10)
+        return sae
+
+    _seed_labels(tmp_path / "live.db", tiny_model.cfg.n_layers)
+    app = create_app(model=tiny_model, label_db_path=tmp_path / "live.db", sae_provider=provider)
+    with TestClient(app) as client:
+        job_id = client.post('/trace', json={
+            'prompt': PROMPT, 'max_tokens': 3, 'live': True,
+            'passes': ['sae', 'labels', 'lens'], 'sae_layers': [0],
+        }).json()['job_id']
+        try:
+            assert entered.wait(10)
+            response = client.get(f'/trace/{job_id}').json()
+            assert response['status'] == 'running'
+            assert response['trace'] is None
+            partial = response['partial_trace']
+            assert partial['completion']
+            assert partial['n_generated_tokens'] == 1
+            assert len(partial['steps']) == partial['n_prompt_tokens']
+            assert partial['steps'][-1]['logits']['chosen'] is not None
+        finally:
+            release.set()
+        response = _poll(client, job_id, timeout=30).json()
+        assert response['status'] == 'done', response['error']
+        assert response['partial_trace'] is None
+        trace = response['trace']
+        assert trace['trace_id'] == partial['trace_id']
+        assert all(s['layers'][0]['features'] for s in trace['steps'])
+        assert all(s['layers'][0]['logit_lens'] for s in trace['steps'])
+        # First the prompt, then one new position at a time, then the final
+        # whole-trace validation pass. No growing prefixes during generation.
+        assert seen[0] == partial['n_prompt_tokens']
+        assert all(count == 1 for count in seen[1:-1])
+        assert seen[-1] == len(trace['steps'])
+        enriched = [s for s in snapshots if s.steps[-1].layers[0].logit_lens]
+        assert enriched
+        assert len(enriched[0].steps) == partial['n_prompt_tokens']
+        assert enriched[0].steps[-1].layers[0].features
+        assert enriched[0].labels
+        assert all(not p.stats for p in enriched[0].passes)
+        assert any(p['stats'] for p in trace['passes'])

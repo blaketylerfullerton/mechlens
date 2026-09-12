@@ -17,7 +17,7 @@ from factories import make_result
 
 
 def test_trace_request_round_trips():
-    payload = {"prompt": "hello", "max_tokens": 10, "passes": ["lens"], "sae_layers": None}
+    payload = {"prompt": "hello", "max_tokens": 10, "passes": ["lens"], "sae_layers": None, "live": False}
     model = TraceRequest.model_validate(payload)
     assert model.model_dump() == payload
 
@@ -32,6 +32,7 @@ def test_trace_request_defaults_to_no_passes():
         "max_tokens": 10,
         "passes": [],
         "sae_layers": None,
+        "live": False,
     }
 
 
@@ -91,7 +92,7 @@ def test_job_status_response_round_trips_with_a_trace():
 
 
 def test_job_status_response_round_trips_pending():
-    payload = {"status": "pending", "trace": None, "error": None, "progress": None}
+    payload = {"status": "pending", "trace": None, "partial_trace": None, "error": None, "progress": None}
     assert JobStatusResponse.model_validate(payload).model_dump() == payload
 
 
@@ -99,6 +100,7 @@ def test_job_status_response_carries_a_progress_reading():
     payload = {
         "status": "running",
         "trace": None,
+        "partial_trace": None,
         "error": None,
         "progress": {"phase": "lens", "done": 4, "total": 26},
     }

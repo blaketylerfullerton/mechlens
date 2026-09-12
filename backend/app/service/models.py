@@ -24,6 +24,7 @@ TracePass = Literal["lens", "sae", "labels"]
 class TraceRequest(BaseModel):
     prompt: str = Field(min_length=1)
     max_tokens: int = Field(gt=0)
+    live: bool = False
     # Opt-in, and empty by default: the lens pass roughly doubles a short
     # trace's wall time, so a client that does not need per-layer readouts
     # should not pay for them.
@@ -96,6 +97,8 @@ class JobProgressResponse(BaseModel):
 class JobStatusResponse(BaseModel):
     status: Literal["pending", "running", "done", "error"]
     trace: Trace | None = None
+    # Unfinished capture; completion can lead measured steps by one token.
+    partial_trace: Trace | None = None
     error: str | None = None
     # Absent for a queued job and for a running one that has not reported yet,
     # so "pending" stays distinguishable from "running, at token 0".

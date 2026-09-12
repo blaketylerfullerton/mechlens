@@ -32,8 +32,7 @@ feature steering are reachable over HTTP.
 
 ## Status
 
-Phases 0–7 are done, bar one item of phase 7 that is blocked on the service
-rather than the view; the trace schema is at **1.4**. The atlas is verified
+Phases 0–7 are done; the trace schema is at **1.4**. The atlas is verified
 reproducible: a rebuild from the same inputs and seed returns identical
 positions for all **98,210** features, identical cluster assignments, and a
 matching content hash.
@@ -47,10 +46,10 @@ matching content hash.
 | 4 | logit lens — every layer decoded through `ln_final` + `W_U` | done |
 | 5 | attribution — exact resid/attn/mlp decomposition of every layer | done |
 | 6 | API service — FastAPI `/trace`, `/steer`, `/feature`, job queue, GPU lock | done |
-| 7 | feature atlas — a fixed position per feature, and the brain drawn from it | done, bar one blocked item |
+| 7 | feature atlas — a fixed position per feature, and the brain drawn from it | done |
 | 8 | feature-level attribution — `kind="sae"` edges, deferred from phase 5 | next |
 
-Phase 7, in more detail — the parts that are in, and the one that is not:
+Phase 7, in more detail:
 
 | | state |
 | --- | --- |
@@ -62,15 +61,22 @@ Phase 7, in more detail — the parts that are in, and the one that is not:
 | lighting nodes from a trace's activations, areas, the transport, label search | done |
 | retiring the layer bands — the brain draws the feature cloud alone | done |
 | the trace grid colours cells by the lens classification, with the crossover marker | done |
-| lighting features per layer *while* the job runs | blocked — see below |
+| lighting features while tokens are generated | done — live partial traces |
 
-The last row is blocked on the service, not the view. A job's features reach the
-client only with the finished trace (`JobStatusResponse.trace` is null until
-`done`), so there is nothing to light per layer while the SAE pass is running.
-What the brain does instead is state which layer is being computed and light
-nothing from it, which is the honest reading of a counter. Closing it properly
-needs a partial-feature channel — progress carrying each layer's features, or a
-readable partial trace — which is an api-service change, not a frontend one.
+The viewer requests `live: true` and reads `partial_trace` from the existing
+150 ms job polling channel. Text and next-token probabilities arrive after each
+generation step; SAE features, labels, atlas positions and layer predictions
+follow as each newly captured position is analyzed. A token's own activations
+require the next forward pass, so completion text can lead the measured token
+strip by one token. The inspector follows the latest position until a token or
+cell is selected; **Follow latest** resumes it.
+
+Live analysis adds per-token GPU work. The final whole-trace passes still run to
+produce the existing validated diagnostics, so total latency can increase.
+Partial pass records carry identity but omit aggregate statistics; only the final
+`trace` has complete diagnostics. `trace` remains null until `done`, preserving
+existing clients; `partial_trace` is separate and is retained if analysis fails.
+Clients that omit `live` keep the original batched execution.
 
 Measured on the traces in `backend/traces/`:
 
