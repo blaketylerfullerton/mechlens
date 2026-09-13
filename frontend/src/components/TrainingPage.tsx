@@ -15,7 +15,9 @@ type Run = {
   validation?: { model_agreement?: Check; checkpoint_agreement?: Check; activation_identity?: Check; identity_substitution?: Check };
   validation_progress?: { completed: number; total: number } | null;
   resume_supported: boolean;
+  examples?: { sequences_scanned: number; tokens_scanned: number } | null;
 }
+type ExampleReport = { artifact_id: string; sequences_scanned: number; tokens_scanned: number; examples: Record<string, { activation: number; context: string; token_position: number }[]> }
 type Metric = { seq: number; tokens: number; loss: number; mse: number; explained_variance: number;
   l0: number; dead_fraction: number; tokens_per_second: number; eta_s: number; elapsed_s: number }
 const terminal = new Set(['completed', 'failed', 'cancelled', 'interrupted'])
@@ -64,6 +66,9 @@ export function TrainingPage({ onInspect }: { onInspect: (id: string) => void })
   const [evaluationSequences, setEvaluationSequences] = useState(64)
   const [compareHuggingface, setCompareHuggingface] = useState(false)
   const [repository, setRepository] = useState('google/gemma-2-2b')
+  const [exampleFeature, setExampleFeature] = useState('0')
+  const [exampleStatus, setExampleStatus] = useState<string | null>(null)
+  const [exampleReport, setExampleReport] = useState<ExampleReport | null>(null)
   const run = runs.find((item) => item.id === selected)
   const latest = metrics.at(-1)
 
@@ -142,6 +147,32 @@ export function TrainingPage({ onInspect }: { onInspect: (id: string) => void })
       setOptions((current) => current ? { ...current, readiness: 'Preparing model weights…' } : current)
     } catch (err) { setError(String(err)) }
     finally { setBusy(false) }
+  }
+
+  async function collectExamples() {
+    if (!run || !Number.isInteger(Number(exampleFeature))) return
+    const runId = run.id
+    setError(null); setExampleReport(null); setExampleStatus('Queueing example scan…')
+    try {
+      const submission = await request<{ job_id: string }>(`/training/runs/${runId}/examples`, {
+        method: 'POST', body: JSON.stringify({ feature_ids: [Number(exampleFeature)] }),
+      })
+      async function poll() {
+        const job = await request<{ status: string; error: string | null; progress: { done: number; total: number } | null }>(`/training/runs/${runId}/examples/jobs/${submission.job_id}`)
+        if (job.status === 'done') {
+          const report = await request<ExampleReport>(`/training/runs/${runId}/examples`)
+          setExampleReport(report); setExampleStatus(`Saved ${report.sequences_scanned} scanned chunks.`)
+        } else if (job.status === 'error') {
+          setExampleStatus(null); setError(job.error ?? 'Example collection failed')
+        } else {
+          setExampleStatus(job.progress ? `Scanning ${job.progress.done} / ${job.progress.total} chunks…` : 'Waiting for the compute queue…')
+          window.setTimeout(() => { void poll() }, 800)
+        }
+      }
+      void poll()
+    } catch (err) {
+      setExampleStatus(null); setError(String(err))
+    }
   }
 
   return <main className="mx-auto flex w-full min-h-0 flex-1 max-w-[1500px] flex-col px-6 py-6 lg:px-10">
@@ -240,6 +271,14 @@ export function TrainingPage({ onInspect }: { onInspect: (id: string) => void })
         </section> : null}
         {run?.checkpoint ? <section className="border-border-subtle mt-7 rounded border p-5"><h3 className="font-medium">Saved dictionary</h3><p className="text-text-secondary mt-2 text-sm">Checkpoint at {number(run.checkpoint.tokens, 0)} tokens. Features are unlabeled and have their own dictionary identity.</p><code className="text-text-tertiary mt-2 block break-all text-xs">{run.checkpoint.artifact_id}</code>
           <div className="mt-5 flex flex-wrap items-center gap-3"><button className={`${button} text-fn`} onClick={() => onInspect(run.id)}>Open in Explore</button>{['cfg.json', 'sae_weights.safetensors', 'manifest.json'].map((name) => <a className="text-text-secondary text-xs underline underline-offset-4" key={name} href={`${API_BASE_URL}/training/runs/${run.id}/files/${name}`}>{name}</a>)}</div>
+          <div className="border-border-subtle mt-5 rounded border p-4"><h4 className="text-sm font-medium">Activation examples</h4>
+            <p className="text-text-tertiary mt-1 text-xs">Scan the held-out corpus for this dictionary’s strongest positive activations. Results are saved under this checkpoint only.</p>
+            <div className="mt-3 flex flex-wrap items-end gap-3"><label className="text-text-secondary text-xs">Feature ID<input className={`${field} mt-1 w-28`} type="number" min="0" max={run.config.features - 1} value={exampleFeature} onChange={(e) => setExampleFeature(e.target.value)} /></label>
+              <button className={button} disabled={Boolean(exampleStatus && !exampleStatus.startsWith('Saved'))} onClick={collectExamples}>Collect examples</button></div>
+            {exampleStatus ? <p role="status" className="text-text-secondary mt-3 text-xs">{exampleStatus}</p> : null}
+            {exampleReport ? <div className="mt-4 space-y-3">{(exampleReport.examples[exampleFeature] ?? []).map((row, index) => <article className="bg-bg-base rounded p-3" key={`${row.token_position}-${index}`}><p className="text-text-tertiary font-mono text-xs">activation {number(row.activation, 4)} · token {row.token_position}</p><p className="mt-2 whitespace-pre-wrap text-xs leading-5">{row.context}</p></article>)}
+              {(exampleReport.examples[exampleFeature] ?? []).length === 0 ? <p className="text-text-tertiary text-xs">No positive activations appeared in this bounded scan. Try a larger scan or another feature.</p> : null}</div> : null}
+          </div>
           <p className="text-text-tertiary mt-4 text-xs">Resume restores optimizer and random state, then replays the recorded dataset to the checkpoint position. It requires the same model and training package versions.</p>
         </section> : null}
       </section>

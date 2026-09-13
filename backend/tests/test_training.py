@@ -63,6 +63,26 @@ def test_real_training_roundtrip_and_frozen_model(tmp_path, model, config):
         load_artifact(store, run["id"], model)
 
 
+def test_feature_examples_are_bounded_and_checkpoint_scoped(tmp_path, model, config):
+    from app.training.examples import collect_feature_examples, save_feature_examples
+    store = RunStore(tmp_path)
+    run = store.create(config.model_dump())
+    train(store, run["id"], model)
+    sae, manifest = load_artifact(store, run["id"], model)
+    report = collect_feature_examples(model, sae, manifest, config, [0, 1],
+        max_examples=2, max_sequences=3)
+    assert report["artifact_id"] == manifest["artifact_id"]
+    assert report["layer"] == 0
+    assert report["sequences_scanned"] == 3
+    assert set(report["examples"]) == {"0", "1"}
+    for rows in report["examples"].values():
+        assert len(rows) <= 2
+        assert all(row["activation"] > 0 and row["token_ids"] and row["context"] for row in rows)
+    path = save_feature_examples(tmp_path, run["id"], report)
+    assert path.is_file()
+    assert path.name.startswith("examples-")
+
+
 def test_cancel_during_training_saves_checkpoint(tmp_path, model, config, monkeypatch):
     store = RunStore(tmp_path)
     run = store.create(config.model_dump())

@@ -55,8 +55,10 @@ wall time, and backend resource snapshot. It does not certify quality.
 - **Hugging Face agreement:** four fixed prompts, identical input token IDs,
   matching tokenizer encoding, same model revision and dtype. Compares the
   final-position next-token distribution. Both maximum probability difference
-  and total variation must be at most 1e-5 for float32 or 0.005 for reduced
-  precision. These are recorded engineering tolerances, not a proof of model
+  and total variation must be at most 1e-5 for float32 or 0.015 for reduced
+  precision. The latter accommodates the documented bf16 cross-device
+  comparison (accelerator-backed TransformerLens versus the CPU-resident HF
+  reference). These are recorded engineering tolerances, not a proof of model
   equivalence; examine differences on the target hardware before changing them.
   Top-1 agreement is diagnostic because near ties can change the argmax.
   Disabled checks and unknown model revisions are explicitly **not run**.

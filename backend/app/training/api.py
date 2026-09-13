@@ -1,6 +1,7 @@
 """Training endpoints share the service's existing compute queue and model."""
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from ..passes.sae import SAEPass
 from ..passes.lens import LogitLensPass
 from ..service import jobs
 from ..service.scheduling import serialized
+from .examples import collect_feature_examples, save_feature_examples
 from .runner import Cancelled, TrainingConfig, load_artifact, train
 from .store import RunStore
 
@@ -26,6 +28,11 @@ class InspectRequest(BaseModel):
 class ModelRequest(BaseModel):
     repository: str
 
+
+class FeatureExamplesRequest(BaseModel):
+    feature_ids: list[int] = Field(min_length=1, max_length=32)
+    max_examples: int = Field(default=20, ge=1, le=50)
+    max_sequences: int = Field(default=128, ge=1, le=2048)
 
 def router(get_model, compute_lock, store: RunStore, prepare_model=None):
     api = APIRouter(prefix="/training", tags=["training"])
@@ -169,6 +176,54 @@ def router(get_model, compute_lock, store: RunStore, prepare_model=None):
                     on_progress=lambda done, total: report("lens", done, total)), captured.trace, captured.residuals)
                 return captured.trace
         return {"job_id": jobs.submit(execute)}
+
+    @api.post("/runs/{run_id}/examples", status_code=202)
+    @serialized
+    def collect_examples(run_id: str, req: FeatureExamplesRequest):
+        run = get_run(run_id)
+        saved = run["checkpoint"]
+        if not saved:
+            raise HTTPException(422, "No checkpoint has been saved yet")
+        feature_ids = sorted(set(req.feature_ids))
+        if any(feature < 0 or feature >= saved["features"] for feature in feature_ids):
+            raise HTTPException(422, "Feature IDs must belong to this dictionary")
+
+        def execute(report):
+            with compute_lock:
+                model = get_model()
+                sae, manifest = load_artifact(store, run_id, model)
+                result = collect_feature_examples(
+                    model, sae, manifest, TrainingConfig(**run["config"]), feature_ids,
+                    req.max_examples, req.max_sequences,
+                    progress=lambda done, total: report("sae", done, total))
+                path = save_feature_examples(store.root, run_id, result)
+                store.update(run_id, examples=dict(path=str(path.relative_to(store.root)),
+                    artifact_id=manifest["artifact_id"], feature_ids=feature_ids,
+                    sequences_scanned=result["sequences_scanned"], tokens_scanned=result["tokens_scanned"]))
+                return result
+
+        return {"job_id": jobs.submit(execute)}
+
+    @api.get("/runs/{run_id}/examples/jobs/{job_id}")
+    def example_job(run_id: str, job_id: str):
+        get_run(run_id)
+        job = jobs.get(job_id)
+        if job is None:
+            raise HTTPException(404, "Unknown feature-example job")
+        return dict(status=job.status, error=job.error,
+                    progress=None if job.progress is None else dict(phase=job.progress.phase,
+                                                                     done=job.progress.done,
+                                                                     total=job.progress.total))
+
+    @api.get("/runs/{run_id}/examples")
+    def read_examples(run_id: str):
+        record = get_run(run_id).get("examples")
+        if not record:
+            raise HTTPException(404, "No feature examples have been collected for this run")
+        path = (store.root / record["path"]).resolve()
+        if not path.is_relative_to(store.root.resolve()) or not path.is_file():
+            raise HTTPException(404, "Feature examples are unavailable")
+        return json.loads(path.read_text())
 
     return api
 
