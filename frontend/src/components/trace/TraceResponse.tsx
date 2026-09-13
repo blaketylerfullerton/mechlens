@@ -11,7 +11,7 @@ export function TraceResponse({ trace, running, followingLatest, onFollowLatest,
   followingLatest: boolean
   onFollowLatest: () => void
   onSelect: (position: number) => void
-  selection: { position: number; layer: number }
+  selection: { position: number; layer: number; via?: string }
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false)
   const responseRef = useRef<HTMLDivElement>(null)
@@ -24,6 +24,11 @@ export function TraceResponse({ trace, running, followingLatest, onFollowLatest,
   const step = trace.steps[selection.position]
   const prediction = step?.logits.chosen ?? step?.logits.top_k[0]
   const analysisReady = step?.layers[selection.layer]?.logit_lens != null
+  // A token is tinted only when the reader put the selection there. The
+  // resting selection is the last token, so tinting on position alone left the
+  // final word lit after the run finished — the same blue that means "look
+  // here" reading as "still going".
+  const highlighted = selection.via && selection.via !== 'default' ? selection.position : null
 
   useEffect(() => {
     const element = responseRef.current
@@ -33,7 +38,18 @@ export function TraceResponse({ trace, running, followingLatest, onFollowLatest,
   return (
     <section aria-label="Model response" className="border-border-subtle shrink-0 border-t pt-4">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-text-secondary text-[12px] font-medium">Response</h2>
+        <div className="flex items-baseline gap-2">
+          <h2 className="text-text-secondary text-[12px] font-medium">Response</h2>
+          {running ? (
+            <span role="status" className="text-text-tertiary font-mono text-[11px]">generating…</span>
+          ) : trace.completion ? (
+            <span role="status" className="text-str font-mono text-[11px] tabular-nums">
+              <span aria-hidden="true" className="bg-str mr-1.5 inline-block size-1.5 rounded-full align-middle" />
+              done · {trace.n_generated_tokens} tokens ·{' '}
+              {trace.stop_reason === 'eos' ? 'model stopped' : 'hit the token budget'}
+            </span>
+          ) : null}
+        </div>
         <div className="flex items-center gap-3 text-[12px]">
           {running && !followingLatest ? (
             <button type="button" onClick={onFollowLatest} className="text-fn rounded-xs px-1 py-1">
@@ -56,10 +72,10 @@ export function TraceResponse({ trace, running, followingLatest, onFollowLatest,
             {generated.map((item) => (
               <button type="button" key={item.step}
                 aria-label={`Inspect token ${item.step}: ${visibleToken(item.token.text)}`}
-                aria-pressed={selection.position === item.step}
+                aria-pressed={highlighted === item.step}
                 title={`Token ${item.step} · click to inspect`}
                 onClick={() => onSelect(item.step)}
-                className={`inline cursor-pointer rounded-xs p-0 text-left align-baseline whitespace-pre-wrap hover:bg-fn/10 hover:outline hover:outline-fn/50 ${selection.position === item.step ? 'bg-fn/10 text-fn' : 'text-text-primary'}`}>
+                className={`inline cursor-pointer rounded-xs p-0 text-left align-baseline whitespace-pre-wrap hover:bg-fn/10 hover:outline hover:outline-fn/50 ${highlighted === item.step ? 'bg-fn/10 text-fn' : 'text-text-primary'}`}>
                 {item.token.text}
               </button>
             ))}

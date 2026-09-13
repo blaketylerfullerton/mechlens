@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, getTraceJob, postTrace } from '@/lib/api-client'
 import type { JobProgress, JobStatus, TracePass, Trace } from '@/lib/api-types'
-import { readLastTrace, saveLastTrace } from '@/lib/trace-storage'
+import { clearLastTrace, readLastTrace, saveLastTrace } from '@/lib/trace-storage'
 import { atlasLayers, loadAtlas } from '@/lib/atlas'
 
 // Live snapshots expose text and measurements while the worker is running.
@@ -32,6 +32,7 @@ export interface UseTraceResult {
   storageNotice: string | null
   progress: JobProgress | null
   run: (prompt: string, maxTokens: number) => void
+  reset: () => void
 }
 
 // Submits a prompt to POST /trace and polls GET /trace/{job_id} until the
@@ -172,5 +173,24 @@ export function useTrace(): UseTraceResult {
     [submit],
   )
 
-  return { status, trace, error, storageNotice, progress, run }
+  // Back to the empty workspace: no trace, no error, no counters, and
+  // nothing left in storage for the next reload to restore. Bumps the
+  // generation for the same reason `run` does — a poll still in flight for the
+  // discarded run must not repopulate the workspace it was just cleared from.
+  //
+  // The stored record is dropped rather than left behind, because a reset that
+  // a reload undoes is not a reset. The delete is allowed to fail quietly: the
+  // session is already clear on screen, and `storageNotice` exists to report
+  // storage trouble at the point where it costs the user something.
+  const reset = useCallback(() => {
+    if (timeoutRef.current) clearTimeout(timeoutRef.current)
+    generationRef.current += 1
+    setTrace(null)
+    setError(null)
+    setProgress(null)
+    setStatus('idle')
+    clearLastTrace().catch(() => { /* Cleared on screen either way. */ })
+  }, [])
+
+  return { status, trace, error, storageNotice, progress, run, reset }
 }

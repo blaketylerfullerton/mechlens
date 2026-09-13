@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react'
 
-import { Brain } from '@/components/Brain'
+import { Brain, type SelectionVia } from '@/components/Brain'
+import { ResourceMeter } from '@/components/ResourceMeter'
 import { ResidualMap } from '@/components/trace/ResidualMap'
 import { TraceResponse } from '@/components/trace/TraceResponse'
 import { TraceHeader } from '@/components/trace/TraceHeader'
@@ -10,7 +11,7 @@ import type { JobProgress, Trace } from '@/lib/api-types'
 
 type View = 'brain' | 'grid'
 
-type Selection = { layer: number; position: number }
+type Selection = { layer: number; position: number; via?: SelectionVia }
 
 /**
  * Two views of one object, and the control that names which is on screen.
@@ -50,6 +51,7 @@ type StageProps = {
   composer: ReactNode
   inspectorOpen: boolean
   onToggleInspector: () => void
+  onReset: () => void
   followingLatest: boolean
   onFollowLatest: () => void
   trace: Trace | null
@@ -74,6 +76,7 @@ export function Stage({
   composer,
   inspectorOpen,
   onToggleInspector,
+  onReset,
   followingLatest,
   onFollowLatest,
   trace,
@@ -96,20 +99,36 @@ export function Stage({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <TraceHeader trace={trace} status={status} progress={progress} />
           <div className="flex items-center gap-3">
+            <ResourceMeter />
             <ViewToggle onChange={setView} view={view} />
             <button type="button" aria-expanded={inspectorOpen} aria-controls="trace-inspector"
               onClick={onToggleInspector}
               className="text-text-secondary hover:text-text-primary rounded-xs px-2 py-1 text-[12px]">
               Inspector
             </button>
+            {/* Last in the row, and only ever beside a finished trace: it
+                discards the primary object, so it sits furthest from the
+                controls that merely look at it. Not destructive enough for
+                `err` — the trace is a reproducible run of a saved prompt, not
+                authored work — so it stays in the grey tier with the rest of
+                the chrome. */}
+            <button type="button" onClick={onReset}
+              className="text-text-secondary hover:text-text-primary rounded-xs px-2 py-1 text-[12px]">
+              New trace
+            </button>
           </div>
         </div>
       ) : (
-        <div className="flex min-h-7 items-center gap-4">
+        <div className="flex min-h-7 flex-wrap items-center gap-x-4 gap-y-1">
           <h1 className="text-text-primary text-[13px] font-medium">mechlens</h1>
           <span role="status" className="text-text-secondary text-[12px]">
             {status === 'warming' ? 'Loading model' : status === 'pending' ? 'Trace queued' : status === 'running' ? 'Generating' : status === 'error' ? 'Ready to retry' : 'Ready'}
           </span>
+          {/* Furthest right, and present before a trace is: the weights load
+              is the longest wait in the product, and it is the window where
+              "is this machine doing anything" is least answerable from the
+              rest of the screen. */}
+          <div className="ml-auto"><ResourceMeter /></div>
         </div>
       )}
 

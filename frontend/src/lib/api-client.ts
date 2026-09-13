@@ -3,6 +3,7 @@ import type {
   HealthResponse,
   JobResponse,
   JobStatusResponse,
+  StatsResponse,
   SteerRequest,
   TraceRequest,
 } from './api-types'
@@ -67,6 +68,12 @@ export function postSteer(body: SteerRequest): Promise<JobResponse> {
 // return 503 until it is.
 export function getHealth(): Promise<HealthResponse> {
   return request<HealthResponse>('/health')
+}
+
+// GET /stats — host memory and GPU load. Answers while the model is still
+// loading, unlike the model-backed routes.
+export function getStats(): Promise<StatsResponse> {
+  return request<StatsResponse>('/stats')
 }
 
 // GET /feature/{layer}/{idx} — synchronous, no job/poll needed.

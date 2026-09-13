@@ -268,3 +268,23 @@ export interface AtlasAreaPayload {
   baseline_coherence: number | null
   explainers: string
 }
+
+// GET /stats — host memory and GPU load, polled for the header readout.
+// Everything but the two RAM figures is nullable: a box with no GPU, or a
+// driver that declines to answer, still has a truthful answer to give, and a
+// missing number has to stay distinguishable from a zero one.
+export interface StatsResponse {
+  ram_used_bytes: number
+  ram_total_bytes: number
+  gpu_name: string | null
+  gpu_free_bytes: number | null
+  gpu_total_bytes: number | null
+  // What this process holds, as opposed to the whole machine — the figure
+  // that matters when a trace runs out of memory.
+  torch_allocated_bytes: number | null
+  torch_reserved_bytes: number | null
+  gpu_util_pct: number | null
+  // True when the CPU and GPU address one physical pool (GB10/Jetson-class).
+  // The readout draws one gauge then: two would double the machine's memory.
+  unified: boolean
+}

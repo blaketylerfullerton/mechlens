@@ -14,6 +14,10 @@ requests>=2.31
 pytest>=8.0
 httpx>=0.27
 
+# GET /stats reads system memory from this. Already present transitively via
+# torch, pinned explicitly because a route depends on it.
+psutil>=5.9
+
 # Build-time only: scripts/build_feature_atlas.py imports these and nothing
 # else does. The atlas is a precomputed table, so neither `app.schema` (which
 # imports nothing but pydantic) nor the service needs a projection library to

@@ -48,3 +48,21 @@ export async function saveLastTrace(trace: Trace): Promise<void> {
     database.close()
   }
 }
+
+/** Drops the saved trace, so a reset workspace stays reset across a reload.
+ * Resolves even when there was nothing stored: "already gone" is the state
+ * the caller asked for. */
+export async function clearLastTrace(): Promise<void> {
+  const database = await openDatabase()
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction(STORE, 'readwrite')
+      transaction.objectStore(STORE).delete(API_BASE_URL)
+      transaction.oncomplete = () => resolve()
+      transaction.onabort = () => reject(transaction.error)
+      transaction.onerror = () => reject(transaction.error)
+    })
+  } finally {
+    database.close()
+  }
+}

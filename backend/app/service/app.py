@@ -36,7 +36,7 @@ from ..passes.lens import LogitLensPass
 from ..passes.sae import SAEPass
 from ..sae_cache import DEFAULT_WIDTH, RELEASE, get_sae
 from ..schema import SteeringInfo, Trace
-from . import jobs
+from . import jobs, stats
 from .models import (
     AtlasArea,
     AtlasNodes,
@@ -45,6 +45,7 @@ from .models import (
     HealthResponse,
     JobResponse,
     JobStatusResponse,
+    StatsResponse,
     SteerRequest,
     TraceRequest,
 )
@@ -132,6 +133,14 @@ def create_app(
         if state["load_error"] is not None:
             return HealthResponse(status="error", detail=str(state["load_error"]))
         return HealthResponse(status="ready" if state["model"] is not None else "loading")
+
+    @app.get("/stats", response_model=StatsResponse)
+    def get_stats() -> StatsResponse:
+        """Host memory and GPU load. Unlike every other route here this one
+        does not need the model: it answers while gemma is still loading,
+        which is the window where "is this machine actually doing anything"
+        is the question a reader most wants answered."""
+        return StatsResponse(**stats.collect())
 
     @app.post("/trace", response_model=JobResponse)
     def post_trace(req: TraceRequest) -> JobResponse:

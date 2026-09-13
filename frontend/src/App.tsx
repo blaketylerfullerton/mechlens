@@ -31,7 +31,7 @@ export interface Selection {
 }
 
 function App() {
-  const { error, storageNotice, progress, run, status, trace } = useTrace()
+  const { error, storageNotice, progress, run, reset, status, trace } = useTrace()
   const [selection, setSelection] = useState<Selection | null>(null)
   const [inspectorOpen, setInspectorOpen] = useState(false)
 
@@ -88,6 +88,15 @@ function App() {
   )
 
 
+  // Clearing the trace clears everything that was an index into it. A
+  // selection or an open inspector outliving its trace would point at a run
+  // that no longer exists.
+  const startOver = useCallback(() => {
+    reset()
+    setSelection(null)
+    setInspectorOpen(false)
+  }, [reset])
+
   return (
     <div className="text-text-primary bg-bg-base min-h-svh">
       <div className="mx-auto flex min-h-svh max-w-[1800px] flex-col gap-5 px-4 py-5 sm:px-6 lg:flex-row lg:px-8">
@@ -96,6 +105,7 @@ function App() {
             composer={<ChatPanel error={error} onTraceRequest={run} status={status} />}
             inspectorOpen={inspectorOpen}
             onToggleInspector={() => setInspectorOpen((open) => !open)}
+            onReset={startOver}
             onFollowLatest={() => setSelection(null)}
             followingLatest={selection?.traceId !== trace?.trace_id}
             onSelectCell={selectCell}

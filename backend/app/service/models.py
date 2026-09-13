@@ -76,6 +76,33 @@ class HealthResponse(BaseModel):
     detail: str | None = None
 
 
+class StatsResponse(BaseModel):
+    """Host memory and GPU load, for the header readout.
+
+    Every field but the two RAM figures is optional, because a box without a
+    GPU, or with a driver that declines to answer, still has a truthful
+    answer to give — and a missing number must stay distinguishable from a
+    zero one rather than being rendered as free capacity.
+
+    `unified` is not cosmetic: when it is true, `gpu_total_bytes` and
+    `ram_total_bytes` describe the *same* physical pool (GB10/Jetson-class
+    parts), and drawing them as two gauges would double the machine's real
+    memory on screen.
+    """
+
+    ram_used_bytes: int
+    ram_total_bytes: int
+    gpu_name: str | None = None
+    gpu_free_bytes: int | None = None
+    gpu_total_bytes: int | None = None
+    # What this process holds, as opposed to what the whole machine holds —
+    # the number that matters when a trace runs out of memory.
+    torch_allocated_bytes: int | None = None
+    torch_reserved_bytes: int | None = None
+    gpu_util_pct: int | None = None
+    unified: bool = False
+
+
 class JobResponse(BaseModel):
     job_id: str
 

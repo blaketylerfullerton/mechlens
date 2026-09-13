@@ -3,6 +3,11 @@ import type { RunState } from '@/hooks/useTrace'
 import { API_BASE_URL } from '@/lib/api-client'
 
 const DRAFT_KEY = `mechlens-prompt:${API_BASE_URL}`
+// How far the model is allowed to run before the trace stops on its own.
+// Every token here costs a full all-layer capture, so this is a budget, not a
+// limit on the model: a run that ends early ended at EOS, and the response
+// says which of the two happened.
+const MAX_TOKENS = 128
 const EXAMPLES = [
   'The Golden Gate Bridge is located in the city of',
   'The capital of France is',
@@ -26,7 +31,10 @@ export function ChatPanel({ onTraceRequest, status }: {
   const submit = () => {
     if (busy || !prompt.trim()) return
     setExamplesOpen(false)
-    onTraceRequest(prompt.trim(), 20)
+    onTraceRequest(prompt.trim(), MAX_TOKENS)
+    // The prompt is in the trace now — leaving it in the box makes the next
+    // run look like it needs the old text cleared by hand first.
+    updatePrompt('')
   }
 
   return (
