@@ -83,7 +83,7 @@ class SAEPass:
         t0 = time.time()
 
         for encoded, layer in enumerate(layers, start=1):
-            sae = saes[layer]
+            sae = saes[layer].to(device)
             metadata = getattr(getattr(sae, "cfg", None), "metadata", None)
             expected_hook = getattr(metadata, "hook_name", None)
             if expected_hook and expected_hook != f"blocks.{layer}.{SAE_HOOK}":
