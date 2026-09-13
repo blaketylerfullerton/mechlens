@@ -1,4 +1,5 @@
 import type { RunState } from '@/hooks/useTrace'
+import { useErrorToast } from '@/hooks/useErrorToast'
 import { API_BASE_URL } from '@/lib/api-client'
 
 /** The states that have something running behind them, and what to say about it. */
@@ -10,18 +11,11 @@ const WORKING_COPY: Partial<Record<RunState, string>> = {
 }
 
 export function StatusLine({ status, error }: { status: RunState; error: string | null }) {
-  if (error) {
-    return (
-      <div className="border-err/40 bg-err/[0.06] rounded-[2px] border p-3" role="alert">
-        <p className="text-err text-[13px] font-medium">The trace service did not return a run.</p>
-        <p className="text-text-secondary mt-1 text-[13px] leading-6">
-          {error} Start the backend with <span className="text-text-primary font-mono">make dev</span>{' '}
-          and check that it is bound to{' '}
-          <span className="text-text-primary font-mono">{API_BASE_URL}</span>.
-        </p>
-      </div>
-    )
-  }
+  useErrorToast(
+    error &&
+      `The trace service did not return a run. ${error} Start the backend with \`make dev\` and check that it is bound to ${API_BASE_URL}.`,
+  )
+  if (error) return null
 
   const copy = WORKING_COPY[status]
   if (!copy) return null

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { API_BASE_URL, request } from '@/lib/api-client'
 import { ResourceMeter } from '@/components/ResourceMeter'
+import { useErrorToast } from '@/hooks/useErrorToast'
 
 type Options = { model: string; layers: number | null; device: string; readiness: string; estimate_note: string; supported_models: string[] }
 type Run = {
@@ -43,6 +44,7 @@ export function TrainingPage({ onInspect }: { onInspect: (id: string) => void })
   const [selected, setSelected] = useState<string | null>(null)
   const [metrics, setMetrics] = useState<Metric[]>([])
   const [error, setError] = useState<string | null>(null)
+  useErrorToast(error)
   const [busy, setBusy] = useState(false)
   const [layer, setLayer] = useState(12)
   const [features, setFeatures] = useState(4096)
@@ -142,7 +144,6 @@ export function TrainingPage({ onInspect }: { onInspect: (id: string) => void })
         <p className="text-text-secondary mt-3 max-w-2xl text-sm leading-6">Learn sparse features from a frozen language model. Choose a layer, feed it text, and watch the measurements arrive.</p></div>
       <div className="text-text-tertiary space-y-2 text-xs"><p>Backend resources · {options?.device ?? 'connecting'}</p><ResourceMeter /></div>
     </header>
-    {error ? <div role="alert" className="border-err/30 text-err mb-4 flex shrink-0 items-start justify-between gap-4 rounded border p-4 text-sm"><p>{error}</p><button onClick={() => setError(null)} aria-label="Dismiss error">×</button></div> : null}
     <div className="grid min-h-0 flex-1 gap-8 lg:grid-cols-[320px_minmax(0,1fr)]">
       <aside className="min-h-0 space-y-7 overflow-y-auto pr-1 lg:pb-6">
         <form onSubmit={start} className="border-border-subtle bg-bg-surface space-y-5 rounded border p-5">

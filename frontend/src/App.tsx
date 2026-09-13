@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from 'react'
+import { Toaster } from 'sonner'
 
 import type { SelectionVia } from '@/components/Brain'
 import { ChatPanel } from '@/components/ChatPanel'
@@ -104,6 +105,7 @@ function App() {
 
   return (
     <div className="text-text-primary bg-bg-base flex h-svh flex-col overflow-hidden">
+      <Toaster richColors theme="dark" position="bottom-right" />
       <nav aria-label="Workspace" className="border-border-subtle mx-auto flex w-full max-w-[1800px] shrink-0 items-center gap-6 border-b px-8 py-4 text-sm">
         <span className="mr-4 font-medium tracking-tight">mechlens</span>
         {(['viewer', 'training'] as const).map((item) => <button key={item} aria-current={page === item ? 'page' : undefined}
