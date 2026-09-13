@@ -1,17 +1,3 @@
-"""Phase 1: token-by-token generation with the residual stream captured.
-
-The loop here is deliberately *not* `model.generate`. Every step is an explicit
-forward pass we own, which is what makes the later phases possible: an
-intervention (steering, ablation, patching) is a hook added inside this loop,
-and its effect shows up in every subsequent step's residuals.
-
-Cost note: each step re-runs the whole prefix (no KV cache), so generation is
-O(n^2) in sequence length. For a 2B model and the ~20-100 token traces this
-tool is built for, that is a few seconds — and it keeps the loop simple enough
-that adding interventions later does not mean fighting a cache. Revisit with
-HookedTransformerKeyValueCache if traces get long.
-"""
-
 from __future__ import annotations
 
 import time
