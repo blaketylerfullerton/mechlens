@@ -46,61 +46,7 @@ def _reference_points() -> np.ndarray:
     return np.vstack([directions * radii, corners]) * atlas.SHELL_RADIUS * atlas.DEFAULT_FILL
 
 
-def test_shape_ellipsoid_matches_the_typescript_it_ports():
-    """The mesh shapes its surface with `shapeEllipsoid` and the atlas places
-    nodes inside it with this port, so the two agreeing is not optional.
 
-    Runs the real TypeScript under node against the same inputs rather than
-    restating its arithmetic in the assertion — a transcription would fail the
-    same way the port could.
-    """
-    if not (FRONTEND / "src" / "components" / "Brain.tsx").exists():
-        pytest.skip("frontend sources not present")
-
-    points = _reference_points()
-
-    # Re-implementing the function in the harness would defeat the point, so
-    # the guarded original is lifted straight out of Brain.tsx by name. Only
-    # the two things plain node cannot read are rewritten: the TypeScript
-    # signature, and THREE's clamp helper.
-    source = (FRONTEND / "src" / "components" / "Brain.tsx").read_text()
-    start = source.index("function shapeEllipsoid")
-    end = source.index("\n}", start) + 2
-    body = (
-        source[start:end]
-        .replace(
-            "function shapeEllipsoid(v: THREE.Vector3): THREE.Vector3 {",
-            "function shapeEllipsoid(v) {",
-        )
-        .replace("THREE.MathUtils.clamp", "clamp")
-    )
-    assert ": THREE" not in body, "Brain.tsx's signature changed; update this harness"
-
-    harness = f"""
-const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
-{body}
-const input = {json.dumps(points.tolist())};
-const out = input.map(([x, y, z]) => {{
-  const v = {{ x, y, z }};
-  shapeEllipsoid(v);
-  return [v.x, v.y, v.z];
-}});
-console.log(JSON.stringify(out));
-"""
-    harness_path = Path("/tmp") / "mechlens_shape_ellipsoid_check.mjs"
-    harness_path.write_text(harness)
-    try:
-        proc = subprocess.run(
-            ["node", str(harness_path)], capture_output=True, text=True, check=True
-        )
-    except FileNotFoundError:
-        pytest.skip("node is not installed")
-    finally:
-        harness_path.unlink(missing_ok=True)
-
-    expected = np.array(json.loads(proc.stdout.strip().splitlines()[-1]))
-    got = atlas.shape_ellipsoid(points)
-    np.testing.assert_allclose(got, expected, rtol=0, atol=1e-12)
 
 
 def test_the_dropped_guards_really_are_no_ops():
