@@ -48,6 +48,7 @@ function ViewToggle({ view, onChange }: { view: View; onChange: (view: View) => 
 }
 
 type StageProps = {
+  customDictionary?: boolean
   composer: ReactNode
   inspectorOpen: boolean
   onToggleInspector: () => void
@@ -73,6 +74,7 @@ type StageProps = {
  * before their object.
  */
 export function Stage({
+  customDictionary = false,
   composer,
   inspectorOpen,
   onToggleInspector,
@@ -91,7 +93,8 @@ export function Stage({
   const [view, setView] = useState<View>('brain')
 
   const loaded = trace !== null && trace.steps.length > 0 && selection !== null
-  const showGrid = loaded && view === 'grid'
+  const customSAE = customDictionary || (trace?.passes.some((pass) => pass.name === 'sae' && String(pass.params.release).startsWith('local/')) ?? false)
+  const showGrid = loaded && (view === 'grid' || customSAE)
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
@@ -100,7 +103,7 @@ export function Stage({
           <TraceHeader trace={trace} status={status} progress={progress} />
           <div className="flex items-center gap-3">
             <ResourceMeter />
-            <ViewToggle onChange={setView} view={view} />
+            {customSAE ? <span className="text-text-tertiary text-xs">Custom SAE · grid · no atlas or labels</span> : <ViewToggle onChange={setView} view={view} />}
             <button type="button" aria-expanded={inspectorOpen} aria-controls="trace-inspector"
               onClick={onToggleInspector}
               className="text-text-secondary hover:text-text-primary rounded-xs px-2 py-1 text-[12px]">
@@ -145,14 +148,14 @@ export function Stage({
             className={showGrid ? 'invisible absolute inset-0' : 'h-full w-full'}
             inert={showGrid ? true : undefined}
           >
-            <Brain
+            {customSAE ? <div className="text-text-secondary flex min-h-[22rem] items-center justify-center p-8 text-center text-sm">Enter a prompt to inspect this dictionary’s features in the layer grid. No atlas or labels have been generated for it.</div> : <Brain
               onSelectLayer={onSelectLayer}
               paused={showGrid}
               progress={progress}
               selection={selection}
               status={status}
               trace={trace}
-            />
+            />}
           </div>
 
           {showGrid ? (

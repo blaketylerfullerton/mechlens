@@ -21,6 +21,11 @@ import torch
 from transformer_lens import HookedTransformer
 
 MODEL_NAME = "gemma-2-2b"  # BASE model. NOT -it: Gemma Scope SAEs are trained on base ("pt") activations.
+SUPPORTED_TRAINING_MODELS = {
+    "google/gemma-2-2b": "gemma-2-2b",
+    "openai-community/gpt2": "gpt2",
+    "roneneldan/TinyStories-1M": "tiny-stories-1M",
+}
 
 
 def pick_device() -> tuple[str, torch.dtype]:
@@ -61,7 +66,13 @@ def _load(model_name: str) -> HookedTransformer:
         if os.getenv("MECHLENS_PROCESS_WEIGHTS")
         else HookedTransformer.from_pretrained_no_processing
     )
-    model = loader(model_name, device=device, dtype=dtype)
+    from transformers import AutoConfig
+    from transformer_lens.loading_from_pretrained import get_official_model_name
+    official_name = get_official_model_name(model_name)
+    hf_config = AutoConfig.from_pretrained(official_name, trust_remote_code=False)
+    revision = getattr(hf_config, "_commit_hash", None)
+    model = loader(model_name, device=device, dtype=dtype, **({"revision": revision} if revision else {}))
+    model.cfg.model_revision = revision
     model.eval()
 
     print(

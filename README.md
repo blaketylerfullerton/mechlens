@@ -3,23 +3,7 @@
 <img width="1704" height="964" alt="Screenshot 2026-09-08 at 10 21 00 PM" src="https://github.com/user-attachments/assets/e79d946a-34db-4acb-bd81-14529f7dc4a8" />
 
 Look inside a language model on your own machine.
-
-Send a prompt and mechlens shows you which of the model's features actually
-fired — not neurons, but the sparse-autoencoder features that have
-human-readable names — what each one is called, where it sits among the other
-98,210 features the atlas covers, and how the answer took shape layer by layer.
-The model, the features, the labels and the layout all run locally, and nothing
-leaves the machine.
-
-It also tells you how much to trust the picture, which is the part most
-interpretability visualisations leave out. Every claim on screen carries its
-measurement: how much of the feature space survived being flattened to three
-dimensions (**29%** of a feature's nearest neighbours), whether a named region
-holds together better than a random group of the same size (**0.465** against
-**0.233**), and how many of the features that fired are actually being drawn
-(the SAE pass keeps the strongest **16** of a mean **78** per cell). A picture
-nobody measured is decoration.
-
+ 
 Under the hood: `gemma-2-2b` under TransformerLens, generated token by token
 with the residual stream captured at every layer, then enrichment passes over
 the saved trace — Gemma Scope SAE features, Neuronpedia labels, the logit lens,
@@ -30,79 +14,6 @@ feature steering are reachable over HTTP.
 [Setup](#setup). Making it one command is the plan, and it is written down in
 [Where this is going](#where-this-is-going).
 
-## Status
-
-Phases 0–7 are done; the trace schema is at **1.4**. The atlas is verified
-reproducible: a rebuild from the same inputs and seed returns identical
-positions for all **98,210** features, identical cluster assignments, and a
-matching content hash.
-
-| phase | what | state |
-| --- | --- | --- |
-| 0 | model loading — `gemma-2-2b` under TransformerLens, bf16 on CUDA | done |
-| 1 | residual capture — token-by-token, all 26 layers | done |
-| 2 | SAE encoding — Gemma Scope 16k, top-k features per (token, layer) | done |
-| 3 | Neuronpedia labels — human-readable text and links for those features | done |
-| 4 | logit lens — every layer decoded through `ln_final` + `W_U` | done |
-| 5 | attribution — exact resid/attn/mlp decomposition of every layer | done |
-| 6 | API service — FastAPI `/trace`, `/steer`, `/feature`, job queue, GPU lock | done |
-| 7 | feature atlas — a fixed position per feature, and the brain drawn from it | done |
-| 8 | feature-level attribution — `kind="sae"` edges, deferred from phase 5 | next |
-
-Phase 7, in more detail:
-
-| | state |
-| --- | --- |
-| `POST /trace` runs the `sae` and `labels` passes; the job reports an `sae` phase | done |
-| the atlas build, its five diagnostics, and two source representations | done |
-| schema 1.4 — `Trace.layout`, a side table keyed `"layer/index"` | done |
-| serving the layout with a trace, and the atlas endpoint | done |
-| the brain renders atlas nodes, and says what the layout does and does not claim | done |
-| lighting nodes from a trace's activations, areas, the transport, label search | done |
-| retiring the layer bands — the brain draws the feature cloud alone | done |
-| the trace grid colours cells by the lens classification, with the crossover marker | done |
-| lighting features while tokens are generated | done — live partial traces |
-
-The viewer requests `live: true` and reads `partial_trace` from the existing
-150 ms job polling channel. Text and next-token probabilities arrive after each
-generation step; SAE features, labels, atlas positions and layer predictions
-follow as each newly captured position is analyzed. A token's own activations
-require the next forward pass, so completion text can lead the measured token
-strip by one token. The inspector follows the latest position until a token or
-cell is selected; **Follow latest** resumes it.
-
-Live analysis adds per-token GPU work. The final whole-trace passes still run to
-produce the existing validated diagnostics, so total latency can increase.
-Partial pass records carry identity but omit aggregate statistics; only the final
-`trace` has complete diagnostics. `trace` remains null until `done`, preserving
-existing clients; `partial_trace` is separate and is retained if analysis fails.
-Clients that omit `live` keep the original batched execution.
-
-Measured on the traces in `backend/traces/`:
-
-| | |
-| --- | --- |
-| SAE health | mean L0 **78.3**, mean explained variance **0.880** (per-layer 0.83–0.96) |
-| SAE encode | **0.3s** for a 31-token trace, 26 layers, once the SAEs are resident |
-| label coverage | **6234/6234** distinct features on golden-gate, in **1.5s**, no network |
-| label table | **425,679** explanations, 26 layers, imported in **51s** |
-| mapping check | **10/10** features matched Neuronpedia's own activations (corr ≥ 0.998) |
-| lens | 26 layers x 31 tokens in **2.3s**; on all five saved traces layer 25 reproduces the model's own output at **every** position, max prob and entropy delta **0.0** |
-| attribution | 26 layers x 31 tokens in **1.2s**; reconstruction gap **≤1.3e-2** across all five traces (bf16 tail, per-layer mean ~0.004–0.005, flat with depth); attn top-8 coverage **90–98%** |
-| atlas (label source) | 98,210 features over 6 layers; kNN preservation **0.292**, 32 clusters, **27** earning a name at coherence **0.465** against a random baseline of **0.233**; explainer influence **0.026** |
-| atlas (decoder source) | 98,304 features over the same 6 layers; kNN preservation **0.143**, 12 clusters, **0** earning a name (margin **+0.049**, needs +0.15) |
-| tests | **316 passed, 1 skipped** in ~79s |
-
-The atlas numbers above are a **6-layer pilot** (0, 5, 10, 16, 20, 25), not the
-full 26. Those six were picked to span the depth range and to include two of the
-five layers Neuronpedia explained with a different model, so the explainer
-confound could be measured rather than assumed.
-
-One known gap, deliberate: position 0 (BOS) produces meaningless SAE
-activations — a known Gemma Scope artifact, kept per-token but excluded from
-every summary statistic. The other long-standing gap is now closed: the
-explanation embeddings (`--embeddings`, ~2GB) have a consumer, and it turned out
-to be a bigger one than expected — see the atlas section below.
 
 ## Where this is going
 
@@ -138,13 +49,12 @@ Roughly in order:
 5. **Bring your own SAE** — load a SAELens-format file against a supported
    model, auto-interp labels optional. Covers most of "my own model" for almost
    nothing.
-6. **Train an SAE locally.** One activation stream feeds every layer's SAE at
-   once, so 26 of them cost roughly what one does.
+6. **SAE training workspace — planned.** A second page to train a single-layer
+   SAE, watch live metrics, and inspect the saved result. Start with Gemma;
+   broader Hugging Face model support and auto-interp follow later. See the
+   [training plan](docs/sae-training.md) and
+   [implementation tickets](docs/sae-training-tickets.md).
 
-Phase 8 — feature-level attribution, the `kind="sae"` edges deferred from phase
-5 — is a capability rather than a packaging step, and it is what would turn this
-from a view of *what fired* into a view of *what caused what*. It is worth more
-than items 4–6 and is harder than all of them.
 
 **Where the Ollama analogy breaks, so it is not promised.** Ollama ships a
 static binary because llama.cpp is C++; torch alone is 2–3GB of wheels and no
@@ -205,22 +115,7 @@ python scripts/build_feature_atlas.py --dry-run        # measure and print, writ
 worth building on: it reports kNN preservation, cluster coherence against its
 baseline, and explainer influence without writing anything.
 
-## The logit lens
-
-Ask the model's own output head what it would answer at layer L instead of at
-layer 25, at every depth, and you can watch a fact resolve:
-
-```
-  token 8 ' of' — the model answers ' Paris' 92.6%
-   ◀ = the model's final answer   · = an echo of the current token
-
-   L3   ' of'            71.81%  H  1.76  · ██████████████
-   L7   'بوابة'          37.97%  H  3.94    ████████
-   L17  ' city'          40.87%  H  2.60    ████████
-   L19  ' Paris'         22.47%  H  3.15  ◀ ████
-   L20  ' Paris'         92.66%  H  0.46  ◀ ███████████████████
-   L25  ' Paris'         92.59%  H  0.60  ◀ ███████████████████
-```
+ 
 
 Three things about that output are worth knowing before you read one:
 

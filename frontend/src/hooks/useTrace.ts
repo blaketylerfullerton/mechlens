@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ApiError, getTraceJob, postTrace } from '@/lib/api-client'
+import { ApiError, getTraceJob, postTrace, request } from '@/lib/api-client'
 import type { JobProgress, JobStatus, TracePass, Trace } from '@/lib/api-types'
 import { clearLastTrace, readLastTrace, saveLastTrace } from '@/lib/trace-storage'
 import { atlasLayers, loadAtlas } from '@/lib/atlas'
@@ -39,7 +39,7 @@ export interface UseTraceResult {
 // job resolves. `trace` follows backend/app/schema.py's Trace shape exactly,
 // and `progress` follows JobStatusResponse.progress: null until the job
 // reports its first reading.
-export function useTrace(): UseTraceResult {
+export function useTrace(trainingRunId: string | null = null): UseTraceResult {
   const [status, setStatus] = useState<RunState>('idle')
   const [trace, setTrace] = useState<Trace | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -127,13 +127,16 @@ export function useTrace(): UseTraceResult {
 
   const submit = useCallback(
     function submit(prompt: string, maxTokens: number, generation: number) {
-      postTrace({
+      const submission = trainingRunId ? request<{ job_id: string }>(`/training/runs/${trainingRunId}/trace`, {
+        method: 'POST', body: JSON.stringify({ prompt, max_tokens: maxTokens }),
+      }) : postTrace({
         prompt,
         live: true,
         max_tokens: maxTokens,
         passes: REQUESTED_PASSES,
         sae_layers: saeLayersRef.current,
       })
+      submission
         .then((res) => {
           if (generation !== generationRef.current) return
           // A job exists now, so leave `warming` behind even before the first
@@ -155,7 +158,7 @@ export function useTrace(): UseTraceResult {
           setStatus('error')
         })
     },
-    [poll],
+    [poll, trainingRunId],
   )
 
   const run = useCallback(

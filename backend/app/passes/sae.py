@@ -47,6 +47,9 @@ class SAEPass:
     layers: list[int] | None = None  # None = every layer
     device: str | None = None
     verbose: bool = True
+    # Local dictionaries carry an immutable content ID, never a Gemma Scope identity.
+    artifact_id: str | None = None
+    feature_count: int | None = None
 
     # Pre-loaded SAEs keyed by layer. Skips the loader — for a long-lived
     # server that holds them, and for tests that stand in a fake.
@@ -85,7 +88,7 @@ class SAEPass:
             expected_hook = getattr(metadata, "hook_name", None)
             if expected_hook and expected_hook != f"blocks.{layer}.{SAE_HOOK}":
                 raise ValueError(f"SAE expects hook {expected_hook}, not layer {layer} resid_post")
-            expected_size = {"16k": 16384, "65k": 65536, "262k": 262144}.get(self.width)
+            expected_size = self.feature_count if self.artifact_id else {"16k": 16384, "65k": 65536, "262k": 262144}.get(self.width)
             actual_size = getattr(getattr(sae, "cfg", None), "d_sae", None)
             if actual_size is not None and actual_size != expected_size:
                 raise ValueError(f"SAE size {actual_size} does not match width {self.width}")
@@ -137,7 +140,7 @@ class SAEPass:
         return PassRecord(
             name=self.name,
             params={
-                "release": RELEASE,
+                "release": f"local/{self.artifact_id}" if self.artifact_id else RELEASE,
                 "model": trace.model,
                 "width": self.width,
                 "top_k": self.top_k,

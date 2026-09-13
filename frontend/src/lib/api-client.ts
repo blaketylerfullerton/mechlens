@@ -25,7 +25,7 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response
   try {
     res = await fetch(`${BASE_URL}${path}`, {
@@ -42,7 +42,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new ApiError(res.status, body?.detail ?? res.statusText)
+    const detail = body?.detail
+    throw new ApiError(res.status, typeof detail === 'string' ? detail : Array.isArray(detail)
+      ? detail.map((item: { msg: string }) => item.msg).join('; ') : res.statusText)
   }
   return res.json() as Promise<T>
 }

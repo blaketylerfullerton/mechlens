@@ -50,6 +50,7 @@ from .models import (
     TraceRequest,
 )
 from .steering import build_intervention
+from .scheduling import serialized
 
 # Structural upper bound on a feature index for a width, without loading the
 # SAE itself — GET /feature stays a cheap DB lookup, per design.md.
@@ -64,6 +65,7 @@ def create_app(
     sae_provider: Callable[[int], object] | None = None,
     atlas_version: str | None = None,
     atlas_source: str | None = DEFAULT_ATLAS_SOURCE,
+    training_dir: Path | None = None,
 ) -> FastAPI:
     """`sae_provider(layer) -> SAE-like` defaults to `sae_cache.get_sae`; a
     test overrides it with a fake so /steer does not need a real Gemma Scope
@@ -75,6 +77,9 @@ def create_app(
     different map depending on the order the builds happened to run in.
     """
     state: dict[str, object] = {"model": model, "load_error": None}
+    from ..training.api import default_root, router as training_router
+    from ..training.store import RunStore
+    training_store = RunStore(training_dir or default_root())
     sae_provider = sae_provider or (lambda layer: get_sae(layer))
 
     def load_model() -> None:
@@ -107,12 +112,40 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        training_store.recover()
         jobs.start_worker()
         if state["model"] is None:  # a test that injected one needs no warm-up
             threading.Thread(target=load_model, name="model-warmup", daemon=True).start()
         yield
 
     app = FastAPI(lifespan=lifespan)
+    def prepare_training_model(repository: str):
+        if repository not in model_cache.SUPPORTED_TRAINING_MODELS:
+            raise HTTPException(422, "Unsupported model repository")
+        # Reject before changing state: queued callbacks hold their selected model.
+        if any(job.status in {"pending", "running"} for job in jobs.JOBS.values()):
+            raise HTTPException(409, "Wait for queued/running compute jobs before switching models")
+        if state["model"] is None and state["load_error"] is None:
+            raise HTTPException(409, "A model is already loading")
+        state["model"] = None
+        state["load_error"] = None
+        def prepare(_report):
+            import gc
+            import torch
+            with _forward_lock:
+                model_cache._load.cache_clear()
+                get_sae.cache_clear()
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                try:
+                    state["model"] = model_cache.get_model(model_cache.SUPPORTED_TRAINING_MODELS[repository])
+                except Exception as exc:
+                    state["load_error"] = str(exc)
+                    raise
+        return jobs.submit(prepare)
+
+    app.include_router(training_router(get_model, _forward_lock, training_store, prepare_training_model))
 
     # Dev-only: lets the Vite frontend call this API directly from the browser
     # instead of going through a same-origin proxy. A regex rather than a fixed
@@ -143,6 +176,7 @@ def create_app(
         return StatsResponse(**stats.collect())
 
     @app.post("/trace", response_model=JobResponse)
+    @serialized
     def post_trace(req: TraceRequest) -> JobResponse:
         m = get_model()
         # Read off the request now: the job callable runs on the worker thread
@@ -343,6 +377,7 @@ def create_app(
         )
 
     @app.post("/steer", response_model=JobResponse)
+    @serialized
     def post_steer(req: SteerRequest) -> JobResponse:
         m = get_model()
         if req.layer >= m.cfg.n_layers:

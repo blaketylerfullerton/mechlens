@@ -5,6 +5,7 @@ import { ChatPanel } from '@/components/ChatPanel'
 import { Stage } from '@/components/Stage'
 import { TraceViewer } from '@/components/TraceViewer'
 import { useTrace } from '@/hooks/useTrace'
+import { TrainingPage } from '@/components/TrainingPage'
 
 /**
  * The selected (layer, token) cell, tagged with the trace it belongs to.
@@ -31,7 +32,9 @@ export interface Selection {
 }
 
 function App() {
-  const { error, storageNotice, progress, run, reset, status, trace } = useTrace()
+  const [page, setPage] = useState<'viewer' | 'training'>('viewer')
+  const [trainingRunId, setTrainingRunId] = useState<string | null>(null)
+  const { error, storageNotice, progress, run, reset, status, trace } = useTrace(trainingRunId)
   const [selection, setSelection] = useState<Selection | null>(null)
   const [inspectorOpen, setInspectorOpen] = useState(false)
 
@@ -40,8 +43,10 @@ function App() {
   const currentSelection = useMemo<Selection | null>(() => {
     if (!trace || trace.steps.length === 0) return null
     if (selection?.traceId === trace.trace_id) return selection
+    const dictionary = trace.passes.find((pass) => pass.name === 'sae' && String(pass.params.release).startsWith('local/'))
+    const trainedLayer = dictionary ? Number(String(dictionary.params.layers).split(',')[0]) : null
     return {
-      layer: trace.n_layers - 1,
+      layer: trainedLayer !== null && Number.isInteger(trainedLayer) && trainedLayer >= 0 && trainedLayer < trace.n_layers ? trainedLayer : trace.n_layers - 1,
       position: trace.steps.length - 1,
       traceId: trace.trace_id,
       via: status === 'running' ? 'token' : 'default',
@@ -99,9 +104,20 @@ function App() {
 
   return (
     <div className="text-text-primary bg-bg-base min-h-svh">
+      <nav aria-label="Workspace" className="border-border-subtle mx-auto flex max-w-[1800px] items-center gap-6 border-b px-8 py-4 text-sm">
+        <span className="mr-4 font-medium tracking-tight">mechlens</span>
+        {(['viewer', 'training'] as const).map((item) => <button key={item} aria-current={page === item ? 'page' : undefined}
+          className={page === item ? 'text-text-primary' : 'text-text-tertiary'} onClick={() => setPage(item)}>{item === 'viewer' ? 'Explore' : 'Training'}</button>)}
+      </nav>
+      {page === 'training' ? <TrainingPage onInspect={(id) => { reset(); setTrainingRunId(id); setPage('viewer'); setInspectorOpen(true) }} /> : <>
+      {trainingRunId ? <div className="mx-auto flex max-w-[1800px] items-center justify-between gap-4 px-8 pt-4 text-sm">
+        <p>Custom SAE · {trainingRunId.slice(0, 8)} · Unlabeled features. Enter a prompt to inspect its saved checkpoint.</p>
+        <button className="text-fn shrink-0" onClick={() => { reset(); setTrainingRunId(null) }}>Use Gemma Scope</button>
+      </div> : null}
       <div className="mx-auto flex min-h-svh max-w-[1800px] flex-col gap-5 px-4 py-5 sm:px-6 lg:flex-row lg:px-8">
         <main className="flex min-h-[38rem] min-w-0 flex-col lg:sticky lg:top-5 lg:h-[calc(100svh-2.5rem)] lg:flex-1">
           <Stage
+            customDictionary={trainingRunId !== null}
             composer={<ChatPanel error={error} onTraceRequest={run} status={status} />}
             inspectorOpen={inspectorOpen}
             onToggleInspector={() => setInspectorOpen((open) => !open)}
@@ -144,6 +160,7 @@ function App() {
           </section>
         ) : null}
       </div>
+      </>}
     </div>
   )
 }
