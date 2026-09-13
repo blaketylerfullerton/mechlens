@@ -138,7 +138,7 @@ export function Stage({
       {/* The one frame treatment: an outer frame holding an inner surface,
           hairline on both, 4px gap, radii concentric (6 − 4 = 2). It wraps what
           the reader looks *into*, and now there is exactly one of those. */}
-      <div className="border-border-subtle min-h-[22rem] flex-1 rounded-[6px] border bg-[#0D0E11] p-1">
+      <div className="border-border-subtle min-h-0 flex-1 rounded-[6px] border bg-[#0D0E11] p-1">
         <div className="border-border-subtle bg-bg-surface relative h-full min-w-0 overflow-hidden rounded-[2px] border">
           {/* Hidden rather than unmounted, and absolutely placed at the same
               size so the renderer never sees a resize. The camera is a held
@@ -148,7 +148,7 @@ export function Stage({
             className={showGrid ? 'invisible absolute inset-0' : 'h-full w-full'}
             inert={showGrid ? true : undefined}
           >
-            {customSAE ? <div className="text-text-secondary flex min-h-[22rem] items-center justify-center p-8 text-center text-sm">Enter a prompt to inspect this dictionary’s features in the layer grid. No atlas or labels have been generated for it.</div> : <Brain
+            {customSAE ? <div className="text-text-secondary flex h-full items-center justify-center p-8 text-center text-sm">Enter a prompt to inspect this dictionary’s features in the layer grid. No atlas or labels have been generated for it.</div> : <Brain
               onSelectLayer={onSelectLayer}
               paused={showGrid}
               progress={progress}
@@ -180,7 +180,7 @@ export function Stage({
           selection={selection}
         />
       ) : (
-        <div className="border-border-subtle flex min-h-24 items-center border-t pt-3">
+        <div className="border-border-subtle flex shrink-0 items-center border-t pt-3">
           <p className="text-text-secondary text-[13px]">Enter a prompt to watch the response form and explore what happens inside the model.</p>
         </div>
       )}

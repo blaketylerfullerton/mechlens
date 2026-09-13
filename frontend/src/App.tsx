@@ -103,19 +103,19 @@ function App() {
   }, [reset])
 
   return (
-    <div className="text-text-primary bg-bg-base min-h-svh">
-      <nav aria-label="Workspace" className="border-border-subtle mx-auto flex max-w-[1800px] items-center gap-6 border-b px-8 py-4 text-sm">
+    <div className="text-text-primary bg-bg-base flex h-svh flex-col overflow-hidden">
+      <nav aria-label="Workspace" className="border-border-subtle mx-auto flex w-full max-w-[1800px] shrink-0 items-center gap-6 border-b px-8 py-4 text-sm">
         <span className="mr-4 font-medium tracking-tight">mechlens</span>
         {(['viewer', 'training'] as const).map((item) => <button key={item} aria-current={page === item ? 'page' : undefined}
           className={page === item ? 'text-text-primary' : 'text-text-tertiary'} onClick={() => setPage(item)}>{item === 'viewer' ? 'Explore' : 'Training'}</button>)}
       </nav>
       {page === 'training' ? <TrainingPage onInspect={(id) => { reset(); setTrainingRunId(id); setPage('viewer'); setInspectorOpen(true) }} /> : <>
-      {trainingRunId ? <div className="mx-auto flex max-w-[1800px] items-center justify-between gap-4 px-8 pt-4 text-sm">
+      {trainingRunId ? <div className="mx-auto flex w-full max-w-[1800px] shrink-0 items-center justify-between gap-4 px-8 pt-4 text-sm">
         <p>Custom SAE · {trainingRunId.slice(0, 8)} · Unlabeled features. Enter a prompt to inspect its saved checkpoint.</p>
         <button className="text-fn shrink-0" onClick={() => { reset(); setTrainingRunId(null) }}>Use Gemma Scope</button>
       </div> : null}
-      <div className="mx-auto flex min-h-svh max-w-[1800px] flex-col gap-5 px-4 py-5 sm:px-6 lg:flex-row lg:px-8">
-        <main className="flex min-h-[38rem] min-w-0 flex-col lg:sticky lg:top-5 lg:h-[calc(100svh-2.5rem)] lg:flex-1">
+      <div className="mx-auto flex w-full min-h-0 max-w-[1800px] flex-1 flex-col gap-5 px-4 py-5 sm:px-6 lg:flex-row lg:px-8">
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col">
           <Stage
             customDictionary={trainingRunId !== null}
             composer={<ChatPanel error={error} onTraceRequest={run} status={status} />}
@@ -138,7 +138,7 @@ function App() {
 
         {trace && inspectorOpen ? (
           <section id="trace-inspector" aria-label="Inspector"
-            className="border-border-subtle min-w-0 border-t pt-4 lg:sticky lg:top-5 lg:h-[calc(100svh-2.5rem)] lg:w-80 lg:shrink-0 lg:border-t-0 lg:border-l lg:pt-0 lg:pl-5">
+            className="border-border-subtle min-h-0 min-w-0 border-t pt-4 lg:h-full lg:w-80 lg:shrink-0 lg:border-t-0 lg:border-l lg:pt-0 lg:pl-5">
             <div className="flex h-full min-h-0 flex-col">
                 <div className="mb-4 flex shrink-0 items-center justify-between">
                   <h2 className="text-[13px] font-medium">Inspector</h2>

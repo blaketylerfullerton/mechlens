@@ -135,16 +135,16 @@ export function TrainingPage({ onInspect }: { onInspect: (id: string) => void })
     finally { setBusy(false) }
   }
 
-  return <main className="mx-auto max-w-[1500px] px-6 py-10 lg:px-10">
-    <header className="mb-9 flex flex-wrap items-start justify-between gap-4">
+  return <main className="mx-auto flex w-full min-h-0 flex-1 max-w-[1500px] flex-col px-6 py-6 lg:px-10">
+    <header className="mb-6 flex shrink-0 flex-wrap items-start justify-between gap-4">
       <div><p className="text-fn mb-3 font-mono text-xs uppercase tracking-[0.16em]">SAE workspace</p>
         <h1 className="text-3xl font-medium tracking-tight">Train a dictionary. Look inside it.</h1>
         <p className="text-text-secondary mt-3 max-w-2xl text-sm leading-6">Learn sparse features from a frozen language model. Choose a layer, feed it text, and watch the measurements arrive.</p></div>
       <div className="text-text-tertiary space-y-2 text-xs"><p>Backend resources · {options?.device ?? 'connecting'}</p><ResourceMeter /></div>
     </header>
-    {error ? <div role="alert" className="border-err/30 text-err mb-6 flex items-start justify-between gap-4 rounded border p-4 text-sm"><p>{error}</p><button onClick={() => setError(null)} aria-label="Dismiss error">×</button></div> : null}
-    <div className="grid gap-8 lg:grid-cols-[320px_minmax(0,1fr)]">
-      <aside className="space-y-7">
+    {error ? <div role="alert" className="border-err/30 text-err mb-4 flex shrink-0 items-start justify-between gap-4 rounded border p-4 text-sm"><p>{error}</p><button onClick={() => setError(null)} aria-label="Dismiss error">×</button></div> : null}
+    <div className="grid min-h-0 flex-1 gap-8 lg:grid-cols-[320px_minmax(0,1fr)]">
+      <aside className="min-h-0 space-y-7 overflow-y-auto pr-1 lg:pb-6">
         <form onSubmit={start} className="border-border-subtle bg-bg-surface space-y-5 rounded border p-5">
           <h2 className="text-lg font-medium">New training run</h2>
           <label className="text-text-secondary block text-xs">Hugging Face model<select className={field} value={repository} onChange={(e) => setRepository(e.target.value)}>{(options?.supported_models ?? ['google/gemma-2-2b']).map((id) => <option key={id} value={id}>{id}</option>)}</select></label>
@@ -175,7 +175,7 @@ export function TrainingPage({ onInspect }: { onInspect: (id: string) => void })
           </button>)}
         </div></section>
       </aside>
-      <section className="min-w-0">
+      <section className="min-h-0 min-w-0 overflow-y-auto pr-1 lg:pb-6">
         <div className="border-border-subtle mb-6 border-b pb-6">
           <div className="flex flex-wrap items-center justify-between gap-4"><div><p className="text-text-tertiary mb-2 font-mono text-xs">{run ? run.id.slice(0, 8) : 'NO RUN SELECTED'}</p><h2 className="text-xl font-medium">{run ? `Layer ${run.config.layer} training` : 'A clear view of every run'}</h2></div>
             {run && !terminal.has(run.status) ? <button className={button} disabled={busy || run.status === 'cancelling'} onClick={() => control(run.id, 'cancel')}>{run.status === 'cancelling' ? 'Saving and stopping…' : 'Cancel run'}</button> : null}
