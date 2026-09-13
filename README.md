@@ -1,6 +1,6 @@
 # mechlens
 
-<img width="1704" height="964" alt="Screenshot 2026-09-08 at 10 21 00 PM" src="https://github.com/user-attachments/assets/e79d946a-34db-4acb-bd81-14529f7dc4a8" />
+<img width="1710" height="817" alt="Screenshot 2026-09-12 at 8 17 38 PM" src="https://github.com/user-attachments/assets/bf3e1e3f-b466-4ca6-b943-e92966416c8d" />
 
 Look inside a language model on your own machine.
  
