@@ -9,10 +9,11 @@ type Check = { status: string; reason?: string; definition?: string; max_loss_de
 type Evaluation = { [key: string]: unknown; identity_substitution?: Check }
 type Run = {
   id: string; status: string; phase: string; created_at: number; tokens: number; error: string | null;
-  config: { layer: number; features: number; training_tokens: number; dataset: string };
+  config: { layer: number; features: number; training_tokens: number; dataset: string; compare_huggingface?: boolean };
   checkpoint: { artifact_id: string; tokens: number } | null;
   evaluation: Evaluation | null;
-  validation?: { model_agreement?: Check; checkpoint_agreement?: Check; activation_identity?: Check };
+  validation?: { model_agreement?: Check; checkpoint_agreement?: Check; activation_identity?: Check; identity_substitution?: Check };
+  validation_progress?: { completed: number; total: number } | null;
   resume_supported: boolean;
 }
 type Metric = { seq: number; tokens: number; loss: number; mse: number; explained_variance: number;
@@ -157,7 +158,7 @@ export function TrainingPage({ onInspect }: { onInspect: (id: string) => void })
           <button className={`${button} w-full`} type="button" onClick={() => {
             setLayer(Math.floor((options?.layers ?? 26) / 2)); setFeatures(4096); setTokens(32768);
             setDataset('tiny-stories'); setBatchSize(256); setContextSize(128); setLearningRate(0.0003);
-            setSparsity(0.1); setSeed(42); setEvaluationSequences(64); setCompareHuggingface(false)
+            setSparsity(0.1); setSeed(42); setEvaluationSequences(64)
           }}>Use small validation preset</button>
           <p className="text-text-tertiary text-xs">32,768 training tokens checks the workflow. It does not establish feature quality.</p>
           <label className="text-text-secondary block text-xs">Hugging Face model<select className={field} value={repository} onChange={(e) => setRepository(e.target.value)}>{(options?.supported_models ?? ['google/gemma-2-2b']).map((id) => <option key={id} value={id}>{id}</option>)}</select></label>
@@ -174,7 +175,7 @@ export function TrainingPage({ onInspect }: { onInspect: (id: string) => void })
           <label className="text-text-secondary block text-xs">Training token budget<input className={field} type="number" min={batchSize} max="100000000" step={batchSize} value={tokens} onChange={(e) => setTokens(Number(e.target.value))} required /></label>
           <label className="text-text-secondary block text-xs">Sparsity penalty · L1<input className={field} type="number" min="0" max="100" step="any" value={sparsity} onChange={(e) => setSparsity(Number(e.target.value))} required /></label>
           <label className="text-text-secondary block text-xs">Held-out evaluation sequences<input className={field} type="number" min="1" max="2048" value={evaluationSequences} onChange={(e) => setEvaluationSequences(Number(e.target.value))} required /></label>
-          <label className="text-text-secondary block text-xs leading-5"><input className="mr-2" type="checkbox" checked={compareHuggingface} onChange={(e) => setCompareHuggingface(e.target.checked)} />Check Hugging Face agreement
+          <label className="text-text-secondary block text-xs leading-5"><input className="mr-2" type="checkbox" checked={compareHuggingface} onChange={(e) => setCompareHuggingface(e.target.checked)} />Check Hugging Face agreement · optional
             <span className="text-text-tertiary mt-1 block">Loads a second copy of the model on the backend CPU. Adds RAM use and evaluation time; enable on Spark when ready.</span></label>
           <details className="text-text-secondary text-xs"><summary className="cursor-pointer">Advanced settings</summary><div className="mt-4 space-y-4">
             <label className="block">Batch tokens<input className={field} type="number" min="16" max="8192" value={batchSize} onChange={(e) => setBatchSize(Number(e.target.value))} required /></label>
@@ -197,7 +198,7 @@ export function TrainingPage({ onInspect }: { onInspect: (id: string) => void })
             {run && !terminal.has(run.status) ? <button className={button} disabled={busy || run.status === 'cancelling'} onClick={() => control(run.id, 'cancel')}>{run.status === 'cancelling' ? 'Saving and stopping…' : 'Cancel run'}</button> : null}
             {run?.resume_supported && ['interrupted', 'cancelled', 'failed'].includes(run.status) ? <button className={button} disabled={busy || options?.readiness !== 'ready'} onClick={() => control(run.id, 'resume')}>Resume checkpoint</button> : null}</div>
           <p role="status" className="text-text-secondary mt-3 text-sm">{run ? `${run.status} · ${run.phase}${run.status === 'queued' ? ' · waiting for the compute queue' : ''}` : 'Start a run to see reconstruction quality, sparsity, and progress.'}</p>
-          {run ? <><progress className="mt-5 h-1.5 w-full accent-[var(--color-fn)]" value={run.tokens} max={run.config.training_tokens} aria-label="Training tokens processed" /><div className="text-text-tertiary mt-2 flex flex-wrap justify-between gap-2 font-mono text-xs"><span>{number(run.tokens, 0)} / {number(run.config.training_tokens, 0)} tokens</span><span>{number(latest?.tokens_per_second, 0)} tokens/s · {run.status === 'running' && latest ? `${number(latest.eta_s / 60, 1)} min training remaining` : 'ETA —'}</span></div></> : null}
+          {run ? <><progress className="mt-5 h-1.5 w-full accent-[var(--color-fn)]" value={run.tokens} max={run.config.training_tokens} aria-label="Training tokens processed" /><div className="text-text-tertiary mt-2 flex flex-wrap justify-between gap-2 font-mono text-xs"><span>{number(run.tokens, 0)} / {number(run.config.training_tokens, 0)} tokens</span><span>{number(latest?.tokens_per_second, 0)} tokens/s · {run.status === 'running' && run.phase === 'training' && latest ? `${number(latest.eta_s / 60, 1)} min training remaining` : 'ETA —'}</span></div></> : null}
           {run?.error ? <p className="text-err mt-4 text-sm">{run.error}</p> : null}
         </div>
         <div className="grid gap-4 sm:grid-cols-2"><Chart metrics={metrics} metric="loss" label="Training loss" /><Chart metrics={metrics} metric="explained_variance" label="Explained variance" /><Chart metrics={metrics} metric="l0" label="Active features per token · L0" /><Chart metrics={metrics} metric="dead_fraction" label="Dead feature fraction · 1,000 steps" /></div>
@@ -206,13 +207,23 @@ export function TrainingPage({ onInspect }: { onInspect: (id: string) => void })
           <div className="flex flex-wrap items-center justify-between gap-3"><h3 className="font-medium">Validation report</h3>
             <a className="text-text-secondary text-xs underline underline-offset-4" href={`${API_BASE_URL}/training/runs/${run.id}/report`}>Download report JSON</a></div>
           <p className="text-text-tertiary mt-3 text-xs leading-5">Correctness checks validate the pipeline. Quality measurements describe the learned dictionary; passing checks does not establish interpretability.</p>
+          <div role="status" aria-live="polite" className="text-text-secondary mt-4 text-sm">
+            {run.status === 'cancelling' ? 'Stopping validation and training…' : !terminal.has(run.status) ?
+              run.phase === 'evaluating' ? <><span className="mr-2 inline-block size-3 animate-spin rounded-full border-2 border-current border-t-transparent motion-reduce:animate-none" aria-hidden="true" />Validation running · {run.validation_progress?.completed ?? 0} / {run.validation_progress?.total ?? '—'} held-out sequences checked</> :
+              run.phase === 'checking Hugging Face agreement' ? <><span className="mr-2 inline-block size-3 animate-spin rounded-full border-2 border-current border-t-transparent motion-reduce:animate-none" aria-hidden="true" />Hugging Face comparison running · loading and checking the CPU reference model</> :
+              'Validation pending · checkpoint and held-out checks run after training.' :
+              run.status === 'completed' ? 'Run finished · individual check results below.' : 'Run stopped · unfinished checks did not complete.'}
+          </div>
+          {run.phase === 'evaluating' && !terminal.has(run.status) && run.validation_progress ? <progress className="mt-3 h-1.5 w-full accent-[var(--color-fn)]" value={run.validation_progress.completed} max={run.validation_progress.total} aria-label="Held-out validation sequences checked" /> : null}
           <dl className="mt-4 space-y-3">{([
-            ['Hugging Face model agreement', run.validation?.model_agreement],
+            ['Hugging Face model agreement', run.config.compare_huggingface === false ? {
+              status: 'skipped', reason: 'Optional check was disabled for this run. Enable “Check Hugging Face agreement” before starting a new run. Other checks still run.',
+            } : run.validation?.model_agreement],
             ['Saved checkpoint agreement', run.validation?.checkpoint_agreement],
             ['Model, hook and dictionary identity', run.validation?.activation_identity],
-            ['Unchanged-activation control', run.evaluation?.identity_substitution],
+            ['Unchanged-activation control', run.evaluation?.identity_substitution ?? run.validation?.identity_substitution],
           ] as [string, Check | undefined][]).map(([label, check]) => <div key={label}>
-            <div className="flex justify-between gap-3 text-sm"><dt>{label}</dt><dd className={check?.status === 'failed' ? 'text-err' : 'text-text-secondary'}>{check?.status?.replaceAll('_', ' ') ?? 'not run'}</dd></div>
+            <div className="flex justify-between gap-3 text-sm"><dt>{label}</dt><dd className={check?.status === 'failed' ? 'text-err' : 'text-text-secondary'}>{['pending', 'running'].includes(check?.status ?? '') && terminal.has(run.status) ? 'not completed' : check?.status?.replaceAll('_', ' ') ?? (terminal.has(run.status) ? 'not run' : 'pending')}</dd></div>
             {check?.reason || check?.definition ? <p className="text-text-tertiary mt-1 text-xs leading-5">{check.reason ?? check.definition}</p> : null}
           </div>)}</dl>
           {run.evaluation ? <><h4 className="mb-4 mt-6 font-medium">Held-out quality</h4>

@@ -225,12 +225,20 @@ def train(store: RunStore, run_id: str, model, *, sources=None, resume=False):
             model.eval()
             model.requires_grad_(False)
             from .validation import huggingface_agreement
-            store.update(run_id, validation=dict(model_agreement={"status": "not_run",
-                "reason": "Enable Hugging Face agreement for a reference-model comparison."}))
+            validation = dict(
+                model_agreement={"status": "pending"} if cfg.compare_huggingface else {
+                    "status": "not_run", "reason": "Optional check was disabled when this run started. Enable Check Hugging Face agreement before starting a new run."},
+                checkpoint_agreement={"status": "pending"},
+                activation_identity={"status": "pending"},
+                identity_substitution={"status": "pending"})
+            store.update(run_id, validation=validation, validation_progress=None)
             if cfg.compare_huggingface:
-                store.update(run_id, phase="checking Hugging Face agreement")
+                validation["model_agreement"] = {"status": "running",
+                    "reason": "Loading the reference model and comparing fixed prompts on the backend CPU."}
+                store.update(run_id, phase="checking Hugging Face agreement", validation=validation)
                 agreement = huggingface_agreement(model, check)
-                store.update(run_id, validation=dict(model_agreement=agreement))
+                validation["model_agreement"] = agreement
+                store.update(run_id, validation=validation)
             if resume:
                 store.update(run_id, phase="replaying data")
                 for _ in range(trainer.n_training_samples // cfg.batch_size):
@@ -267,13 +275,23 @@ def train(store: RunStore, run_id: str, model, *, sources=None, resume=False):
             check()
             trainer.set_final_sae_metadata()
             checkpoint(store, run_id, sae, trainer, manifest)
-            store.update(run_id, phase="evaluating")
+            for name in ("checkpoint_agreement", "activation_identity", "identity_substitution"):
+                validation[name] = {"status": "running"}
+            store.update(run_id, phase="evaluating", validation=validation,
+                validation_progress={"completed": 0, "total": cfg.evaluation_sequences})
             restored, saved = load_artifact(store, run_id, model)
+            def evaluation_progress(completed, roundtrip):
+                validation["checkpoint_agreement"] = roundtrip
+                validation["activation_identity"] = {"status": "passed"}
+                store.update(run_id, validation=validation,
+                    validation_progress={"completed": completed, "total": cfg.evaluation_sequences})
             evaluation = evaluate(model, sae, token_sequences(model, eval_texts, cfg.context_size, check),
-                                  hook, check, limit=cfg.evaluation_sequences, restored=restored)
+                                  hook, check, limit=cfg.evaluation_sequences, restored=restored,
+                                  on_progress=evaluation_progress)
             del restored
             validation = store.get(run_id)["validation"]
             validation.update(checkpoint_agreement=evaluation.pop("checkpoint_agreement"),
+                identity_substitution=evaluation["identity_substitution"],
                 activation_identity=dict(status="passed", model=saved["model"],
                     model_revision=saved["model_revision"], hook=saved["hook"],
                     artifact_id=saved["artifact_id"],
@@ -295,7 +313,7 @@ def train(store: RunStore, run_id: str, model, *, sources=None, resume=False):
 
 
 @torch.no_grad()
-def evaluate(model, sae, sequences, hook, check, limit=64, restored=None):
+def evaluate(model, sae, sequences, hook, check, limit=64, restored=None, on_progress=None):
     from .validation import checkpoint_agreement
     records = []
     sae.eval()
@@ -337,6 +355,8 @@ def evaluate(model, sae, sequences, hook, check, limit=64, restored=None):
         active += float((acts > 0).sum())
         records.append(dict(baseline_loss=float(baseline), reconstruction_loss=float(altered),
                             ablation_loss=float(ablated), tokens=len(x)))
+        if on_progress is not None:
+            on_progress(len(records), roundtrip)
         if len(records) >= limit:
             break
     if not records:

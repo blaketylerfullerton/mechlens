@@ -300,3 +300,33 @@ def test_report_api_redacts_corpus_and_supports_legacy_runs(tmp_path, model, con
         assert "evaluation_text" not in response.json()["config"]
         assert "attachment" in response.headers["content-disposition"]
         assert client.get('/training/runs/missing/report').status_code == 404
+
+
+def test_validation_progress_is_persisted_before_completion(tmp_path, model, config, monkeypatch):
+    config.compare_huggingface = True
+    store = RunStore(tmp_path)
+    run = store.create(config.model_dump())
+    snapshots = []
+    update = store.update
+    def record(run_id, **fields):
+        result = update(run_id, **fields)
+        snapshots.append(store.get(run_id))
+        return result
+    monkeypatch.setattr(store, "update", record)
+    def compare(model, check):
+        current = store.get(run["id"])
+        assert current["validation"]["model_agreement"]["status"] == "running"
+        assert current["validation"]["checkpoint_agreement"]["status"] == "pending"
+        return {"status": "passed"}
+    monkeypatch.setattr('app.training.validation.huggingface_agreement', compare)
+    train(store, run["id"], model)
+    evaluating = [s for s in snapshots if s["phase"] == "evaluating"]
+    assert evaluating[0]["validation_progress"]["completed"] == 0
+    assert evaluating[0]["validation"]["checkpoint_agreement"]["status"] == "running"
+    partial = next(s for s in evaluating if s["validation_progress"]["completed"] == 1)
+    assert partial["status"] == "running"
+    assert partial["validation"]["checkpoint_agreement"]["status"] == "passed"
+    assert partial["validation"]["identity_substitution"]["status"] == "running"
+    final = store.get(run["id"])
+    assert final["validation_progress"]["completed"] == final["evaluation"]["sequences"]
+    assert final["validation"]["identity_substitution"]["status"] == "passed"
