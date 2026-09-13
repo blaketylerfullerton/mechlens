@@ -5,11 +5,14 @@ import { ResourceMeter } from '@/components/ResourceMeter'
 import { useErrorToast } from '@/hooks/useErrorToast'
 
 type Options = { model: string; layers: number | null; device: string; readiness: string; estimate_note: string; supported_models: string[] }
+type Check = { status: string; reason?: string; definition?: string; max_loss_delta?: number }
+type Evaluation = { [key: string]: unknown; identity_substitution?: Check }
 type Run = {
   id: string; status: string; phase: string; created_at: number; tokens: number; error: string | null;
   config: { layer: number; features: number; training_tokens: number; dataset: string };
   checkpoint: { artifact_id: string; tokens: number } | null;
-  evaluation: Record<string, number | string> | null;
+  evaluation: Evaluation | null;
+  validation?: { model_agreement?: Check; checkpoint_agreement?: Check; activation_identity?: Check };
   resume_supported: boolean;
 }
 type Metric = { seq: number; tokens: number; loss: number; mse: number; explained_variance: number;
@@ -57,6 +60,8 @@ export function TrainingPage({ onInspect }: { onInspect: (id: string) => void })
   const [learningRate, setLearningRate] = useState(0.0003)
   const [sparsity, setSparsity] = useState(0.1)
   const [seed, setSeed] = useState(42)
+  const [evaluationSequences, setEvaluationSequences] = useState(64)
+  const [compareHuggingface, setCompareHuggingface] = useState(false)
   const [repository, setRepository] = useState('google/gemma-2-2b')
   const run = runs.find((item) => item.id === selected)
   const latest = metrics.at(-1)
@@ -113,6 +118,7 @@ export function TrainingPage({ onInspect }: { onInspect: (id: string) => void })
       const result = await request<Run>('/training/runs', { method: 'POST', body: JSON.stringify({
         layer, features, training_tokens: tokens, dataset, training_text: trainingText, evaluation_text: evaluationText,
         batch_size: batchSize, context_size: contextSize, learning_rate: learningRate, l1_coefficient: sparsity, seed,
+        evaluation_sequences: evaluationSequences, compare_huggingface: compareHuggingface,
       }) })
       setRuns((previous) => [result, ...previous]); setSelected(result.id)
     } catch (err) { setError(String(err)) }
@@ -148,6 +154,12 @@ export function TrainingPage({ onInspect }: { onInspect: (id: string) => void })
       <aside className="min-h-0 space-y-7 overflow-y-auto pr-1 lg:pb-6">
         <form onSubmit={start} className="border-border-subtle bg-bg-surface space-y-5 rounded border p-5">
           <h2 className="text-lg font-medium">New training run</h2>
+          <button className={`${button} w-full`} type="button" onClick={() => {
+            setLayer(Math.floor((options?.layers ?? 26) / 2)); setFeatures(4096); setTokens(32768);
+            setDataset('tiny-stories'); setBatchSize(256); setContextSize(128); setLearningRate(0.0003);
+            setSparsity(0.1); setSeed(42); setEvaluationSequences(64); setCompareHuggingface(false)
+          }}>Use small validation preset</button>
+          <p className="text-text-tertiary text-xs">32,768 training tokens checks the workflow. It does not establish feature quality.</p>
           <label className="text-text-secondary block text-xs">Hugging Face model<select className={field} value={repository} onChange={(e) => setRepository(e.target.value)}>{(options?.supported_models ?? ['google/gemma-2-2b']).map((id) => <option key={id} value={id}>{id}</option>)}</select></label>
           <button className={`${button} w-full`} type="button" disabled={busy} onClick={prepareModel}>Download / load model</button>
           <div className="border-border-subtle rounded border p-3"><p className="text-text-tertiary text-xs">Loaded model</p><p className="mt-1 break-all text-sm">{options?.model ?? 'Connecting…'}</p>
@@ -161,6 +173,9 @@ export function TrainingPage({ onInspect }: { onInspect: (id: string) => void })
           {dataset === 'text' ? <><label className="text-text-secondary block text-xs">Training text<textarea className={field} rows={5} value={trainingText} onChange={(e) => setTrainingText(e.target.value)} required maxLength={2000000} /></label><label className="text-text-secondary block text-xs">Held-out evaluation text<textarea className={field} rows={3} value={evaluationText} onChange={(e) => setEvaluationText(e.target.value)} required maxLength={200000} /></label></> : null}
           <label className="text-text-secondary block text-xs">Training token budget<input className={field} type="number" min={batchSize} max="100000000" step={batchSize} value={tokens} onChange={(e) => setTokens(Number(e.target.value))} required /></label>
           <label className="text-text-secondary block text-xs">Sparsity penalty · L1<input className={field} type="number" min="0" max="100" step="any" value={sparsity} onChange={(e) => setSparsity(Number(e.target.value))} required /></label>
+          <label className="text-text-secondary block text-xs">Held-out evaluation sequences<input className={field} type="number" min="1" max="2048" value={evaluationSequences} onChange={(e) => setEvaluationSequences(Number(e.target.value))} required /></label>
+          <label className="text-text-secondary block text-xs leading-5"><input className="mr-2" type="checkbox" checked={compareHuggingface} onChange={(e) => setCompareHuggingface(e.target.checked)} />Check Hugging Face agreement
+            <span className="text-text-tertiary mt-1 block">Loads a second copy of the model on the backend CPU. Adds RAM use and evaluation time; enable on Spark when ready.</span></label>
           <details className="text-text-secondary text-xs"><summary className="cursor-pointer">Advanced settings</summary><div className="mt-4 space-y-4">
             <label className="block">Batch tokens<input className={field} type="number" min="16" max="8192" value={batchSize} onChange={(e) => setBatchSize(Number(e.target.value))} required /></label>
             <label className="block">Context tokens<input className={field} type="number" min="8" max="2048" value={contextSize} onChange={(e) => setContextSize(Number(e.target.value))} required /></label>
@@ -187,7 +202,31 @@ export function TrainingPage({ onInspect }: { onInspect: (id: string) => void })
         </div>
         <div className="grid gap-4 sm:grid-cols-2"><Chart metrics={metrics} metric="loss" label="Training loss" /><Chart metrics={metrics} metric="explained_variance" label="Explained variance" /><Chart metrics={metrics} metric="l0" label="Active features per token · L0" /><Chart metrics={metrics} metric="dead_fraction" label="Dead feature fraction · 1,000 steps" /></div>
         <p className="text-text-tertiary mt-3 text-xs leading-5">Training-batch measurements; most recent 2,000 samples retained. Dead features have been inactive for more than 1,000 optimizer steps. Low loss alone does not establish interpretability.</p>
-        {run?.evaluation ? <section className="border-border-subtle mt-7 rounded border p-5"><h3 className="mb-4 font-medium">Held-out evaluation</h3><dl className="grid grid-cols-2 gap-4 sm:grid-cols-3">{['mse', 'explained_variance', 'l0', 'baseline_loss', 'reconstruction_loss', 'loss_increase'].map((key) => <div key={key}><dt className="text-text-tertiary text-xs">{key.replaceAll('_', ' ')}</dt><dd className="mt-1 font-mono text-sm">{number(Number(run.evaluation![key]), 4)}</dd></div>)}</dl><p className="text-text-tertiary mt-4 text-xs">{String(run.evaluation.definition)} · {String(run.evaluation.tokens)} evaluation tokens</p></section> : null}
+        {run ? <section className="border-border-subtle mt-7 rounded border p-5">
+          <div className="flex flex-wrap items-center justify-between gap-3"><h3 className="font-medium">Validation report</h3>
+            <a className="text-text-secondary text-xs underline underline-offset-4" href={`${API_BASE_URL}/training/runs/${run.id}/report`}>Download report JSON</a></div>
+          <p className="text-text-tertiary mt-3 text-xs leading-5">Correctness checks validate the pipeline. Quality measurements describe the learned dictionary; passing checks does not establish interpretability.</p>
+          <dl className="mt-4 space-y-3">{([
+            ['Hugging Face model agreement', run.validation?.model_agreement],
+            ['Saved checkpoint agreement', run.validation?.checkpoint_agreement],
+            ['Model, hook and dictionary identity', run.validation?.activation_identity],
+            ['Unchanged-activation control', run.evaluation?.identity_substitution],
+          ] as [string, Check | undefined][]).map(([label, check]) => <div key={label}>
+            <div className="flex justify-between gap-3 text-sm"><dt>{label}</dt><dd className={check?.status === 'failed' ? 'text-err' : 'text-text-secondary'}>{check?.status?.replaceAll('_', ' ') ?? 'not run'}</dd></div>
+            {check?.reason || check?.definition ? <p className="text-text-tertiary mt-1 text-xs leading-5">{check.reason ?? check.definition}</p> : null}
+          </div>)}</dl>
+          {run.evaluation ? <><h4 className="mb-4 mt-6 font-medium">Held-out quality</h4>
+            <dl className="grid grid-cols-2 gap-4 sm:grid-cols-3">{[
+              ['mse', 'Reconstruction error · MSE'], ['explained_variance', 'Explained variance'],
+              ['l0', 'Active features per token'], ['baseline_loss', 'Original model loss'],
+              ['reconstruction_loss', 'SAE substitution loss'], ['ablation_loss', 'Zero-ablation loss'],
+              ['loss_increase', 'Loss increase with SAE'], ['loss_recovered', 'Loss recovered · ratio'],
+            ].map(([key, label]) => <div key={key}><dt className="text-text-tertiary text-xs">{label}</dt><dd className="mt-1 font-mono text-sm">{typeof run.evaluation![key] === 'number' ? number(run.evaluation![key] as number, 4) : '—'}</dd></div>)}</dl>
+            <p className="text-text-tertiary mt-4 text-xs leading-5">{String(run.evaluation.tokens)} activation tokens · {String(run.evaluation.sequences ?? 'unknown')} sequences{run.evaluation.requested_sequences ? ` / ${run.evaluation.requested_sequences} requested` : ''}. {run.evaluation.sample_limit_reached === false ? 'Evaluation data ended before the requested sample count.' : ''}</p>
+            <p className="text-text-tertiary mt-2 text-xs leading-5">{String(run.evaluation.definition)}</p>
+            <p className="text-text-tertiary mt-2 text-xs leading-5">Lower SAE loss increase means better preservation of model predictions. Loss recovered compares the SAE with zero ablation; it is undefined when zero ablation does not increase loss.</p>
+          </> : <p className="text-text-tertiary mt-5 text-xs">Held-out measurements appear after training and evaluation complete. Older runs may not have all checks.</p>}
+        </section> : null}
         {run?.checkpoint ? <section className="border-border-subtle mt-7 rounded border p-5"><h3 className="font-medium">Saved dictionary</h3><p className="text-text-secondary mt-2 text-sm">Checkpoint at {number(run.checkpoint.tokens, 0)} tokens. Features are unlabeled and have their own dictionary identity.</p><code className="text-text-tertiary mt-2 block break-all text-xs">{run.checkpoint.artifact_id}</code>
           <div className="mt-5 flex flex-wrap items-center gap-3"><button className={`${button} text-fn`} onClick={() => onInspect(run.id)}>Open in Explore</button>{['cfg.json', 'sae_weights.safetensors', 'manifest.json'].map((name) => <a className="text-text-secondary text-xs underline underline-offset-4" key={name} href={`${API_BASE_URL}/training/runs/${run.id}/files/${name}`}>{name}</a>)}</div>
           <p className="text-text-tertiary mt-4 text-xs">Resume restores optimizer and random state, then replays the recorded dataset to the checkpoint position. It requires the same model and training package versions.</p>

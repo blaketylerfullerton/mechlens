@@ -38,6 +38,11 @@ def test_real_training_roundtrip_and_frozen_model(tmp_path, model, config):
     saved = store.get(run["id"])
     assert saved["status"] == "completed"
     assert saved["tokens"] == config.training_tokens
+    assert saved["validation"]["model_agreement"]["status"] == "not_run"
+    assert saved["validation"]["checkpoint_agreement"]["status"] == "passed"
+    assert saved["validation"]["activation_identity"]["status"] == "passed"
+    assert saved["evaluation"]["identity_substitution"]["status"] == "passed"
+    assert saved["evaluation"]["ablation_loss"] > 0
     assert saved["evaluation"]["tokens"] > 0
     assert saved["evaluation"]["reconstruction_loss"] > 0
     assert [p.requires_grad for p in model.parameters()] == flags
@@ -192,3 +197,106 @@ def test_model_switch_serializes_and_releases_old_cache(tmp_path, model, monkeyp
         assert client.post('/trace', json={"prompt": "hello", "max_tokens": 2}).status_code == 503
         callbacks.pop()(None)
         assert client.get('/health').json()["status"] == "ready"
+
+
+def test_evaluation_identity_sae_and_zero_ablation(model):
+    from app.training.runner import evaluate
+    class IdentitySAE:
+        def eval(self):
+            return self
+        def encode(self, x):
+            return x
+        def decode(self, x):
+            return x
+    sequences = [model.to_tokens("abcdef"), model.to_tokens("a longer document")]
+    result = evaluate(model, IdentitySAE(), sequences, "blocks.0.hook_resid_post", lambda: None, limit=64)
+    assert result["mse"] == 0
+    assert result["explained_variance"] == 1
+    assert result["loss_increase"] == 0
+    assert result["identity_substitution"]["status"] == "passed"
+    assert result["sequences"] == 2
+    assert result["tokens"] == sum(t.shape[1] - 1 for t in sequences)
+    assert result["sample_limit_reached"] is False
+    if result["ablation_loss"] > result["baseline_loss"] + 1e-8:
+        assert result["loss_recovered"] == pytest.approx(1)
+    else:
+        assert result["loss_recovered"] is None
+
+
+def test_evaluation_zero_sae_matches_ablation_and_sample_limit(model):
+    from app.training.runner import evaluate
+    class ZeroSAE:
+        def eval(self):
+            return self
+        def encode(self, x):
+            return torch.zeros_like(x)
+        def decode(self, x):
+            return x
+    tokens = model.to_tokens("abcdef")
+    result = evaluate(model, ZeroSAE(), [tokens, tokens], "blocks.0.hook_resid_post", lambda: None, limit=1)
+    assert result["reconstruction_loss"] == result["ablation_loss"]
+    assert result["l0"] == 0
+    assert result["sample_limit_reached"] is True
+    assert result["sequences"] == 1
+
+
+def test_checkpoint_agreement_detects_changes():
+    from app.training.validation import checkpoint_agreement
+    class SAE:
+        def __init__(self, offset):
+            self.offset = offset
+        def encode(self, x):
+            return x + self.offset
+        def decode(self, x):
+            return x
+    x = torch.ones(2, 4)
+    assert checkpoint_agreement(SAE(0), SAE(0), x)["status"] == "passed"
+    assert checkpoint_agreement(SAE(0), SAE(1), x)["status"] == "failed"
+    assert checkpoint_agreement(SAE(0), SAE(float('nan')), x)["status"] == "failed"
+
+
+def test_huggingface_agreement_offline(model, monkeypatch):
+    from app.training.validation import huggingface_agreement
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformer_lens import loading_from_pretrained
+    from types import SimpleNamespace
+    assert huggingface_agreement(model, lambda: None)["status"] == "not_run"
+    model.cfg.model_revision = "test-revision"
+    monkeypatch.setattr(loading_from_pretrained, "get_official_model_name", lambda name: "test/model")
+    mismatch = False
+    class Reference:
+        def cpu(self):
+            return self
+        def eval(self):
+            return self
+        def __call__(self, input_ids):
+            logits = model(input_ids, return_type="logits")
+            if mismatch:
+                logits = torch.zeros_like(logits)
+                logits[..., 0] = 100
+            return SimpleNamespace(logits=logits)
+    # Fixture's tokenizer ignores prepend_bos; match its explicit no-BOS behavior here.
+    tokenizer = SimpleNamespace(encode=lambda text, **kw: model.to_tokens(text)[0].tolist())
+    monkeypatch.setattr(AutoTokenizer, "from_pretrained", lambda *a, **kw: tokenizer)
+    monkeypatch.setattr(AutoModelForCausalLM, "from_pretrained", lambda *a, **kw: Reference())
+    monkeypatch.setattr('app.training.validation.PROMPTS', ("abc", "def"))
+    assert huggingface_agreement(model, lambda: None)["status"] == "passed"
+    mismatch = True
+    assert huggingface_agreement(model, lambda: None)["status"] == "failed"
+
+
+def test_report_api_redacts_corpus_and_supports_legacy_runs(tmp_path, model, config):
+    from fastapi import FastAPI
+    from app.training.api import router
+    store = RunStore(tmp_path)
+    run = store.create(config.model_dump())
+    app = FastAPI()
+    app.include_router(router(lambda: model, threading.Lock(), store))
+    with TestClient(app) as client:
+        response = client.get(f'/training/runs/{run["id"]}/report')
+        assert response.status_code == 200
+        assert response.json()["correctness"] is None
+        assert "training_text" not in response.json()["config"]
+        assert "evaluation_text" not in response.json()["config"]
+        assert "attachment" in response.headers["content-disposition"]
+        assert client.get('/training/runs/missing/report').status_code == 404

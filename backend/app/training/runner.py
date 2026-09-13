@@ -30,6 +30,8 @@ class TrainingConfig(BaseModel):
     learning_rate: float = Field(default=0.0003, gt=0, le=0.01)
     l1_coefficient: float = Field(default=0.1, ge=0, le=100)
     seed: int = Field(default=42, ge=0, le=2**32 - 1)
+    evaluation_sequences: int = Field(default=64, ge=1, le=2048)
+    compare_huggingface: bool = False
     dataset: Literal["tiny-stories", "text"] = "tiny-stories"
     training_text: str = Field(default="", max_length=2_000_000)
     evaluation_text: str = Field(default="", max_length=200_000)
@@ -222,6 +224,13 @@ def train(store: RunStore, run_id: str, model, *, sources=None, resume=False):
         try:
             model.eval()
             model.requires_grad_(False)
+            from .validation import huggingface_agreement
+            store.update(run_id, validation=dict(model_agreement={"status": "not_run",
+                "reason": "Enable Hugging Face agreement for a reference-model comparison."}))
+            if cfg.compare_huggingface:
+                store.update(run_id, phase="checking Hugging Face agreement")
+                agreement = huggingface_agreement(model, check)
+                store.update(run_id, validation=dict(model_agreement=agreement))
             if resume:
                 store.update(run_id, phase="replaying data")
                 for _ in range(trainer.n_training_samples // cfg.batch_size):
@@ -259,7 +268,17 @@ def train(store: RunStore, run_id: str, model, *, sources=None, resume=False):
             trainer.set_final_sae_metadata()
             checkpoint(store, run_id, sae, trainer, manifest)
             store.update(run_id, phase="evaluating")
-            evaluation = evaluate(model, sae, token_sequences(model, eval_texts, cfg.context_size, check), hook, check)
+            restored, saved = load_artifact(store, run_id, model)
+            evaluation = evaluate(model, sae, token_sequences(model, eval_texts, cfg.context_size, check),
+                                  hook, check, limit=cfg.evaluation_sequences, restored=restored)
+            del restored
+            validation = store.get(run_id)["validation"]
+            validation.update(checkpoint_agreement=evaluation.pop("checkpoint_agreement"),
+                activation_identity=dict(status="passed", model=saved["model"],
+                    model_revision=saved["model_revision"], hook=saved["hook"],
+                    artifact_id=saved["artifact_id"],
+                    definition="Checkpoint content, model/tokenizer identity, dimensions and preprocessing validated by the viewer's artifact loader."))
+            store.update(run_id, validation=validation)
             check()
             store.update(run_id, evaluation=evaluation, phase="complete", status="completed", tokens=cfg.training_tokens)
         finally:
@@ -276,31 +295,69 @@ def train(store: RunStore, run_id: str, model, *, sources=None, resume=False):
 
 
 @torch.no_grad()
-def evaluate(model, sae, sequences, hook, check, limit=8):
+def evaluate(model, sae, sequences, hook, check, limit=64, restored=None):
+    from .validation import checkpoint_agreement
     records = []
     sae.eval()
+    if restored is not None:
+        restored.eval()
+    roundtrip = {"status": "not_run", "reason": "No reloaded checkpoint supplied."}
+    identity_max_delta = 0.0
+    # Accumulate moments in float64 for a corpus-wide explained variance.
+    sums = squares = None
+    squared_error = active = 0.0
     for tokens in sequences:
         check()
         baseline, cache = model.run_with_cache(tokens, names_filter=[hook], return_type="loss")
         x = cache[hook][0, 1:].float()
         acts = sae.encode(x)
         recon = sae.decode(acts)
-        def substitute(value, hook):
-            result = value.clone()
-            result[:, 1:] = recon.to(value.dtype).unsqueeze(0)
-            return result
-        altered = model.run_with_hooks(tokens, fwd_hooks=[(hook, substitute)], return_type="loss")
-        records.append(dict(reconstruction_metrics(x, recon, acts), baseline_loss=float(baseline),
-                            reconstruction_loss=float(altered), tokens=len(x)))
+        if not all(torch.isfinite(t).all().item() for t in (x, acts, recon, baseline)):
+            raise ValueError("Non-finite held-out evaluation measurements")
+        if not records and restored is not None:
+            roundtrip = checkpoint_agreement(sae, restored, x)
+        def substitute(replacement):
+            def apply(value, hook):
+                result = value.clone()
+                result[:, 1:] = replacement.to(value.dtype).unsqueeze(0)
+                return result
+            return apply
+        # Identity substitution is a control for the same hook and token mask.
+        identity = model.run_with_hooks(tokens, fwd_hooks=[(hook, substitute(x))], return_type="loss")
+        altered = model.run_with_hooks(tokens, fwd_hooks=[(hook, substitute(recon))], return_type="loss")
+        ablated = model.run_with_hooks(tokens, fwd_hooks=[(hook, substitute(torch.zeros_like(x)))], return_type="loss")
+        if not all(torch.isfinite(t).all().item() for t in (identity, altered, ablated)):
+            raise ValueError("Non-finite downstream evaluation loss")
+        identity_max_delta = max(identity_max_delta, abs(float(identity) - float(baseline)))
+        # CPU moments also support devices without float64 (MPS).
+        values = x.double() if x.device.type != "mps" else x.cpu().double()
+        sums = values.sum(0) if sums is None else sums + values.sum(0)
+        squares = values.square().sum(0) if squares is None else squares + values.square().sum(0)
+        squared_error += float((x - recon).double().square().sum()) if x.device.type != "mps" else float((x - recon).cpu().double().square().sum())
+        active += float((acts > 0).sum())
+        records.append(dict(baseline_loss=float(baseline), reconstruction_loss=float(altered),
+                            ablation_loss=float(ablated), tokens=len(x)))
         if len(records) >= limit:
             break
     if not records:
         raise ValueError("Evaluation text produced no usable token sequences")
     total = sum(row["tokens"] for row in records)
     result = {key: sum(row[key] * row["tokens"] for row in records) / total
-              for key in ("mse", "explained_variance", "l0", "baseline_loss", "reconstruction_loss")}
-    return dict(result, loss_increase=result["reconstruction_loss"] - result["baseline_loss"],
-                tokens=total, sequences=len(records), definition="token-weighted per-sequence metrics; first position unchanged")
+              for key in ("baseline_loss", "reconstruction_loss", "ablation_loss")}
+    variance_sum = float((squares - sums.square() / total).clamp_min(0).sum())
+    gap = result["ablation_loss"] - result["baseline_loss"]
+    recovered = (result["ablation_loss"] - result["reconstruction_loss"]) / gap if gap > 1e-8 else None
+    return dict(result, mse=squared_error / (total * len(sums)),
+                explained_variance=1 - squared_error / variance_sum if variance_sum > 1e-12 else None,
+                l0=active / total, loss_recovered=recovered,
+                loss_recovered_note="(ablation loss - reconstruction loss) / (ablation loss - baseline loss); undefined when ablation does not increase loss. Not clipped.",
+                loss_increase=result["reconstruction_loss"] - result["baseline_loss"],
+                tokens=total, sequences=len(records), requested_sequences=limit,
+                sample_limit_reached=len(records) == limit,
+                identity_substitution={"status": "passed" if identity_max_delta <= 1e-6 else "failed",
+                    "max_loss_delta": identity_max_delta, "tolerance": 1e-6},
+                checkpoint_agreement=roundtrip,
+                definition="Corpus-wide reconstruction variance and token-weighted next-token loss; first position unchanged for all substitutions. Final position contributes to reconstruction metrics but has no next-token target.")
 
 
 def load_artifact(store, run_id, model):

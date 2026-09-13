@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from ..capture import generate_trace
@@ -118,6 +118,15 @@ def router(get_model, compute_lock, store: RunStore, prepare_model=None):
     @api.get("/runs/{run_id}")
     def read_run(run_id: str):
         return summary(get_run(run_id))
+
+    @api.get("/runs/{run_id}/report")
+    def validation_report(run_id: str):
+        run = summary(get_run(run_id))
+        return JSONResponse(dict(schema_version=1, run_id=run_id, status=run["status"],
+            config=run["config"], provenance=run.get("provenance"),
+            checkpoint=run.get("checkpoint"), correctness=run.get("validation"),
+            quality=run.get("evaluation")), headers={
+                "Content-Disposition": f'attachment; filename="training-{run_id}-report.json"'})
 
     @api.get("/runs/{run_id}/metrics")
     def read_metrics(run_id: str, after: int = Query(default=0, ge=0)):

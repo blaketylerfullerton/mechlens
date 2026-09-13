@@ -1,6 +1,9 @@
 # SAE training workspace
 
-Status: planned; no training functionality is implemented by this plan.
+Status: the single-layer training workspace is implemented. This document records
+the design and roadmap; see [training validation](training-validation.md) for the
+current correctness checks and Spark walkthrough. Real-model validation on the
+intended hardware remains to be run.
 
 Build a second page in mechlens where a user can prepare a model, train a
 sparse autoencoder (SAE), watch progress, and inspect the saved result.
