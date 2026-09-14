@@ -161,6 +161,8 @@ Dependencies: SAE-09.
 
 Generate candidate explanations, score them using held-out examples and
 controls, and record explainer model/prompt provenance. Define provider and
-cost settings before running external labeling jobs. Done when the viewer
+resource settings before running labeling jobs. The self-hosted provider,
+memory policy, immutable job/result contracts, and implementation order are
+specified in [auto-interp.md](auto-interp.md). Done when the viewer
 shows explanations with their evaluation/provenance, unsuccessful explanations
 remain visibly unverified, and any generated atlas uses the same dictionary.

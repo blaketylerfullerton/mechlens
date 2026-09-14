@@ -15,6 +15,7 @@ from ..passes.sae import SAEPass
 from ..passes.lens import LogitLensPass
 from ..service import jobs
 from ..service.scheduling import serialized
+from .auto_interp import generate, load_profiles
 from .examples import collect_feature_examples, save_feature_examples
 from .runner import Cancelled, TrainingConfig, load_artifact, train
 from .store import RunStore
@@ -33,6 +34,11 @@ class FeatureExamplesRequest(BaseModel):
     feature_ids: list[int] = Field(min_length=1, max_length=32)
     max_examples: int = Field(default=20, ge=1, le=50)
     max_sequences: int = Field(default=128, ge=1, le=2048)
+
+
+class AutoInterpRequest(BaseModel):
+    feature_ids: list[int] = Field(min_length=1, max_length=32)
+    profile: str = Field(default="local", min_length=1, max_length=80)
 
 def router(get_model, compute_lock, store: RunStore, prepare_model=None):
     api = APIRouter(prefix="/training", tags=["training"])
@@ -224,6 +230,67 @@ def router(get_model, compute_lock, store: RunStore, prepare_model=None):
         if not path.is_relative_to(store.root.resolve()) or not path.is_file():
             raise HTTPException(404, "Feature examples are unavailable")
         return json.loads(path.read_text())
+
+    @api.get("/interp-jobs")
+    def list_interp_jobs():
+        """Durable queue records for the forthcoming self-hosted auto-interp worker."""
+        return store.list_interp_jobs()
+
+    @api.get("/runs/{run_id}/interp-jobs")
+    def list_run_interp_jobs(run_id: str):
+        get_run(run_id)
+        return [job for job in store.list_interp_jobs() if job["run_id"] == run_id]
+
+    @api.get("/interp-profiles")
+    def interp_profiles():
+        return [profile.public() for profile in load_profiles(store.root).values()]
+
+    @api.post("/runs/{run_id}/interp-jobs", status_code=202)
+    @serialized
+    def create_interp_job(run_id: str, req: AutoInterpRequest):
+        run = get_run(run_id)
+        saved, examples = run["checkpoint"], run.get("examples")
+        if not saved or not examples:
+            raise HTTPException(422, "Collect activation examples before creating an auto-interp job")
+        profile = load_profiles(store.root).get(req.profile)
+        if profile is None:
+            raise HTTPException(422, "No matching local auto-interp profile is configured")
+        path = (store.root / examples["path"]).resolve()
+        if not path.is_relative_to(store.root.resolve()) or not path.is_file():
+            raise HTTPException(422, "Saved activation examples are unavailable")
+        report = json.loads(path.read_text())
+        feature_ids = sorted(set(req.feature_ids))
+        if report.get("artifact_id") != saved["artifact_id"] or any(not report["examples"].get(str(fid)) for fid in feature_ids):
+            raise HTTPException(422, "Each requested feature needs examples from this exact checkpoint")
+        job = store.create_interp_job(run_id, saved["artifact_id"], feature_ids, profile.base_url, profile.model)
+        store.update_interp_job(job["id"], profile=profile.public(), source_examples=examples["path"])
+        def execute(_reporter):
+            store.update_interp_job(job["id"], status="running", phase="generating")
+            records = []
+            try:
+                for index, feature_id in enumerate(feature_ids, 1):
+                    if store.get_interp_job(job["id"])["status"] == "cancelled":
+                        return store.get_interp_job(job["id"])
+                    response = generate(profile, saved["artifact_id"], feature_id, report["examples"][str(feature_id)])
+                    records.append(dict(feature_id=feature_id, status="unverified", **response))
+                    store.update_interp_job(job["id"], completed=index, records=records)
+                result_path = store.root / run_id / f"auto-interp-{job['id']}.json"
+                temporary = result_path.with_name(f".{result_path.name}")
+                temporary.write_text(json.dumps(dict(schema_version=1, job_id=job["id"], artifact_id=saved["artifact_id"], records=records)))
+                os.replace(temporary, result_path)
+                return store.update_interp_job(job["id"], status="completed", phase="completed", result_path=str(result_path.relative_to(store.root)))
+            except Exception as exc:
+                store.update_interp_job(job["id"], status="failed", phase="failed", error=str(exc), records=records)
+                raise
+        jobs.submit(execute)
+        return store.get_interp_job(job["id"])
+
+    @api.post("/interp-jobs/{job_id}/cancel")
+    def cancel_interp_job(job_id: str):
+        try:
+            return store.update_interp_job(job_id, status="cancelled", phase="cancelled")
+        except KeyError:
+            raise HTTPException(404, "Unknown auto-interp job") from None
 
     return api
 

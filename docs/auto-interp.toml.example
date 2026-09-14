@@ -1,0 +1,10 @@
+# Copy to <training-data-dir>/config/config.toml, or set MECHLENS_CONFIG_DIR.
+# Ollama's OpenAI-compatible endpoint is available after `ollama serve`.
+[auto_interp.profile.local]
+provider = "openai_compatible"
+base_url = "http://127.0.0.1:11434/v1"
+model = "qwen3:14b"
+timeout_s = 120
+max_parallel_requests = 1
+response_mode = "json_schema"
+# api_key_env = "MECHLENS_AUTO_INTERP_API_KEY"

@@ -18,6 +18,7 @@ class RunStore:
             db.execute("PRAGMA journal_mode=WAL")
             db.execute("CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, body TEXT NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS metrics (run_id TEXT, seq INTEGER, body TEXT, PRIMARY KEY(run_id, seq))")
+            db.execute("CREATE TABLE IF NOT EXISTS interp_jobs (id TEXT PRIMARY KEY, body TEXT NOT NULL)")
 
     def connect(self):
         return sqlite3.connect(self.root / "runs.sqlite3", timeout=30)
@@ -110,3 +111,38 @@ class RunStore:
             rows = db.execute("SELECT body FROM metrics WHERE run_id=? AND seq>? ORDER BY seq LIMIT 2000",
                               (run_id, after)).fetchall()
         return [json.loads(row[0]) for row in rows]
+
+    def create_interp_job(self, run_id: str, artifact_id: str, feature_ids: list[int], endpoint: str, model: str) -> dict:
+        """Create a durable auto-interp work record before dispatching it."""
+        job = dict(id=uuid.uuid4().hex, run_id=run_id, artifact_id=artifact_id,
+                   feature_ids=feature_ids, endpoint=endpoint, model=model,
+                   status="queued", phase="queued", created_at=time.time(), updated_at=time.time(),
+                   completed=0, total=len(feature_ids), error=None, result_path=None)
+        with self.connect() as db:
+            db.execute("INSERT INTO interp_jobs VALUES (?, ?)", (job["id"], json.dumps(job)))
+        return job
+
+    def list_interp_jobs(self, limit: int = 100) -> list[dict]:
+        with self.connect() as db:
+            rows = db.execute("SELECT body FROM interp_jobs ORDER BY rowid DESC LIMIT ?", (limit,)).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    def get_interp_job(self, job_id: str) -> dict:
+        with self.connect() as db:
+            row = db.execute("SELECT body FROM interp_jobs WHERE id=?", (job_id,)).fetchone()
+        if row is None:
+            raise KeyError(job_id)
+        return json.loads(row[0])
+
+    def update_interp_job(self, job_id: str, **fields) -> dict:
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT body FROM interp_jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None:
+                raise KeyError(job_id)
+            job = json.loads(row[0])
+            if job["status"] == "cancelled" and fields.get("status") in {"running", "completed"}:
+                fields["status"] = "cancelled"
+            job.update(fields, updated_at=time.time())
+            db.execute("UPDATE interp_jobs SET body=? WHERE id=?", (json.dumps(job, allow_nan=False), job_id))
+        return job

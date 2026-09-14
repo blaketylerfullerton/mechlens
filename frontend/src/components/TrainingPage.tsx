@@ -17,6 +17,7 @@ type Run = {
   resume_supported: boolean;
   examples?: { sequences_scanned: number; tokens_scanned: number } | null;
 }
+type InterpJob = { id: string; run_id: string; artifact_id: string; feature_ids: number[]; endpoint: string; model: string; status: string; phase: string; completed: number; total: number; error: string | null; created_at: number }
 type ExampleReport = { artifact_id: string; sequences_scanned: number; tokens_scanned: number; examples: Record<string, { activation: number; context: string; token_position: number }[]> }
 type Metric = { seq: number; tokens: number; loss: number; mse: number; explained_variance: number;
   l0: number; dead_fraction: number; tokens_per_second: number; eta_s: number; elapsed_s: number }
@@ -47,6 +48,7 @@ function Chart({ metrics, metric, label }: { metrics: Metric[]; metric: 'loss' |
 export function TrainingPage({ onInspect }: { onInspect: (id: string) => void }) {
   const [options, setOptions] = useState<Options | null>(null)
   const [runs, setRuns] = useState<Run[]>([])
+  const [interpJobs, setInterpJobs] = useState<InterpJob[]>([])
   const [selected, setSelected] = useState<string | null>(null)
   const [metrics, setMetrics] = useState<Metric[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -69,6 +71,7 @@ export function TrainingPage({ onInspect }: { onInspect: (id: string) => void })
   const [exampleFeature, setExampleFeature] = useState('0')
   const [exampleStatus, setExampleStatus] = useState<string | null>(null)
   const [exampleReport, setExampleReport] = useState<ExampleReport | null>(null)
+  const [interpProfile, setInterpProfile] = useState('local')
   const run = runs.find((item) => item.id === selected)
   const latest = metrics.at(-1)
 
@@ -76,7 +79,7 @@ export function TrainingPage({ onInspect }: { onInspect: (id: string) => void })
     let stopped = false
     let timer: ReturnType<typeof setTimeout>
     async function poll() {
-      const results = await Promise.allSettled([request<Options>('/training/options'), request<Run[]>('/training/runs')])
+      const results = await Promise.allSettled([request<Options>('/training/options'), request<Run[]>('/training/runs'), request<InterpJob[]>('/training/interp-jobs')])
       if (stopped) return
       if (results[0].status === 'fulfilled') {
         const available = results[0].value
@@ -88,6 +91,7 @@ export function TrainingPage({ onInspect }: { onInspect: (id: string) => void })
         setRuns(history)
         setSelected((id) => id ?? history[0]?.id ?? null)
       }
+      if (results[2].status === 'fulfilled') setInterpJobs(results[2].value)
       const failure = results.find((result) => result.status === 'rejected')
       if (failure?.status === 'rejected') setError(String(failure.reason))
       timer = setTimeout(poll, 2000)
@@ -175,6 +179,15 @@ export function TrainingPage({ onInspect }: { onInspect: (id: string) => void })
     }
   }
 
+  async function createInterpJob() {
+    if (!run || !Number.isInteger(Number(exampleFeature))) return
+    setError(null)
+    try {
+      await request(`/training/runs/${run.id}/interp-jobs`, { method: 'POST',
+        body: JSON.stringify({ feature_ids: [Number(exampleFeature)], profile: interpProfile }) })
+    } catch (err) { setError(String(err)) }
+  }
+
   return <main className="mx-auto flex w-full min-h-0 flex-1 max-w-[1500px] flex-col px-6 py-6 lg:px-10">
     <header className="mb-6 flex shrink-0 flex-wrap items-start justify-between gap-4">
       <div><p className="text-fn mb-3 font-mono text-xs uppercase tracking-[0.16em]">SAE workspace</p>
@@ -222,6 +235,10 @@ export function TrainingPage({ onInspect }: { onInspect: (id: string) => void })
             <span className="flex justify-between gap-2 text-sm"><span>Layer {item.config.layer} · {number(item.config.features, 0)} features</span><span className="text-text-tertiary text-xs">{item.status}</span></span><span className="text-text-tertiary mt-2 block text-xs">{new Date(item.created_at * 1000).toLocaleString()} · {item.id.slice(0, 8)}</span>
           </button>)}
         </div></section>
+        <section className="border-border-subtle rounded border p-4"><div className="flex items-center justify-between gap-3"><h2 className="text-sm font-medium">Auto-interp jobs</h2><span className="text-text-tertiary text-xs">self-hosted</span></div>
+          <p className="text-text-tertiary mt-2 text-xs leading-5">Candidate-label jobs will appear here with their checkpoint, local endpoint, model, and evaluation status. The labeling worker is not configured yet.</p>
+          <div className="mt-4 space-y-2">{interpJobs.length === 0 ? <p className="text-text-tertiary text-xs">No auto-interp jobs yet.</p> : interpJobs.map((job) => <article className="bg-bg-base rounded p-3" key={job.id}><div className="flex justify-between gap-3 text-xs"><span className="font-mono">{job.id.slice(0, 8)}</span><span className={job.status === "failed" ? "text-err" : "text-text-secondary"}>{job.status}</span></div><p className="text-text-secondary mt-2 text-xs">{job.feature_ids.length} feature{job.feature_ids.length === 1 ? "" : "s"} · {job.model}</p><p className="text-text-tertiary mt-1 break-all text-xs">{job.endpoint} · {job.artifact_id.slice(0, 12)}</p>{job.total ? <progress className="mt-2 h-1 w-full accent-[var(--color-fn)]" value={job.completed} max={job.total} aria-label={`Auto-interp job  progress`} /> : null}{job.error ? <p className="text-err mt-2 text-xs">{job.error}</p> : null}</article>)}</div>
+        </section>
       </aside>
       <section className="min-h-0 min-w-0 overflow-y-auto pr-1 lg:pb-6">
         <div className="border-border-subtle mb-6 border-b pb-6">
@@ -275,6 +292,8 @@ export function TrainingPage({ onInspect }: { onInspect: (id: string) => void })
             <p className="text-text-tertiary mt-1 text-xs">Scan the held-out corpus for this dictionary’s strongest positive activations. Results are saved under this checkpoint only.</p>
             <div className="mt-3 flex flex-wrap items-end gap-3"><label className="text-text-secondary text-xs">Feature ID<input className={`${field} mt-1 w-28`} type="number" min="0" max={run.config.features - 1} value={exampleFeature} onChange={(e) => setExampleFeature(e.target.value)} /></label>
               <button className={button} disabled={Boolean(exampleStatus && !exampleStatus.startsWith('Saved'))} onClick={collectExamples}>Collect examples</button></div>
+            <div className="mt-3 flex flex-wrap items-end gap-3"><label className="text-text-secondary text-xs">Auto-interp profile<input className={`${field} mt-1 w-36`} value={interpProfile} onChange={(e) => setInterpProfile(e.target.value)} /></label>
+              <button className={button} disabled={!exampleReport || Boolean(exampleStatus && !exampleStatus.startsWith('Saved'))} onClick={createInterpJob}>Generate candidate label</button></div>
             {exampleStatus ? <p role="status" className="text-text-secondary mt-3 text-xs">{exampleStatus}</p> : null}
             {exampleReport ? <div className="mt-4 space-y-3">{(exampleReport.examples[exampleFeature] ?? []).map((row, index) => <article className="bg-bg-base rounded p-3" key={`${row.token_position}-${index}`}><p className="text-text-tertiary font-mono text-xs">activation {number(row.activation, 4)} · token {row.token_position}</p><p className="mt-2 whitespace-pre-wrap text-xs leading-5">{row.context}</p></article>)}
               {(exampleReport.examples[exampleFeature] ?? []).length === 0 ? <p className="text-text-tertiary text-xs">No positive activations appeared in this bounded scan. Try a larger scan or another feature.</p> : null}</div> : null}

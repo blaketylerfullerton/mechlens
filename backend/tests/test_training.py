@@ -111,6 +111,8 @@ def test_store_recovery_cursor_and_terminal_cancel(tmp_path):
     assert [m["tokens"] for m in reopened.metrics(active["id"], after=1)] == [2]
     with pytest.raises(KeyError):
         reopened.get("missing")
+    job = reopened.create_interp_job(active["id"], "artifact", [3, 7], "http://127.0.0.1:8080", "local-model")
+    assert reopened.list_interp_jobs()[0] == job
 
 
 def test_dataset_exhaustion_preserves_checkpoint(tmp_path, model, config):
