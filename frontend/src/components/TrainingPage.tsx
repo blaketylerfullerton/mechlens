@@ -192,35 +192,33 @@ export function TrainingPage({ onInspect }: { onInspect: (id: string) => void })
     <header className="mb-6 flex shrink-0 flex-wrap items-start justify-between gap-4">
       <div><p className="text-fn mb-3 font-mono text-xs uppercase tracking-[0.16em]">SAE workspace</p>
         <h1 className="text-3xl font-medium tracking-tight">Train a dictionary. Look inside it.</h1>
-        <p className="text-text-secondary mt-3 max-w-2xl text-sm leading-6">Learn sparse features from a frozen language model. Choose a layer, feed it text, and watch the measurements arrive.</p></div>
+        <p className="text-text-secondary mt-3 max-w-2xl text-sm leading-6">Learn sparse features from a frozen language model. Choose a layer, feed it text, and watch the measurements arrive.</p>
+        <ol className="text-text-tertiary mt-4 flex flex-wrap gap-2 text-xs" aria-label="Dictionary workflow"><li className="border-fn bg-fn/10 text-fn rounded border px-2 py-1">1 · Set up</li><li className="border-border-subtle rounded border px-2 py-1">2 · Train</li><li className="border-border-subtle rounded border px-2 py-1">3 · Inspect</li><li className="border-border-subtle rounded border px-2 py-1">4 · Interpret</li></ol></div>
       <div className="text-text-tertiary space-y-2 text-xs"><p>Backend resources · {options?.device ?? 'connecting'}</p><ResourceMeter /></div>
     </header>
     <div className="grid min-h-0 flex-1 gap-8 lg:grid-cols-[320px_minmax(0,1fr)]">
       <aside className="min-h-0 space-y-7 overflow-y-auto pr-1 lg:pb-6">
         <form onSubmit={start} className="border-border-subtle bg-bg-surface space-y-5 rounded border p-5">
-          <h2 className="text-lg font-medium">New training run</h2>
-          <button className={`${button} w-full`} type="button" onClick={() => {
-            setLayer(Math.floor((options?.layers ?? 26) / 2)); setFeatures(4096); setTokens(32768);
-            setDataset('tiny-stories'); setBatchSize(256); setContextSize(128); setLearningRate(0.0003);
-            setSparsity(0.1); setSeed(42); setEvaluationSequences(64)
-          }}>Use small validation preset</button>
-          <p className="text-text-tertiary text-xs">32,768 training tokens checks the workflow. It does not establish feature quality.</p>
+          <h2 className="text-lg font-medium">What are you trying to do?</h2><p className="text-text-tertiary text-xs">Start simple. You can refine the training plan later.</p><div className="grid grid-cols-2 gap-2"><button className={`${button} w-full`} type="button" onClick={() => { setLayer(Math.floor((options?.layers ?? 26) / 2)); setFeatures(4096); setTokens(32768); setDataset("tiny-stories"); setBatchSize(256); setContextSize(128); setLearningRate(0.0003); setSparsity(0.1); setSeed(42); setEvaluationSequences(64) }}>Quick check</button><button className={`${button} border-fn/50 bg-fn/5 text-fn w-full`} type="button" onClick={() => { setLayer(Math.floor((options?.layers ?? 26) / 2)); setFeatures(4096); setTokens(131072); setDataset("tiny-stories"); setBatchSize(256); setContextSize(128); setLearningRate(0.0003); setSparsity(0.1); setSeed(42); setEvaluationSequences(64) }}>Useful pilot</button></div>
+          <p className="text-text-tertiary text-xs">Useful pilot is the recommended start for feature inspection. Quick check only validates the workflow.</p>
           <label className="text-text-secondary block text-xs">Hugging Face model<select className={field} value={repository} onChange={(e) => setRepository(e.target.value)}>{(options?.supported_models ?? ['google/gemma-2-2b']).map((id) => <option key={id} value={id}>{id}</option>)}</select></label>
           <button className={`${button} w-full`} type="button" disabled={busy} onClick={prepareModel}>Download / load model</button>
           <div className="border-border-subtle rounded border p-3"><p className="text-text-tertiary text-xs">Loaded model</p><p className="mt-1 break-all text-sm">{options?.model ?? 'Connecting…'}</p>
             <p role="status" className="text-text-secondary mt-2 text-xs">{options?.readiness === 'ready' ? 'Weights ready · base model stays frozen' : options?.readiness ?? 'Checking backend'}</p>
             {options && options.readiness !== 'ready' ? <p className="text-text-tertiary mt-2 text-xs">The backend prepares model weights. For gated models, accept the model license on Hugging Face and sign in on the backend host.</p> : null}</div>
-          <div className="grid grid-cols-2 gap-3">
-            <label className="text-text-secondary text-xs">Layer<input className={field} type="number" min="0" max={(options?.layers ?? 26) - 1} value={layer} onChange={(e) => setLayer(Number(e.target.value))} required /></label>
-            <label className="text-text-secondary text-xs">Features<select className={field} value={features} onChange={(e) => setFeatures(Number(e.target.value))}>{[256, 1024, 4096, 16384].map((n) => <option key={n} value={n}>{n.toLocaleString()}</option>)}</select></label>
-          </div>
+          <label className="text-text-secondary block text-xs">Layer<input className={field} type="number" min="0" max={(options?.layers ?? 26) - 1} value={layer} onChange={(e) => setLayer(Number(e.target.value))} required /></label>
+          <details className="text-text-secondary text-xs"><summary className="cursor-pointer">Training settings</summary><div className="mt-4 space-y-4">
+            <label className="block">Dictionary features<select className={field} value={features} onChange={(e) => setFeatures(Number(e.target.value))}>{[256, 1024, 4096, 16384].map((n) => <option key={n} value={n}>{n.toLocaleString()}</option>)}</select></label>
+          </div></details>
           <label className="text-text-secondary block text-xs">Dataset<select className={field} value={dataset} onChange={(e) => setDataset(e.target.value)}><option value="tiny-stories">TinyStories · train / validation</option><option value="text">My text · separate evaluation</option></select></label>
           {dataset === 'text' ? <><label className="text-text-secondary block text-xs">Training text<textarea className={field} rows={5} value={trainingText} onChange={(e) => setTrainingText(e.target.value)} required maxLength={2000000} /></label><label className="text-text-secondary block text-xs">Held-out evaluation text<textarea className={field} rows={3} value={evaluationText} onChange={(e) => setEvaluationText(e.target.value)} required maxLength={200000} /></label></> : null}
+          <details className="text-text-secondary text-xs"><summary className="cursor-pointer">More training controls</summary><div className="mt-4 space-y-4">
           <label className="text-text-secondary block text-xs">Training token budget<input className={field} type="number" min={batchSize} max="100000000" step={batchSize} value={tokens} onChange={(e) => setTokens(Number(e.target.value))} required /></label>
           <label className="text-text-secondary block text-xs">Sparsity penalty · L1<input className={field} type="number" min="0" max="100" step="any" value={sparsity} onChange={(e) => setSparsity(Number(e.target.value))} required /></label>
           <label className="text-text-secondary block text-xs">Held-out evaluation sequences<input className={field} type="number" min="1" max="2048" value={evaluationSequences} onChange={(e) => setEvaluationSequences(Number(e.target.value))} required /></label>
           <label className="text-text-secondary block text-xs leading-5"><input className="mr-2" type="checkbox" checked={compareHuggingface} onChange={(e) => setCompareHuggingface(e.target.checked)} />Check Hugging Face agreement · optional
             <span className="text-text-tertiary mt-1 block">Loads a second copy of the model on the backend CPU. Adds RAM use and evaluation time; enable on Spark when ready.</span></label>
+          </div></details>
           <details className="text-text-secondary text-xs"><summary className="cursor-pointer">Advanced settings</summary><div className="mt-4 space-y-4">
             <label className="block">Batch tokens<input className={field} type="number" min="16" max="8192" value={batchSize} onChange={(e) => setBatchSize(Number(e.target.value))} required /></label>
             <label className="block">Context tokens<input className={field} type="number" min="8" max="2048" value={contextSize} onChange={(e) => setContextSize(Number(e.target.value))} required /></label>
@@ -228,7 +226,7 @@ export function TrainingPage({ onInspect }: { onInspect: (id: string) => void })
             <label className="block">Seed<input className={field} type="number" min="0" max="4294967295" value={seed} onChange={(e) => setSeed(Number(e.target.value))} required /></label>
           </div></details>
           <p className="text-text-tertiary text-xs leading-5">{options?.estimate_note} Small runs check the workflow; feature quality needs evaluation. Training and inference share one queue.</p>
-          <button className={`${button} bg-fn/10 text-fn w-full`} disabled={busy || options?.readiness !== 'ready'} type="submit">{busy ? 'Working…' : 'Start training'}</button>
+          <button className={`${button} bg-fn/10 text-fn w-full`} disabled={busy || options?.readiness !== 'ready'} type="submit">{busy ? 'Working…' : 'Train dictionary'}</button>
         </form>
         <section><h2 className="mb-3 text-sm font-medium">Run history</h2><div className="space-y-2">
           {runs.length === 0 ? <p className="text-text-tertiary text-xs">Your runs will be saved here.</p> : runs.map((item) => <button className={`w-full rounded border p-3 text-left ${selected === item.id ? 'border-fn/50 bg-fn/5' : 'border-border-subtle'}`} key={item.id} onClick={() => setSelected(item.id)}>
