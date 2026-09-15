@@ -1,0 +1,162 @@
+{
+  "source": {
+    "trace": "0405a85811f4.json",
+    "prompt": "The Golden Gate Bridge is located in the city of",
+    "model": "gemma-2-2b",
+    "release": "gemma-scope-2b-pt-res-canonical",
+    "width": "16k",
+    "hook": "hook_resid_post",
+    "top_k": 16,
+    "n_layers": 26
+  },
+  "cell": {
+    "layer": 20,
+    "position": 4,
+    "token": " Bridge",
+    "l0": 83,
+    "d_model": 2304,
+    "d_sae": 16384
+  },
+  "residual": {
+    "head": [
+      -11.88,
+      2.53,
+      -6.28,
+      4.56,
+      11.31,
+      -6.34,
+      7.38,
+      1.4,
+      -3.77,
+      -6.28,
+      -7.09,
+      -4.53,
+      1.94,
+      0.61,
+      7.31,
+      -0.14,
+      -7.56,
+      8.06,
+      -11.62,
+      1.75,
+      -3.12,
+      -0.83,
+      -1.41,
+      9.88,
+      -9.0,
+      -10.88,
+      -4.09,
+      3.31,
+      1.27,
+      3.02,
+      6.56,
+      1.52,
+      1.0,
+      11.44,
+      15.31,
+      7.06,
+      5.56,
+      0.11,
+      2.2,
+      8.62,
+      3.05,
+      -0.41,
+      -5.78,
+      -4.19,
+      -1.91,
+      2.12,
+      9.69,
+      -5.0
+    ],
+    "norm": 362.9,
+    "min": -68.5,
+    "max": 204.0
+  },
+  "features": [
+    {
+      "index": 3124,
+      "activation": 104.65,
+      "label": "San Francisco, Oakland, Bay Area"
+    },
+    {
+      "index": 6492,
+      "activation": 81.45,
+      "label": "bridge connection or circuitry <ctrl63>"
+    },
+    {
+      "index": 1370,
+      "activation": 66.19,
+      "label": "bridge and crossing"
+    },
+    {
+      "index": 1466,
+      "activation": 44.34,
+      "label": "California legal and official mentions"
+    },
+    {
+      "index": 7182,
+      "activation": 37.09,
+      "label": "state or outcome description"
+    },
+    {
+      "index": 1692,
+      "activation": 33.86,
+      "label": " deficiencies"
+    },
+    {
+      "index": 9308,
+      "activation": 29.49,
+      "label": "organizations, institutions, fellowships"
+    },
+    {
+      "index": 6631,
+      "activation": 28.86,
+      "label": "The Future"
+    },
+    {
+      "index": 1060,
+      "activation": 27.26,
+      "label": "past and present verbs after \"has\""
+    },
+    {
+      "index": 9768,
+      "activation": 25.0,
+      "label": "achieve`, `control`, `conduct`, `make`, `address`"
+    },
+    {
+      "index": 14300,
+      "activation": 24.81,
+      "label": "general relativity states"
+    },
+    {
+      "index": 3019,
+      "activation": 22.72,
+      "label": "acr module import"
+    },
+    {
+      "index": 13444,
+      "activation": 20.8,
+      "label": "Bj\u00f6rn, B. acronyms"
+    },
+    {
+      "index": 15347,
+      "activation": 19.83,
+      "label": "institutions and organizations"
+    },
+    {
+      "index": 6915,
+      "activation": 16.83,
+      "label": "gauge theories and dependence"
+    },
+    {
+      "index": 15624,
+      "activation": 16.72,
+      "label": "government departments and agencies"
+    }
+  ],
+  "diagnostics": {
+    "l0_mean": 68.9,
+    "explained_variance_mean": 0.8869,
+    "explained_variance_min": 0.8489
+  }
+}

@@ -1,0 +1,55 @@
+/* The How page. Shared tokens stay in index.css; shared chrome in home.css. */
+
+.how-hero { padding-block: 4.5rem 3rem; }
+.how-hero h1 { font-size: clamp(2.75rem, 5.5vw, 4.5rem); line-height: 1.04; font-weight: 550; letter-spacing: -.055em; }
+.how-lead { max-width: 54ch; margin-top: 1.5rem; font-size: 1.0625rem; line-height: 1.7; color: var(--color-text-secondary); }
+
+.how-body { display: grid; grid-template-columns: 14rem minmax(0, 1fr); gap: 3rem; padding-block: 3rem 5rem; border-top: 1px solid var(--color-border-subtle); }
+
+/* Contents rail: a map of a long page, not decoration. */
+.how-contents { position: sticky; top: 2rem; align-self: start; }
+.how-contents ol { margin-top: 1rem; list-style: none; display: grid; gap: .1rem; counter-reset: none; }
+.how-contents a { display: block; padding: .5rem .75rem; border-left: 1px solid var(--color-border-subtle); font-size: .8125rem; line-height: 1.5; color: var(--color-text-tertiary); }
+.how-contents a:hover { color: var(--color-text-secondary); border-left-color: var(--color-border-strong); }
+.how-contents a.active { color: var(--color-fn); border-left-color: var(--color-fn); }
+
+/* --- prose ------------------------------------------------------------ */
+.prose { min-width: 0; max-width: 72ch; font-size: 1rem; line-height: 1.75; color: var(--color-text-secondary); }
+.prose > :first-child { margin-top: 0; }
+.prose p { margin-block: 1.15rem; }
+.prose strong { color: var(--color-text-primary); font-weight: 550; }
+.prose em { font-style: italic; }
+.prose a { color: var(--color-fn); }
+
+.prose h2 { margin-top: 3.5rem; padding-top: 2rem; border-top: 1px solid var(--color-border-subtle); font-size: clamp(1.5rem, 2.4vw, 2rem); font-weight: 500; letter-spacing: -.04em; line-height: 1.2; color: var(--color-text-primary); scroll-margin-top: 2rem; }
+.prose h2:first-of-type { margin-top: 2.5rem; }
+
+.prose hr { display: none; }
+
+.prose code { padding: .12em .38em; border: 1px solid var(--color-border-subtle); border-radius: var(--radius-xs); background: var(--color-bg-surface); font-family: var(--font-mono); font-size: .8125em; color: var(--color-text-primary); }
+
+/* A pulled-aside caveat. It is not a decorative quote, so it is not italic
+   and it does not shrink — §3.1: a caveat never demotes below the claim. */
+.prose blockquote { margin-block: 1.75rem; padding: 1.1rem 1.35rem; border: 1px solid var(--color-border-subtle); border-left: 1px solid var(--color-fn); border-radius: var(--radius-xs); background: var(--color-bg-surface); }
+.prose blockquote p { margin-block: .4rem; font-size: .9375rem; }
+.prose blockquote > :first-child { margin-top: 0; }
+.prose blockquote > :last-child { margin-bottom: 0; }
+.prose blockquote strong { color: var(--color-fn); }
+
+/* --- math ------------------------------------------------------------- */
+/* Display maths gets its own surface: it is the machine's statement, and it
+   reads as a figure rather than as a sentence that happens to contain symbols. */
+/* rehype-katex emits .katex-display as a sibling of the paragraph, not inside
+   it, so the surface goes on the block itself. */
+.prose .katex-display { display: block; margin-block: 1.75rem; padding: 1.5rem 1.25rem; border: 1px solid var(--color-border-subtle); border-radius: var(--radius-xs); background: var(--color-bg-surface); overflow-x: auto; overflow-y: hidden; }
+.prose .katex { color: var(--color-text-primary); font-size: 1.05em; }
+.prose .katex-display > .katex { font-size: 1.15em; }
+/* Inline maths sits in a sentence and must not outgrow it. */
+.prose p > .katex { font-size: 1em; }
+
+@media (max-width: 60rem) {
+  .how-body { grid-template-columns: 1fr; gap: 2rem; }
+  .how-contents { position: static; }
+  .how-contents ol { grid-auto-flow: row; }
+  .prose h2 { margin-top: 2.5rem; }
+}

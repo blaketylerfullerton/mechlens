@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { IconBrandGithub, IconCheck, IconCopy } from '@tabler/icons-react'
 import './home.css'
+import { navigate } from './lib/routing'
 
 const REPO = 'https://github.com/blaketylerfullerton/mechlens'
 
@@ -44,6 +45,7 @@ function App() {
             <img src="/logo.svg" alt="" width={26} height={26} />mechlens
           </a>
           <div className="nav-links">
+            <a href="/how" onClick={navigate('/how')}>How</a>
             <a href="#setup">Setup</a>
             <a href={REPO}><IconBrandGithub size={16} stroke={1.5} />GitHub</a>
           </div>
@@ -84,7 +86,7 @@ function App() {
                 ))}
               </dl>
               <p className="note">The decoder-source atlas also reports its failed result: kNN preservation <code>0.143</code>, with <code>0</code> clusters earning a name.</p>
-              <a className="text-link" href={`${REPO}#readme`}>Read the methodology on GitHub ↗</a>
+              <a className="text-link" href="/how" onClick={navigate('/how')}>Read the method, with the formulas →</a>
             </div>
           </details>
         </Section>
