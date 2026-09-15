@@ -34,6 +34,8 @@ export interface Selection {
 
 function App() {
   const [page, setPage] = useState<'viewer' | 'training'>('viewer')
+  const [trainingFeatures, setTrainingFeatures] = useState<Record<string, number>>({})
+  const [trainingVisited, setTrainingVisited] = useState(false)
   const [trainingRunId, setTrainingRunId] = useState<string | null>(null)
   const { error, storageNotice, progress, run, reset, status, trace } = useTrace(trainingRunId)
   const [selection, setSelection] = useState<Selection | null>(null)
@@ -109,11 +111,12 @@ function App() {
       <nav aria-label="Workspace" className="border-border-subtle mx-auto flex w-full max-w-[1800px] shrink-0 items-center gap-6 border-b px-8 py-4 text-sm">
         <span className="mr-4 font-medium tracking-tight">mechlens</span>
         {(['viewer', 'training'] as const).map((item) => <button key={item} aria-current={page === item ? 'page' : undefined}
-          className={page === item ? 'text-text-primary' : 'text-text-tertiary'} onClick={() => setPage(item)}>{item === 'viewer' ? 'Explore' : 'Training'}</button>)}
+          className={page === item ? 'text-text-primary' : 'text-text-tertiary'} onClick={() => { setPage(item); if (item === 'training') setTrainingVisited(true) }}>{item === 'viewer' ? 'Explore' : 'Training'}</button>)}
       </nav>
-      {page === 'training' ? <TrainingPage onInspect={(id) => { reset(); setTrainingRunId(id); setPage('viewer'); setInspectorOpen(true) }} /> : <>
+      {trainingVisited ? <div hidden={page !== 'training'} className={page === 'training' ? 'min-h-0 flex-1 overflow-y-auto' : 'hidden'}><TrainingPage active={page === 'training'} onInspect={(id) => { reset(); setTrainingRunId(id); setPage('viewer'); setInspectorOpen(true) }} /></div> : null}
+      {page === 'viewer' ? <>
       {trainingRunId ? <div className="mx-auto flex w-full max-w-[1800px] shrink-0 items-center justify-between gap-4 px-8 pt-4 text-sm">
-        <p>Custom SAE · {trainingRunId.slice(0, 8)} · Unlabeled features. Enter a prompt to inspect its saved checkpoint.</p>
+        <div><button className="text-fn mb-2 text-xs" onClick={() => { setTrainingVisited(true); setPage('training') }}>Back to training run</button><p>Dictionary {trainingRunId.slice(0, 8)} · Enter a prompt, then select an active feature to find examples.</p></div>
         <button className="text-fn shrink-0" onClick={() => { reset(); setTrainingRunId(null) }}>Use Gemma Scope</button>
       </div> : null}
       <div className="mx-auto flex w-full min-h-0 max-w-[1800px] flex-1 flex-col gap-5 px-4 py-5 sm:px-6 lg:flex-row lg:px-8">
@@ -152,6 +155,9 @@ function App() {
                 </div>
               <div className="min-h-0 flex-1">
                 <TraceViewer
+                  trainingRunId={trainingRunId}
+                  selectedFeature={trainingRunId ? trainingFeatures[trainingRunId] ?? null : null}
+                  onSelectFeature={(feature) => { if (trainingRunId) setTrainingFeatures((current) => ({ ...current, [trainingRunId]: feature })) }}
                   error={null}
                   selection={currentSelection}
                   status={status}
@@ -162,7 +168,7 @@ function App() {
           </section>
         ) : null}
       </div>
-      </>}
+      </> : null}
     </div>
   )
 }

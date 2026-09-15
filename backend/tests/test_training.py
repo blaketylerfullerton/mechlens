@@ -352,3 +352,29 @@ def test_validation_progress_is_persisted_before_completion(tmp_path, model, con
     final = store.get(run["id"])
     assert final["validation_progress"]["completed"] == final["evaluation"]["sequences"]
     assert final["validation"]["identity_substitution"]["status"] == "passed"
+
+
+def test_training_options_identify_only_the_ready_model(tmp_path, model):
+    from fastapi import FastAPI, HTTPException
+    from app.training.api import router
+
+    loading = False
+
+    def get_model():
+        if loading:
+            raise HTTPException(503, "Model is loading")
+        return model
+
+    app = FastAPI()
+    app.include_router(router(get_model, threading.Lock(), RunStore(tmp_path)))
+    with TestClient(app) as client:
+        # An injected/unsupported model must not be mistaken for the default.
+        assert client.get('/training/options').json()['model_repository'] is None
+        model.cfg.model_name = 'gpt2'
+        ready = client.get('/training/options').json()
+        assert ready['model_repository'] == 'openai-community/gpt2'
+        assert ready['readiness'] == 'ready'
+        loading = True
+        preparing = client.get('/training/options').json()
+        assert preparing['model_repository'] is None
+        assert preparing['readiness'] != 'ready'

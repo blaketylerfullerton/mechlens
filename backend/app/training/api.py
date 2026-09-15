@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
@@ -18,7 +19,13 @@ from ..service.scheduling import serialized
 from .auto_interp import generate, load_profiles
 from .examples import collect_feature_examples, save_feature_examples
 from .runner import Cancelled, TrainingConfig, load_artifact, train
-from .store import RunStore
+from .store import RunStore, TERMINAL
+
+
+class BatchRequest(BaseModel):
+    config: TrainingConfig
+    layers: list[int] = Field(min_length=1, max_length=256)
+    model_repository: str
 
 
 class InspectRequest(BaseModel):
@@ -66,8 +73,10 @@ def router(get_model, compute_lock, store: RunStore, prepare_model=None):
             model_name, layers, dimension = MODEL_NAME, None, None
             readiness = str(exc.detail)
             device = pick_device()[0]
-        return dict(model=model_name, layers=layers, d_in=dimension, device=device,
-                    supported_models=list(SUPPORTED_TRAINING_MODELS),
+        return dict(model=model_name, model_repository=next((repo for repo, name in SUPPORTED_TRAINING_MODELS.items()
+                    if name == model_name), None) if readiness == "ready" else None,
+                    layers=layers, d_in=dimension, device=device,
+                    supported_models=list(SUPPORTED_TRAINING_MODELS), multi_layer=True, storage_management=True,
                     readiness=readiness, architecture="standard", datasets=["tiny-stories", "text"],
                     resume_supported=True, compute_policy="One training or inference job at a time",
                     estimate_note="Runtime and memory presets are unbenchmarked on this host.")
@@ -81,7 +90,7 @@ def router(get_model, compute_lock, store: RunStore, prepare_model=None):
 
     @api.get("/runs")
     def list_runs():
-        return [summary(run) for run in store.list()]
+        return [summary(run) for run in store.list(limit=None)]
 
     @api.post("/runs", status_code=202)
     @serialized
@@ -96,6 +105,70 @@ def router(get_model, compute_lock, store: RunStore, prepare_model=None):
         run = store.create(config.model_dump())
         enqueue(run, model)
         return summary(run)
+
+    @api.post("/batches", status_code=202)
+    @serialized
+    def create_batch(req: BatchRequest):
+        from ..model_cache import SUPPORTED_TRAINING_MODELS
+        model = get_model()
+        if SUPPORTED_TRAINING_MODELS.get(req.model_repository) != model.cfg.model_name:
+            raise HTTPException(409, "Prepare the selected model before starting training")
+        layers = sorted(set(req.layers))
+        if len(layers) != len(req.layers) or any(layer < 0 or layer >= model.cfg.n_layers for layer in layers):
+            raise HTTPException(422, f"Choose unique layers between 0 and {model.cfg.n_layers - 1}")
+        if req.config.context_size > model.cfg.n_ctx:
+            raise HTTPException(422, f"Context size must be at most {model.cfg.n_ctx}")
+        if str(model.cfg.normalization_type).endswith("Pre"):
+            raise HTTPException(422, "Training needs unprocessed model weights")
+        configs = [dict(req.config.model_dump(), layer=layer) for layer in layers]
+        batch = store.create_batch(configs, model.cfg.model_name)
+        for run in batch:
+            enqueue(run, model)
+        return dict(batch_id=batch[0]["batch_id"], runs=[summary(run) for run in batch])
+
+    @api.post("/batches/{batch_id}/cancel")
+    @serialized
+    def cancel_batch(batch_id: str):
+        batch = [run for run in store.list(limit=None) if run.get("batch_id") == batch_id]
+        if not batch:
+            raise HTTPException(404, "Unknown training batch")
+        return [summary(store.cancel(run["id"])) for run in batch]
+
+    def compute_busy():
+        return any(job.status in {"pending", "running"} for job in list(jobs.JOBS.values()))
+
+    @api.get("/storage")
+    def storage():
+        occupied = compute_busy()
+        records = []
+        for run in store.list(limit=None):
+            reason = "Stop this run before deleting it" if run["status"] not in TERMINAL else (
+                "Wait for queued and running operations to finish before deleting" if occupied else None)
+            records.append(dict(id=run["id"], model=run.get("model") or (run.get("provenance") or {}).get("model"),
+                layer=run["config"]["layer"], features=run["config"]["features"], status=run["status"],
+                created_at=run["created_at"], has_checkpoint=bool(run.get("checkpoint")),
+                bytes=store.storage_bytes(run["id"]), delete_blocked_reason=reason))
+        disk = shutil.disk_usage(store.root)
+        return dict(runs=records, total_bytes=sum(run["bytes"] for run in records),
+                    free_bytes=disk.free, checkpoint_policy="latest")
+
+    @api.delete("/runs/{run_id}")
+    @serialized
+    def delete_run(run_id: str):
+        get_run(run_id)
+        # Submission and model switching use this same scheduling lock. Waiting
+        # jobs may still need the checkpoint, even when the training run is terminal.
+        if compute_busy():
+            raise HTTPException(409, "Wait for queued and running operations to finish before deleting")
+        if not compute_lock.acquire(blocking=False):
+            raise HTTPException(409, "Compute is using training files. Try again when it finishes")
+        try:
+            store.delete(run_id)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        finally:
+            compute_lock.release()
+        return dict(deleted=run_id)
 
     def enqueue(run, model, resume=False):
         def execute(_report):

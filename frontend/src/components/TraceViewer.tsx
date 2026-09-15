@@ -8,6 +8,9 @@ import { EmptyState } from './trace/EmptyState'
 import { Inspector } from './trace/Inspector'
 
 type TraceViewerProps = {
+  trainingRunId?: string | null
+  selectedFeature?: number | null
+  onSelectFeature?: (id: number) => void
   trace: Trace | null
   status: RunState
   error: string | null
@@ -37,7 +40,8 @@ type TraceViewerProps = {
  * a single vertical stack of panels, which is a shape that is happy at a fixed
  * 24rem and was never happy sharing one.
  */
-export function TraceViewer({ trace, status, error, selection, composer }: TraceViewerProps) {
+export function TraceViewer({ trace, status, error, selection, composer, trainingRunId, selectedFeature, onSelectFeature }: TraceViewerProps) {
+  useErrorToast(error)
   if (!trace || trace.steps.length === 0 || selection === null) {
     return <EmptyState composer={composer} error={error} status={status} />
   }
@@ -55,14 +59,13 @@ export function TraceViewer({ trace, status, error, selection, composer }: Trace
     )
   }
 
-  useErrorToast(error)
 
   return (
     <div className="enter flex h-full min-h-0 flex-col">
       {/* Its own scroll, so a long feature list never drags the stage beside it
           taller than the window. */}
       <div className="mask-fade-b min-h-0 flex-1 overflow-y-auto">
-        <Inspector state={selectedState} step={selectedStep} running={status === 'running'} />
+        <Inspector selectedFeature={selectedFeature} onSelectFeature={onSelectFeature} trainingRunId={trainingRunId} state={selectedState} step={selectedStep} running={status === 'running'} />
       </div>
     </div>
   )

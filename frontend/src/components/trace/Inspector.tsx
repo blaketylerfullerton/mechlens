@@ -1,3 +1,4 @@
+import { FeatureExamples } from '../training/FeatureExamples'
 import type { Feature, LayerState, TokenStep, TopToken } from '@/lib/api-types'
 
 import { formatNumber, visibleToken } from './format'
@@ -28,13 +29,13 @@ function Distribution({ tokens }: { tokens: TopToken[] }) {
   )
 }
 
-function FeatureList({ features }: { features: Feature[] }) {
+function FeatureList({ features, selected, onSelect }: { features: Feature[]; selected?: number | null; onSelect?: (id: number) => void }) {
   const maximum = Math.max(...features.map((feature) => feature.activation), 0)
   return (
     <ol className="divide-border-subtle divide-y font-mono text-[12px]">
       {features.slice(0, 8).map((feature) => (
         <li className="flex items-center gap-2 py-1.5" key={feature.index}>
-          <span className="text-text-primary w-16 shrink-0">#{feature.index}</span>
+          {onSelect ? <button aria-pressed={selected === feature.index} aria-label={`Inspect feature ${feature.index}`} className={`w-16 shrink-0 rounded px-1 py-2 text-left ${selected === feature.index ? 'bg-fn/15 text-fn' : 'text-fn hover:bg-fn/10'}`} onClick={() => onSelect(feature.index)}>#{feature.index}</button> : <span className="text-text-primary w-16 shrink-0">#{feature.index}</span>}
           <Bar ratio={maximum > 0 ? feature.activation / maximum : 0} />
           <span className="text-text-secondary flex-1 text-right tabular-nums">
             {formatNumber(feature.activation)}
@@ -61,7 +62,7 @@ function NoReadout({ running }: { running: boolean }) {
  * Everything about the one (layer, token) cell the reader has selected, plus
  * the position's own next-token distribution. The right-hand column.
  */
-export function Inspector({ state, step, running = false }: { state: LayerState; step: TokenStep; running?: boolean }) {
+export function Inspector({ state, step, running = false, trainingRunId, selectedFeature, onSelectFeature }: { state: LayerState; step: TokenStep; running?: boolean; trainingRunId?: string | null; selectedFeature?: number | null; onSelectFeature?: (id: number) => void }) {
   return (
     <aside className="space-y-3">
       <section className="border-fn/30 bg-fn/[0.05] rounded-[2px] border p-3">
@@ -86,9 +87,12 @@ export function Inspector({ state, step, running = false }: { state: LayerState;
 
       {state.features.length > 0 ? (
         <Panel note={`${state.features.length} active`} title="SAE features">
-          <FeatureList features={state.features} />
+          {trainingRunId ? <p className="text-text-secondary mb-2 text-xs">Select a feature to see example passages.</p> : null}
+          <FeatureList features={state.features} selected={selectedFeature} onSelect={trainingRunId ? onSelectFeature : undefined} />
         </Panel>
       ) : null}
+
+      {trainingRunId && selectedFeature != null ? <FeatureExamples runId={trainingRunId} featureId={selectedFeature} /> : null}
 
       <Panel note={`H ${formatNumber(step.logits.entropy)}`} title="Next-token distribution">
         <Distribution tokens={step.logits.top_k} />

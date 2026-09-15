@@ -158,6 +158,12 @@ def checkpoint(store, run_id, sae, trainer, manifest):
     os.replace(temporary, final)
     result = dict(path=str(final.relative_to(store.root)), **manifest)
     store.update(run_id, checkpoint=result, resume_supported=True)
+    # Keep the last good checkpoint until its replacement has been fully saved.
+    # At completion this same directory is both the final and resumable result.
+    try:
+        store.prune_checkpoints(run_id, result["path"])
+    except OSError as exc:
+        store.update(run_id, storage_warning=f"Could not remove older checkpoints: {exc}")
     return result
 
 
