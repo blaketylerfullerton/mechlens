@@ -10,6 +10,10 @@ the saved trace — Gemma Scope SAE features, Neuronpedia labels, the logit lens
 and attribution. A FastAPI service sits in front of all of it, so tracing and
 feature steering are reachable over HTTP.
 
+There is a second half: a training workspace that trains your *own* SAE on one
+layer, measures how good it is, and labels its features with a local LLM. See
+[Training your own SAE](#training-your-own-sae).
+
 **Today this is a repo you clone and set up**, not a tool you install — see
 [Setup](#setup). Making it one command is the plan, and it is written down in
 [Where this is going](#where-this-is-going).
@@ -49,9 +53,12 @@ Roughly in order:
 5. **Bring your own SAE** — load a SAELens-format file against a supported
    model, auto-interp labels optional. Covers most of "my own model" for almost
    nothing.
-6. **SAE training workspace — planned.** A second page to train a single-layer
-   SAE, watch live metrics, and inspect the saved result. Start with Gemma;
-   broader Hugging Face model support and auto-interp follow later. See the
+6. **Training beyond one layer.** The training workspace
+   ([below](#training-your-own-sae)) trains one layer at a time and inspects
+   the result in its own page. What it cannot do is hand that SAE to the trace
+   viewer — `sae_cache.py` is hardwired to the Gemma Scope release — so a
+   trained dictionary gets no atlas position, no attribution and no
+   multi-layer view. Closing that is the same work as item 5. See the
    [training plan](docs/sae-training.md) and
    [implementation tickets](docs/sae-training-tickets.md).
 
@@ -70,7 +77,35 @@ saying how much to trust what you are looking at.
 python -m venv venv && source venv/bin/activate
 pip install -r backend/requirements.txt
 huggingface-cli login   # gemma is gated: accept the license at hf.co/google/gemma-2-2b
+npm --prefix frontend install
 ```
+
+The CLI below needs only the Python half. The browser interface needs both.
+
+## Running it
+
+```bash
+make dev     # backend on :8000, frontend on :5173, both in the background
+make down    # stop them
+```
+
+`make dev` copies `frontend/.env.example` into place on first run and waits for
+the backend to answer `/health` before printing its URLs. The model loads in the
+background, so `/trace` answers 503 until it is ready and the UI retries on its
+own. Logs and PIDs live in `.dev/` (gitignored).
+
+It refuses to start on top of a live run, which is not fussiness: a second vite
+cannot have :5173, so it silently takes :5174 and you end up with the browser on
+one port and a stale server on the other.
+
+```bash
+make site    # the landing page on :5180, foreground
+```
+
+`site/` is the landing page and is deliberately standalone — no backend, no
+model, no GPU — because it is meant to deploy somewhere public, unlike
+`frontend/`, which is the local tool. It is not deployed anywhere today; that is
+roadmap item 1.
 
 ## Use
 
@@ -316,6 +351,81 @@ Labels live in `Trace.labels` keyed `"layer/index"`, not on each `Feature`: a
 feature recurs ~2x per trace, so copying the text onto every occurrence would
 roughly double the JSON for no added information.
 
+## Training your own SAE
+
+Everything above reads a *pretrained* dictionary: Gemma Scope's SAEs, labelled
+by Neuronpedia. The Training page is the other direction — train one yourself,
+on one layer, and find out how good it is.
+
+`POST /training/runs` takes a `TrainingConfig` (`app/training/runner.py`) and
+trains a SAELens `StandardTrainingSAE` on `blocks.<layer>.hook_resid_post`:
+
+| | |
+| --- | --- |
+| `layer`, `features` | which site, and dictionary width (16–65,536) |
+| `training_tokens`, `batch_size`, `context_size` | the token budget |
+| `learning_rate`, `l1_coefficient` | step size and the sparsity penalty |
+| `dataset` | `tiny-stories`, or your own pasted `training_text` |
+| `seed` | the whole run is seeded |
+
+Evaluation text must differ from training text, and the validator rejects a run
+where it does not. Measuring reconstruction on the data you fit is not a
+measurement.
+
+**What a finished run reports.** The same habit as every pass above — a number
+you can judge it by, not an assurance:
+
+| | |
+| --- | --- |
+| `explained_variance` | how much of the residual `decode(encode(x))` recovers |
+| `l0` | how many features actually fire per token |
+| `dead_fraction` | features that fired in no recent step, with the window recorded |
+| `loss_recovered` | substitute the reconstruction back into the model and measure next-token loss against the zero-ablation floor — the check that says whether the dictionary preserves what the model *does*, not just what its activations look like |
+| `identity_substitution` | the control for that test: substituting `x` for itself through the same hook and token mask must move the loss by ≤1e-6, or the harness is measuring itself |
+| `checkpoint_agreement` | save, reload, and require *exact* equality of encode and decode on held-out activations |
+| `compare_huggingface` | optional: the TransformerLens model against a CPU Hugging Face reference on four fixed prompts, with the bf16 cross-device tolerance stated rather than assumed |
+
+**Resume is exact, not approximate.** `POST /runs/{id}/resume` restores the SAE
+state, the trainer state *and* the CPU/CUDA/MPS RNG state, and refuses outright
+if the installed package versions have moved. A resumed run that silently
+diverges from an uninterrupted one would make every number above unreadable.
+
+**Auto-interp, because Neuronpedia has never seen your features.** A trained
+dictionary has no labels anywhere, so the workspace makes its own: collect each
+feature's top-activating examples (`POST /runs/{id}/examples`), then send them
+to a local OpenAI-compatible server (`POST /runs/{id}/interp-jobs`).
+
+```toml
+# <training-data-dir>/config/config.toml, or set MECHLENS_CONFIG_DIR
+[auto_interp.profile.local]
+base_url = "http://127.0.0.1:11434/v1"   # ollama serve
+model = "qwen3:14b"
+response_mode = "json_schema"
+```
+
+The model answers into a fixed schema — `label`, `summary`, `evidence`,
+`uncertainty` — and `uncertainty` is not decoration. A label is one LLM's guess
+about another model's feature, which is the weakest claim in this repo, and it
+says so. Secrets stay as environment-variable *references* in the config, never
+values.
+
+`POST /runs/{id}/trace` then traces a prompt through your SAE, with the logit
+lens alongside it. That is a single layer and it stays inside the Training page:
+your dictionary has no atlas position and no attribution, because the trace
+viewer's `sae_cache.py` still loads Gemma Scope and nothing else. Roadmap items
+5 and 6.
+
+```bash
+# a bounded run through the backend's shared compute queue, saved as JSON
+python -m app.training.benchmark --tokens 32768 --layer 12
+```
+
+Runs live under `MECHLENS_TRAINING_DIR` (default `backend/data/training/`) in a
+SQLite store that also tracks live metrics, batches of configs, per-run disk
+usage and checkpoint pruning. See the [training plan](docs/sae-training.md) and
+[training validation](docs/training-validation.md); real-model validation on the
+intended hardware has not been run yet.
+
 ## Layout
 
 | module | role |
@@ -333,10 +443,22 @@ roughly double the JSON for no added information.
 | `app/store.py` | save/load: JSON document plus its `.npy` sidecar |
 | `app/model_cache.py` | one model per process (loading gemma costs ~6s) |
 | `app/sae_cache.py` | one SAE per layer per process (~302MB each at 16k) |
-| `app/cli.py` | `trace` / `enrich` / `show` |
+| `app/cli.py` | `trace` / `enrich` / `show` / `experiment` |
+| `app/experiments.py` | the fixed-prefix intervention comparison behind `cli experiment` |
+| `app/identity.py` | dictionary and artifact fingerprints — what makes "same SAE" checkable |
+| `app/service/app.py` | the FastAPI service: `/trace`, `/steer`, `/atlas`, `/feature`, `/stats` |
+| `app/service/jobs.py` | background jobs and the shared compute lock both halves queue on |
+| `app/training/runner.py` | the SAE training loop, its checkpoints and its exact resume |
+| `app/training/api.py` | the `/training/*` routes — runs, batches, storage, examples, interp jobs |
+| `app/training/store.py` | SQLite run store: metrics, checkpoints, disk accounting, pruning |
+| `app/training/validation.py` | correctness checks — checkpoint round-trip, HF reference agreement |
+| `app/training/examples.py` | top-activating examples per trained feature |
+| `app/training/auto_interp.py` | labels for those features from a local OpenAI-compatible server |
 | `scripts/import_neuronpedia.py` | one-time load of the explanation export into SQLite |
 | `scripts/verify_neuronpedia_mapping.py` | proves our SAE features are the ones Neuronpedia labelled |
 | `scripts/build_feature_atlas.py` | one-time UMAP layout of every feature; the only module importing umap |
+| `frontend/` | the local tool — trace viewer, atlas, chat panel, Training page (vite, :5173) |
+| `site/` | the landing page; standalone, no backend, not deployed yet (:5180) |
 
 `LayerState.edges` holds `resid`/`attn`/`mlp` contributions once the
 attribution pass has run. `kind="sae"` edges — attributing a feature's own
