@@ -56,6 +56,15 @@ def router(get_model, compute_lock, store: RunStore, prepare_model=None):
         except KeyError:
             raise HTTPException(404, "Unknown training run") from None
 
+    def submit_for_run(run_id, execute):
+        # Submission endpoints hold the scheduling lock, so deletion cannot
+        # observe an untagged job between submission and this assignment.
+        job_id = jobs.submit(execute)
+        job = jobs.get(job_id)
+        if job is not None:
+            job.training_run_id = run_id
+        return job_id
+
     def summary(run):
         # Long private corpus text is retained on disk, not repeated in history polling.
         return dict(run, config={k: v for k, v in run["config"].items()
@@ -76,7 +85,7 @@ def router(get_model, compute_lock, store: RunStore, prepare_model=None):
         return dict(model=model_name, model_repository=next((repo for repo, name in SUPPORTED_TRAINING_MODELS.items()
                     if name == model_name), None) if readiness == "ready" else None,
                     layers=layers, d_in=dimension, device=device,
-                    supported_models=list(SUPPORTED_TRAINING_MODELS), multi_layer=True, storage_management=True,
+                    supported_models=list(SUPPORTED_TRAINING_MODELS), multi_layer=True, storage_management=True, model_downloads=True,
                     readiness=readiness, architecture="standard", datasets=["tiny-stories", "text"],
                     resume_supported=True, compute_policy="One training or inference job at a time",
                     estimate_note="Runtime and memory presets are unbenchmarked on this host.")
@@ -134,16 +143,54 @@ def router(get_model, compute_lock, store: RunStore, prepare_model=None):
             raise HTTPException(404, "Unknown training batch")
         return [summary(store.cancel(run["id"])) for run in batch]
 
-    def compute_busy():
-        return any(job.status in {"pending", "running"} for job in list(jobs.JOBS.values()))
+    def compute_busy(run_id):
+        return any(job.status in {"pending", "running"} and job.training_run_id == run_id
+                   for job in list(jobs.JOBS.values()))
+
+    @api.get("/models")
+    def models():
+        """Which supported base models are already in the Hugging Face cache.
+
+        Read-only: this reports what a "Prepare model" click would cost, so a
+        multi-gigabyte download is visible before it starts. Deleting cached
+        weights is deliberately not offered here — re-fetching gemma-2-2b is a
+        long wait, and the cache is shared with anything else on this machine.
+        """
+        from ..model_cache import SUPPORTED_TRAINING_MODELS
+
+        try:
+            loaded = get_model().cfg.model_name
+        except HTTPException:
+            loaded = None
+
+        cached: dict[str, int] = {}
+        scan_error = None
+        try:
+            from huggingface_hub import scan_cache_dir
+            for repo in scan_cache_dir().repos:
+                if repo.repo_type == "model":
+                    cached[repo.repo_id] = repo.size_on_disk
+        except Exception as exc:  # a missing or unreadable cache is not an error here
+            scan_error = str(exc)
+
+        # The hub sometimes stores a repo under its bare name ("gpt2") rather
+        # than the canonical owner/name the selector uses.
+        by_name = {repo.split("/")[-1]: size for repo, size in cached.items()}
+
+        records = []
+        for repository, name in SUPPORTED_TRAINING_MODELS.items():
+            size = cached.get(repository, by_name.get(repository.split("/")[-1]))
+            records.append(dict(repository=repository, name=name, bytes=size,
+                                downloaded=size is not None, loaded=name == loaded))
+        return dict(models=records, total_bytes=sum(record["bytes"] or 0 for record in records),
+                    scan_error=scan_error)
 
     @api.get("/storage")
     def storage():
-        occupied = compute_busy()
         records = []
         for run in store.list(limit=None):
             reason = "Stop this run before deleting it" if run["status"] not in TERMINAL else (
-                "Wait for queued and running operations to finish before deleting" if occupied else None)
+                "An operation is using this dictionary. Wait for it to finish before deleting" if compute_busy(run["id"]) else None)
             records.append(dict(id=run["id"], model=run.get("model") or (run.get("provenance") or {}).get("model"),
                 layer=run["config"]["layer"], features=run["config"]["features"], status=run["status"],
                 created_at=run["created_at"], has_checkpoint=bool(run.get("checkpoint")),
@@ -156,18 +203,14 @@ def router(get_model, compute_lock, store: RunStore, prepare_model=None):
     @serialized
     def delete_run(run_id: str):
         get_run(run_id)
-        # Submission and model switching use this same scheduling lock. Waiting
-        # jobs may still need the checkpoint, even when the training run is terminal.
-        if compute_busy():
-            raise HTTPException(409, "Wait for queued and running operations to finish before deleting")
-        if not compute_lock.acquire(blocking=False):
-            raise HTTPException(409, "Compute is using training files. Try again when it finishes")
+        # Block only this run's training, trace, example, or labeling jobs.
+        # Unrelated training can continue while old dictionaries are deleted.
+        if compute_busy(run_id):
+            raise HTTPException(409, "An operation is using this dictionary. Wait for it to finish before deleting")
         try:
             store.delete(run_id)
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
-        finally:
-            compute_lock.release()
         return dict(deleted=run_id)
 
     def enqueue(run, model, resume=False):
@@ -187,7 +230,7 @@ def router(get_model, compute_lock, store: RunStore, prepare_model=None):
                     import torch
                     torch.cuda.empty_cache()
 
-        jobs.submit(execute)
+        submit_for_run(run["id"], execute)
 
     @api.post("/runs/{run_id}/resume", status_code=202)
     @serialized
@@ -254,7 +297,7 @@ def router(get_model, compute_lock, store: RunStore, prepare_model=None):
                 apply(LogitLensPass(model=model, hook=captured.hook, verbose=False,
                     on_progress=lambda done, total: report("lens", done, total)), captured.trace, captured.residuals)
                 return captured.trace
-        return {"job_id": jobs.submit(execute)}
+        return {"job_id": submit_for_run(run_id, execute)}
 
     @api.post("/runs/{run_id}/examples", status_code=202)
     @serialized
@@ -281,7 +324,7 @@ def router(get_model, compute_lock, store: RunStore, prepare_model=None):
                     sequences_scanned=result["sequences_scanned"], tokens_scanned=result["tokens_scanned"]))
                 return result
 
-        return {"job_id": jobs.submit(execute)}
+        return {"job_id": submit_for_run(run_id, execute)}
 
     @api.get("/runs/{run_id}/examples/jobs/{job_id}")
     def example_job(run_id: str, job_id: str):
@@ -355,7 +398,7 @@ def router(get_model, compute_lock, store: RunStore, prepare_model=None):
             except Exception as exc:
                 store.update_interp_job(job["id"], status="failed", phase="failed", error=str(exc), records=records)
                 raise
-        jobs.submit(execute)
+        submit_for_run(run_id, execute)
         return store.get_interp_job(job["id"])
 
     @api.post("/interp-jobs/{job_id}/cancel")

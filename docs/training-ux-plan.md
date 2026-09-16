@@ -20,3 +20,22 @@ Guide users through Set up → Train and check → Explore features, with one cl
 
 ## Acceptance
 A first-time user can start from defaults, understand what is happening, open a saved result, select an active feature, and return to the same training context. Technical reports remain available without dominating the flow. Passing pipeline checks never implies proven interpretability.
+
+
+## Multi-layer training and stored dictionaries
+- Added One layer / Choose layers / All layers. Each selected layer gets the same per-layer budget, its own dictionary, and a place in the sequential compute queue.
+- Added batch progress, automatic following of the active layer, per-layer inspection, and stopping all remaining layers.
+- Added weight/resume-state storage estimates and actual per-run usage/free disk space.
+- Retain the newest checkpoint only, after atomic save and registration; the final checkpoint also preserves resume state.
+- Stored dictionaries support viewing and explicitly confirming deletion of an individual run and its owned files. The base model and other runs remain separate.
+- Deletion rejects active runs and pending/running jobs that reference that dictionary, while allowing unrelated work to continue.
+- Frontend build passed; three focused checks passed for queue validation/cancellation, deletion isolation/dependencies, and checkpoint retention, using temporary storage.
+
+
+## Navigation and saved-work organization
+- Workspace navigation is Explore / Training / Dictionaries.
+- Dictionaries replaces the separate history and storage panels with All / In progress / Ready / Needs attention filters.
+- Multi-layer batches appear as one expandable entry. Each layer retains its own explore, details/resume, and confirmed deletion actions.
+- Destructive actions live in each run's overflow menu; storage totals and disk space remain visible in the library header.
+- Training opens an active run, or setup when idle. Explicit library links can still open a completed run's report.
+- Completed runs link back to their entry in Dictionaries, and setup drafts survive navigation.

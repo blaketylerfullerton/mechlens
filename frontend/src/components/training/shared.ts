@@ -9,3 +9,16 @@ export function number(value: number | undefined, digits = 2) {
   return value === undefined || !Number.isFinite(value) ? '—' : value.toLocaleString(undefined, { maximumFractionDigits: digits })
 }
 
+
+export type LayerMode = 'one' | 'choose' | 'all'
+export function selectedLayers(mode: LayerMode, layer: number, chosen: number[], count: number | null | undefined): number[] {
+  if (mode === 'one') return [layer]
+  if (!count) return []
+  return mode === 'all' ? Array.from({ length: count }, (_, index) => index) : chosen.filter((value) => value >= 0 && value < count).sort((a, b) => a - b)
+}
+export function storageSize(bytes: number | undefined): string {
+  if (bytes === undefined || !Number.isFinite(bytes)) return 'Unavailable'
+  if (bytes < 1000000) return `${number(bytes / 1000, 1)} KB`
+  if (bytes < 1000000000) return `${number(bytes / 1000000, 1)} MB`
+  return `${number(bytes / 1000000000, 2)} GB`
+}

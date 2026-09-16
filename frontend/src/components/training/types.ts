@@ -1,7 +1,8 @@
-export type Options = { model: string; model_repository: string | null; layers: number | null; device: string; readiness: string; estimate_note: string; supported_models: string[] }
+export type Options = { d_in?: number; multi_layer?: boolean; storage_management?: boolean; model_downloads?: boolean; model: string; model_repository: string | null; layers: number | null; device: string; readiness: string; estimate_note: string; supported_models: string[] }
 export type Check = { status: string; reason?: string; definition?: string; max_loss_delta?: number }
 export type Evaluation = { [key: string]: unknown; identity_substitution?: Check }
 export type Run = {
+  batch_id?: string; batch_index?: number; batch_size?: number; storage_warning?: string;
   id: string; status: string; phase: string; created_at: number; tokens: number; error: string | null;
   config: { layer: number; features: number; training_tokens: number; dataset: string; compare_huggingface?: boolean };
   checkpoint: { artifact_id: string; tokens: number } | null;
@@ -18,3 +19,5 @@ export type Metric = { seq: number; tokens: number; loss: number; mse: number; e
 export type StorageRecord = { id: string; model: string | null; layer: number; features: number; status: string;
   created_at: number; has_checkpoint: boolean; bytes: number; delete_blocked_reason: string | null }
 export type Storage = { runs: StorageRecord[]; total_bytes: number; free_bytes: number; checkpoint_policy: string }
+export type ModelDownload = { repository: string; name: string; bytes: number | null; downloaded: boolean; loaded: boolean }
+export type ModelDownloads = { models: ModelDownload[]; total_bytes: number; scan_error: string | null }

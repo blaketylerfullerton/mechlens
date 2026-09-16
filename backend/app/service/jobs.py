@@ -75,6 +75,7 @@ class JobRecord:
     id: str
     status: JobStatus = "pending"
     result: object | None = None
+    training_run_id: str | None = None
     partial_trace: Trace | None = None
     error: str | None = None
     created_at: float = field(default_factory=time.time)
