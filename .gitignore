@@ -27,3 +27,4 @@ CLAUDE.md
 .dev
 # manim render scratch; the kept .mp4s live in docs/manim/
 media/
+prototypes/circuits/out/

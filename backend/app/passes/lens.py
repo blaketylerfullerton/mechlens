@@ -39,12 +39,26 @@ from dataclasses import dataclass, field
 import numpy as np
 import torch
 from transformer_lens import HookedTransformer
-from transformer_lens.utilities.activation_functions import apply_softcap
 
 from ..capture import RESID_HOOK, ProgressCallback, logit_summary
 from ..schema import LogitLens, PassRecord, Trace
 
 DEFAULT_TOP_K = 5
+
+
+def apply_softcap(x: torch.Tensor, cap: float | None) -> torch.Tensor:
+    """Gemma-style ``cap * tanh(x / cap)`` when enabled, identity otherwise.
+
+    Inlined rather than imported from TransformerLens on purpose. The upstream
+    helper lives in `transformer_lens.utilities.activation_functions`, but it
+    only appears in TransformerLens >=3.3, and those releases require
+    `transformers>=5.9` — which collides with the `transformers<=4.57.3` that
+    `circuit-tracer` pins for attribution work. Three lines of arithmetic is a
+    cheaper thing to own than a version conflict across the whole backend.
+    """
+    if cap is None or cap <= 0:
+        return x
+    return cap * torch.tanh(x / cap)
 
 
 @dataclass

@@ -66,6 +66,7 @@ def create_app(
     atlas_version: str | None = None,
     atlas_source: str | None = DEFAULT_ATLAS_SOURCE,
     training_dir: Path | None = None,
+    circuits_dir: Path | None = None,
 ) -> FastAPI:
     """`sae_provider(layer) -> SAE-like` defaults to `sae_cache.get_sae`; a
     test overrides it with a fake so /steer does not need a real Gemma Scope
@@ -79,7 +80,10 @@ def create_app(
     state: dict[str, object] = {"model": model, "load_error": None}
     from ..training.api import default_root, router as training_router
     from ..training.store import RunStore
+    from ..circuits.api import router as circuits_router
+    from ..circuits.store import AnalysisStore
     training_store = RunStore(training_dir or default_root())
+    circuits_store = AnalysisStore(circuits_dir)
     sae_provider = sae_provider or (lambda layer: get_sae(layer))
 
     def load_model() -> None:
@@ -113,6 +117,10 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         training_store.recover()
+        # Attribution jobs live in memory too, so anything mid-flight when the
+        # process died is unreachable and is marked interrupted rather than
+        # left claiming to be running.
+        circuits_store.recover()
         jobs.start_worker()
         if state["model"] is None:  # a test that injected one needs no warm-up
             threading.Thread(target=load_model, name="model-warmup", daemon=True).start()
@@ -135,6 +143,11 @@ def create_app(
             with _forward_lock:
                 model_cache._load.cache_clear()
                 get_sae.cache_clear()
+                # The replacement model holds its own weights and transcoders;
+                # leaving it loaded would waste the memory and let attribution
+                # run against a model the service no longer serves.
+                from ..circuits import adapter as circuits_adapter
+                circuits_adapter.unload()
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
@@ -146,6 +159,7 @@ def create_app(
         return jobs.submit(prepare)
 
     app.include_router(training_router(get_model, _forward_lock, training_store, prepare_training_model))
+    app.include_router(circuits_router(circuits_store, _forward_lock))
 
     # Dev-only: lets the Vite frontend call this API directly from the browser
     # instead of going through a same-origin proxy. A regex rather than a fixed

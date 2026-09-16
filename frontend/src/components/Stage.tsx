@@ -62,6 +62,7 @@ type StageProps = {
   onSelectLayer: (layer: number) => void
   onSelectCell: (layer: number, position: number) => void
   onSelectPosition: (position: number) => void
+  onExplain?: (position: number) => void
 }
 
 /**
@@ -88,6 +89,7 @@ export function Stage({
   onSelectLayer,
   onSelectCell,
   onSelectPosition,
+  onExplain,
 }: StageProps) {
   const map = useResidualMap(trace)
   const [view, setView] = useState<View>('brain')
@@ -177,6 +179,7 @@ export function Stage({
           followingLatest={followingLatest}
           onFollowLatest={onFollowLatest}
           onSelect={onSelectPosition}
+          onExplain={onExplain}
           selection={selection}
         />
       ) : (

@@ -8,6 +8,8 @@ import { TraceViewer } from '@/components/TraceViewer'
 import { useTrace } from '@/hooks/useTrace'
 import { TrainingPage } from '@/components/TrainingPage'
 import { DictionariesPage } from '@/components/DictionariesPage'
+import { CircuitsPage } from '@/components/CircuitsPage'
+import { sourceForStep, type CircuitSource } from '@/lib/circuits-api'
 
 /**
  * The selected (layer, token) cell, tagged with the trace it belongs to.
@@ -34,7 +36,11 @@ export interface Selection {
 }
 
 function App() {
-  const [page, setPage] = useState<'viewer' | 'training' | 'dictionaries'>('viewer')
+  const [page, setPage] = useState<'viewer' | 'training' | 'dictionaries' | 'circuits'>('viewer')
+  // Keyed so asking to explain the same token twice is a second request rather
+  // than a no-op, and tagged with its source token so returning to Explore
+  // lands on the token the graph is about.
+  const [circuitsRequest, setCircuitsRequest] = useState<{ source: CircuitSource; key: number } | null>(null)
   const [trainingNavigation, setTrainingNavigation] = useState<{ id: string | null; key: number; newRun?: boolean }>({ id: null, key: 0 })
   const [dictionaryFocus, setDictionaryFocus] = useState<{ id: string; key: number } | null>(null)
   const [trainingFeatures, setTrainingFeatures] = useState<Record<string, number>>({})
@@ -108,6 +114,28 @@ function App() {
     setInspectorOpen(false)
   }, [reset])
 
+  /**
+   * Explain the token generated at `position`.
+   *
+   * The snapshot is built here, from the trace this app already holds, because
+   * service trace jobs live in memory and die with the process — the browser is
+   * what still has the trace afterwards. Token ids travel; text never gets
+   * re-tokenized on the way.
+   */
+  function explainPrediction(position: number) {
+    if (!trace) return
+    const source = sourceForStep(trace, position)
+    if (!source) return
+    setCircuitsRequest((current) => ({ source, key: (current?.key ?? 0) + 1 }))
+    setPage('circuits')
+  }
+
+  function backToTrace(position: number) {
+    setPage('viewer')
+    setInspectorOpen(true)
+    if (trace) setSelection({ layer: currentSelection?.layer ?? trace.n_layers - 1, position, traceId: trace.trace_id, via: 'token' })
+  }
+
   function openTraining(id: string | null = null, newRun = false) {
     setTrainingNavigation((current) => ({ id, newRun, key: current.key + 1 }))
     setTrainingVisited(true); setPage('training')
@@ -129,10 +157,11 @@ function App() {
       <Toaster richColors theme="dark" position="bottom-right" />
       <nav aria-label="Workspace" className="border-border-subtle mx-auto flex w-full max-w-[1800px] shrink-0 items-center gap-4 border-b px-4 py-4 text-sm sm:gap-6 sm:px-8">
         <span className="font-medium tracking-tight sm:mr-4">mechlens</span>
-        {(['viewer', 'training', 'dictionaries'] as const).map((item) => <button key={item} aria-current={page === item ? 'page' : undefined}
-          className={page === item ? 'text-text-primary' : 'text-text-tertiary'} onClick={() => { if (item === 'training') openTraining(); else setPage(item) }}>{item === 'viewer' ? 'Explore' : item === 'training' ? 'Training' : 'Dictionaries'}</button>)}
+        {(['viewer', 'circuits', 'training', 'dictionaries'] as const).map((item) => <button key={item} aria-current={page === item ? 'page' : undefined}
+          className={page === item ? 'text-text-primary' : 'text-text-tertiary'} onClick={() => { if (item === 'training') openTraining(); else setPage(item) }}>{item === 'viewer' ? 'Explore' : item === 'circuits' ? 'Circuits' : item === 'training' ? 'Training' : 'Dictionaries'}</button>)}
       </nav>
       {trainingVisited ? <div hidden={page !== 'training'} className={page === 'training' ? 'min-h-0 flex-1 overflow-y-auto' : 'hidden'}><TrainingPage active={page === 'training'} navigation={trainingNavigation} onInspect={inspectDictionary} onDictionaries={openDictionaries} /></div> : null}
+      <div hidden={page !== 'circuits'} className={page === 'circuits' ? 'min-h-0 flex-1 overflow-hidden' : 'hidden'}><CircuitsPage active={page === 'circuits'} request={circuitsRequest} onBackToExplore={backToTrace} /></div>
       <div hidden={page !== 'dictionaries'} className={page === 'dictionaries' ? 'min-h-0 flex-1 overflow-y-auto' : 'hidden'}><DictionariesPage active={page === 'dictionaries'} focusRequest={dictionaryFocus} onSelect={(id) => openTraining(id)} onInspect={inspectDictionary} onDeleted={deletedDictionary} onNew={() => openTraining(null, true)} /></div>
       {page === 'viewer' ? <>
       {trainingRunId ? <div className="mx-auto flex w-full max-w-[1800px] shrink-0 items-center justify-between gap-4 px-8 pt-4 text-sm">
@@ -152,6 +181,7 @@ function App() {
             onSelectCell={selectCell}
             onSelectLayer={selectLayer}
             onSelectPosition={selectPosition}
+            onExplain={explainPrediction}
             progress={progress}
             selection={currentSelection}
             status={status}

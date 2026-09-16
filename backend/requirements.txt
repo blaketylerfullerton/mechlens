@@ -1,6 +1,13 @@
 torch>=2.3
-transformers>=4.43
-transformer-lens>=2.0
+
+# The ceilings are real, not defensive. `circuit-tracer` (below) pins
+# transformers <=4.57.3; TransformerLens >=3.3 requires transformers >=5.9. Those
+# two cannot both be satisfied, so the backend sits on the 4.57 side and
+# `passes/lens.py` carries its own copy of apply_softcap rather than importing
+# the one that only exists above 3.3. Raising either ceiling means dropping
+# attribution -- see docs/circuits-cir01-report.md section 9, which measured this.
+transformers>=4.56,<=4.57.3
+transformer-lens>=2.16,<3.3
 sae-lens==6.49.1
 accelerate>=0.30
 numpy>=1.26
@@ -13,6 +20,12 @@ python-dotenv>=1.0
 requests>=2.31
 pytest>=8.0
 httpx>=0.27
+
+# Attribution graphs over transcoders: the Circuits workspace. Pinned by commit
+# because upstream publishes no tagged release to PyPI, and the package of that
+# name on PyPI is an unrelated third-party fork. See docs/circuits-cir01-report.md
+# for the versions this commit was validated against.
+circuit-tracer @ git+https://github.com/decoderesearch/circuit-tracer@7f66876689f59e92fc3641650d38b8bd41749ec4
 
 # GET /stats reads system memory from this. Already present transitively via
 # torch, pinned explicitly because a route depends on it.

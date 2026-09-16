@@ -5,12 +5,13 @@ import { TokenStrip } from './TokenStrip'
 import { visibleToken } from './format'
 
 /** One response serves both reading and inspection. Raw token notation is opt-in. */
-export function TraceResponse({ trace, running, followingLatest, onFollowLatest, onSelect, selection }: {
+export function TraceResponse({ trace, running, followingLatest, onFollowLatest, onSelect, onExplain, selection }: {
   trace: Trace
   running: boolean
   followingLatest: boolean
   onFollowLatest: () => void
   onSelect: (position: number) => void
+  onExplain?: (position: number) => void
   selection: { position: number; layer: number; via?: string }
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false)
@@ -29,6 +30,13 @@ export function TraceResponse({ trace, running, followingLatest, onFollowLatest,
   // final word lit after the run finished — the same blue that means "look
   // here" reading as "still going".
   const highlighted = selection.via && selection.via !== 'default' ? selection.position : null
+  // Only a generated token has a prediction to explain, and only once it has a
+  // prefix in front of it. A prompt token was read, not predicted.
+  const explainable =
+    !running &&
+    onExplain != null &&
+    step?.token.source === 'generated' &&
+    selection.position > 0
 
   useEffect(() => {
     const element = responseRef.current
@@ -95,6 +103,11 @@ export function TraceResponse({ trace, running, followingLatest, onFollowLatest,
           <span className="font-mono">L{selection.layer} · #{selection.position}</span>
           {' · '}{analysisReady ? 'Layer data ready' : running ? 'Layer data pending' : 'Layer data unavailable'}
         </span>
+        {explainable ? (
+          <button type="button" onClick={() => onExplain?.(selection.position)} className="text-fn rounded-xs">
+            Explain this prediction
+          </button>
+        ) : null}
       </div>
       {pendingText ? <p className="text-text-tertiary mt-1 text-[12px]">The newest token’s activations arrive on the next model step.</p> : null}
       {!aligned ? <p className="text-text-tertiary mt-1 text-[12px]">Open Token details to inspect exact token boundaries for this text.</p> : null}

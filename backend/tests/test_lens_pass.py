@@ -8,8 +8,9 @@ lens *is* the model's output, so it must reproduce it position for position.
 
 gemma-2-2b is too heavy for a test run; the identity is model-independent, so
 tiny-stories-1M exercises it. What tiny-stories cannot exercise is the softcap
-(its cap is 0.0, making apply_softcap an identity), so that is tested directly
-against a config with a cap set.
+(its cap is 0.0, making the softcap an identity), so that is tested directly
+against a config with a cap set, and against the arithmetic rather than against
+the pass's own helper.
 """
 
 from __future__ import annotations
@@ -17,7 +18,6 @@ from __future__ import annotations
 import numpy as np
 import pytest
 import torch
-from transformer_lens.utilities.activation_functions import apply_softcap
 
 from app.capture import RESID_HOOK, generate_trace
 from app.passes import apply
@@ -200,7 +200,9 @@ def test_softcap_is_applied_when_the_model_has_one():
     """
     cap = 3.0
     raw = _fake_logits() * 8.0  # wide enough that tanh bites
-    capped = apply_softcap(raw, cap)
+    # Written out rather than calling the pass's own apply_softcap: comparing an
+    # implementation against itself would pass even if both were wrong.
+    capped = cap * torch.tanh(raw / cap)
     assert not torch.allclose(raw, capped)
 
     result = _traced()
