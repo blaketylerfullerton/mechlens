@@ -14,10 +14,15 @@ const EXAMPLES = [
   '2 + 2 =',
 ]
 
-export function ChatPanel({ onTraceRequest, status }: {
+export function ChatPanel({ onTraceRequest, status, showExamples = false }: {
   error: string | null
   onTraceRequest: (prompt: string, maxTokens: number) => void
   status: RunState
+  /** True before the first trace: the examples sit at rung 1 and run on
+   *  one click. After that they step back into a disclosure that only fills
+   *  the box — a chip that silently starts a run would surprise a reader who
+   *  was editing their own prompt. */
+  showExamples?: boolean
 }) {
   const [prompt, setPrompt] = useState(() => {
     try { return localStorage.getItem(DRAFT_KEY) ?? '' } catch { return '' }
@@ -53,19 +58,30 @@ export function ChatPanel({ onTraceRequest, status }: {
             disabled={busy} rows={2} placeholder="Enter a prompt…"
             className="text-text-primary placeholder:text-text-tertiary block max-h-24 w-full resize-none rounded-xs bg-transparent font-mono text-[13px] leading-5 disabled:opacity-60" />
         </label>
-        <button type="button" aria-expanded={examplesOpen} aria-controls="prompt-examples"
+        {!showExamples ? <button type="button" aria-expanded={examplesOpen} aria-controls="prompt-examples"
           disabled={busy} onClick={() => setExamplesOpen((open) => !open)}
-          className="text-text-secondary hover:text-text-primary rounded-xs px-2 py-2 text-[12px] disabled:opacity-50">Examples</button>
+          className="text-text-secondary hover:text-text-primary rounded-xs px-2 py-2 text-[12px] disabled:opacity-50">Examples</button> : null}
         <button type="submit" disabled={busy || !prompt.trim()}
           className="bg-text-primary text-bg-base rounded-xs px-4 py-2 text-[12px] font-medium disabled:opacity-50">
           {busy ? 'Running…' : 'Run'}
         </button>
       </div>
-      {examplesOpen ? (
+      {examplesOpen && !showExamples ? (
         <div id="prompt-examples" className="border-border-strong bg-bg-elevated absolute right-0 bottom-full z-30 mb-2 w-full max-w-lg rounded-xs border p-2">
           {EXAMPLES.map((example) => (
             <button key={example} type="button" onClick={() => { updatePrompt(example); setExamplesOpen(false) }}
               className="text-text-primary hover:bg-fn/10 block w-full rounded-xs px-2 py-2 text-left font-mono text-[12px]">
+              {example}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {showExamples ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {EXAMPLES.map((example) => (
+            <button key={example} type="button" disabled={busy}
+              onClick={() => { if (!busy) { updatePrompt(''); onTraceRequest(example, MAX_TOKENS) } }}
+              className="border-border-subtle text-text-secondary hover:border-fn/40 hover:text-text-primary rounded-xs border px-2.5 py-1.5 font-mono text-[12px] disabled:opacity-50">
               {example}
             </button>
           ))}

@@ -79,8 +79,8 @@ export function CircuitsPage({
         <div className="max-w-2xl">
           <h1 className="text-[15px] font-medium">Circuits</h1>
           <p className="text-text-secondary mt-2 text-[13px] leading-6">
-            Pick a generated token in Explore and choose <span className="text-text-primary">Explain
-            this prediction</span>. Circuits traces that one token backward through the transcoder
+            Pick a word in the answer and choose <span className="text-text-primary">Why this
+            word</span>. Circuits traces that one token backward through the transcoder
             features that fed it, to the input tokens.
           </p>
           <p className="text-text-tertiary mt-3 text-[12px] leading-5">

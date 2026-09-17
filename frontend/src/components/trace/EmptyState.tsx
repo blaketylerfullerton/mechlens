@@ -56,11 +56,11 @@ export function EmptyState({
           mechlens · gemma-2-2b
         </p>
         <h1 className="text-text-primary mt-3 text-[28px] leading-[1.1] font-semibold sm:text-[36px]">
-          See which features fire inside a language model.
+          Watch a language model write — and see how it decided each word.
         </h1>
         <p className="text-text-secondary mt-4 max-w-[54ch] text-[15px] leading-[1.6]">
-          Pick a prompt. It runs on your machine, and mechlens shows you what happened
-          inside — which of the model&apos;s features fired, and how the answer took shape
+          Pick a prompt below or just type your own. It runs on your machine, and mechlens
+          shows what happened inside — which concepts fired, and how the answer took shape
           layer by layer.
         </p>
 

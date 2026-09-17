@@ -1,7 +1,8 @@
-import { useState, type ReactNode } from 'react'
+import { Component, useState, type ReactNode } from 'react'
 
 import { Brain, type SelectionVia } from '@/components/Brain'
 import { ResourceMeter } from '@/components/ResourceMeter'
+import { Highlights } from '@/components/trace/Highlights'
 import { ResidualMap } from '@/components/trace/ResidualMap'
 import { TraceResponse } from '@/components/trace/TraceResponse'
 import { TraceHeader } from '@/components/trace/TraceHeader'
@@ -12,6 +13,15 @@ import type { JobProgress, Trace } from '@/lib/api-types'
 type View = 'brain' | 'grid'
 
 type Selection = { layer: number; position: number; via?: SelectionVia }
+
+/** WebGL can be missing — old browser, remote desktop, no GPU. The renderer
+ *  constructor throws, and unbounded that takes the whole app down with it.
+ *  The map shows the same tensor, so the fallback says where to look. */
+class BrainBoundary extends Component<{ children: ReactNode; fallback: ReactNode }, { failed: boolean }> {
+  state = { failed: false }
+  static getDerivedStateFromError() { return { failed: true } }
+  render() { return this.state.failed ? this.props.fallback : this.props.children }
+}
 
 /**
  * Two views of one object, and the control that names which is on screen.
@@ -40,7 +50,7 @@ function ViewToggle({ view, onChange }: { view: View; onChange: (view: View) => 
           onClick={() => onChange(option)}
           type="button"
         >
-          {option}
+          {option === 'brain' ? 'Atlas' : 'Map'}
         </button>
       ))}
     </div>
@@ -92,7 +102,10 @@ export function Stage({
   onExplain,
 }: StageProps) {
   const map = useResidualMap(trace)
-  const [view, setView] = useState<View>('brain')
+  // The grid is what a first-time reader can act on — layers down, tokens
+  // across, every cell clickable. The atlas is the harder object to parse and
+  // stays one toggle away rather than being the thing someone lands on.
+  const [view, setView] = useState<View>('grid')
 
   const loaded = trace !== null && trace.steps.length > 0 && selection !== null
   const customSAE = customDictionary || (trace?.passes.some((pass) => pass.name === 'sae' && String(pass.params.release).startsWith('local/')) ?? false)
@@ -127,7 +140,7 @@ export function Stage({
         <div className="flex min-h-7 flex-wrap items-center gap-x-4 gap-y-1">
           <h1 className="text-text-primary text-[13px] font-medium">mechlens</h1>
           <span role="status" className="text-text-secondary text-[12px]">
-            {status === 'warming' ? 'Loading model' : status === 'pending' ? 'Trace queued' : status === 'running' ? 'Generating' : status === 'error' ? 'Ready to retry' : 'Ready'}
+            {status === 'warming' ? 'Warming up — loading the model' : status === 'pending' ? 'Trace queued' : status === 'running' ? 'Generating' : status === 'error' ? 'Ready to retry' : 'Ready'}
           </span>
           {/* Furthest right, and present before a trace is: the weights load
               is the longest wait in the product, and it is the window where
@@ -136,6 +149,19 @@ export function Stage({
           <div className="ml-auto"><ResourceMeter /></div>
         </div>
       )}
+
+      {!loaded ? (
+        <div className="flex shrink-0 flex-col">
+          <h1 className="text-text-primary text-[24px] leading-[1.15] font-semibold sm:text-[30px]">
+            Watch a language model write — and see how it decided each word.
+          </h1>
+          <p className="text-text-secondary mt-2 max-w-[58ch] text-[14px] leading-6">
+            Pick an example or type your own below. It runs on your machine, then
+            you can click any word it wrote to see what it considered instead and
+            which concepts fired.
+          </p>
+        </div>
+      ) : null}
 
       {/* The one frame treatment: an outer frame holding an inner surface,
           hairline on both, 4px gap, radii concentric (6 − 4 = 2). It wraps what
@@ -150,14 +176,16 @@ export function Stage({
             className={showGrid ? 'invisible absolute inset-0' : 'h-full w-full'}
             inert={showGrid ? true : undefined}
           >
-            {customSAE ? <div className="text-text-secondary flex h-full items-center justify-center p-8 text-center text-sm">Enter a prompt to inspect this dictionary’s features in the layer grid. No atlas or labels have been generated for it.</div> : <Brain
+            {customSAE ? <div className="text-text-secondary flex h-full items-center justify-center p-8 text-center text-sm">Enter a prompt to inspect this dictionary’s features in the layer grid. No atlas or labels have been generated for it.</div> : <BrainBoundary
+              fallback={<div className="text-text-secondary flex h-full items-center justify-center p-8 text-center text-sm">The atlas needs WebGL, which isn’t available here — the Map view shows the same data.</div>}
+            ><Brain
               onSelectLayer={onSelectLayer}
               paused={showGrid}
               progress={progress}
               selection={selection}
               status={status}
               trace={trace}
-            />}
+            /></BrainBoundary>}
           </div>
 
           {showGrid ? (
@@ -173,20 +201,19 @@ export function Stage({
       </div>
 
       {loaded ? (
-        <TraceResponse
-          trace={trace}
-          running={status === 'running'}
-          followingLatest={followingLatest}
-          onFollowLatest={onFollowLatest}
-          onSelect={onSelectPosition}
-          onExplain={onExplain}
-          selection={selection}
-        />
-      ) : (
-        <div className="border-border-subtle flex shrink-0 items-center border-t pt-3">
-          <p className="text-text-secondary text-[13px]">Enter a prompt to watch the response form and explore what happens inside the model.</p>
-        </div>
-      )}
+        <>
+          <TraceResponse
+            trace={trace}
+            running={status === 'running'}
+            followingLatest={followingLatest}
+            onFollowLatest={onFollowLatest}
+            onSelect={onSelectPosition}
+            onExplain={onExplain}
+            selection={selection}
+          />
+          <Highlights trace={trace} onSelect={onSelectCell} />
+        </>
+      ) : null}
       <div className="shrink-0">{composer}</div>
     </div>
   )

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Toaster } from 'sonner'
 
 import type { SelectionVia } from '@/components/Brain'
@@ -10,6 +10,7 @@ import { TrainingPage } from '@/components/TrainingPage'
 import { DictionariesPage } from '@/components/DictionariesPage'
 import { CircuitsPage } from '@/components/CircuitsPage'
 import { sourceForStep, type CircuitSource } from '@/lib/circuits-api'
+import { mostInteresting } from '@/lib/highlights'
 
 /**
  * The selected (layer, token) cell, tagged with the trace it belongs to.
@@ -114,6 +115,27 @@ function App() {
     setInspectorOpen(false)
   }, [reset])
 
+  // Once per session, when the first finished trace lands: select the token
+  // the model decided latest and open the inspector on it, so the payoff is
+  // on screen before the reader has learned there is a panel at all. A
+  // selection the reader made themselves (tagged with this trace) is never
+  // overridden; a second trace does not reopen a panel they closed.
+  const welcomedRef = useRef(false)
+  useEffect(() => {
+    if (welcomedRef.current || status !== 'done' || !trace || trace.steps.length === 0) return
+    if (selection?.traceId === trace.trace_id) return
+    welcomedRef.current = true
+    const highlight = mostInteresting(trace)
+    if (highlight?.decisionLayer == null) return
+    setSelection({
+      layer: highlight.decisionLayer,
+      position: highlight.position,
+      traceId: trace.trace_id,
+      via: 'token',
+    })
+    setInspectorOpen(true)
+  }, [status, trace, selection])
+
   /**
    * Explain the token generated at `position`.
    *
@@ -156,9 +178,26 @@ function App() {
     <div className="text-text-primary bg-bg-base flex h-svh flex-col overflow-hidden">
       <Toaster richColors theme="dark" position="bottom-right" />
       <nav aria-label="Workspace" className="border-border-subtle mx-auto flex w-full max-w-[1800px] shrink-0 items-center gap-4 border-b px-4 py-4 text-sm sm:gap-6 sm:px-8">
-        <span className="font-medium tracking-tight sm:mr-4">mechlens</span>
-        {(['viewer', 'circuits', 'training', 'dictionaries'] as const).map((item) => <button key={item} aria-current={page === item ? 'page' : undefined}
-          className={page === item ? 'text-text-primary' : 'text-text-tertiary'} onClick={() => { if (item === 'training') openTraining(); else setPage(item) }}>{item === 'viewer' ? 'Explore' : item === 'circuits' ? 'Circuits' : item === 'training' ? 'Training' : 'Dictionaries'}</button>)}
+        {/* The wordmark is the way home — the only surface a first-time
+            reader needs is the trace, and every advanced page lives behind
+            one menu rather than asking to be chosen up front. */}
+        <button type="button" onClick={() => setPage('viewer')}
+          className="font-medium tracking-tight sm:mr-4">mechlens</button>
+        {page !== 'viewer' ? <span className="text-text-tertiary text-[13px]">{page === 'circuits' ? 'Why this word' : page === 'training' ? 'Training' : 'Dictionaries'}</span> : null}
+        <details className="group relative ml-auto text-[13px]" onClick={(event) => {
+          if ((event.target as HTMLElement).closest('button[data-page]')) event.currentTarget.open = false
+        }}>
+          <summary className="text-text-tertiary hover:text-text-primary cursor-pointer rounded-xs px-2 py-1">Advanced</summary>
+          <div className="border-border-strong bg-bg-elevated absolute right-0 top-8 z-30 w-44 rounded-xs border p-1">
+            {(['circuits', 'training', 'dictionaries'] as const).map((item) => (
+              <button key={item} type="button" data-page={item} aria-current={page === item ? 'page' : undefined}
+                onClick={() => { if (item === 'training') openTraining(); else setPage(item) }}
+                className={`block w-full rounded-xs px-2 py-2 text-left hover:bg-fn/10 ${page === item ? 'text-text-primary' : 'text-text-secondary'}`}>
+                {item === 'circuits' ? 'Why this word' : item === 'training' ? 'Training' : 'Dictionaries'}
+              </button>
+            ))}
+          </div>
+        </details>
       </nav>
       {trainingVisited ? <div hidden={page !== 'training'} className={page === 'training' ? 'min-h-0 flex-1 overflow-y-auto' : 'hidden'}><TrainingPage active={page === 'training'} navigation={trainingNavigation} onInspect={inspectDictionary} onDictionaries={openDictionaries} /></div> : null}
       <div hidden={page !== 'circuits'} className={page === 'circuits' ? 'min-h-0 flex-1 overflow-hidden' : 'hidden'}><CircuitsPage active={page === 'circuits'} request={circuitsRequest} onBackToExplore={backToTrace} /></div>
@@ -172,7 +211,7 @@ function App() {
         <main className="flex min-h-0 min-w-0 flex-1 flex-col">
           <Stage
             customDictionary={trainingRunId !== null}
-            composer={<ChatPanel error={error} onTraceRequest={run} status={status} />}
+            composer={<ChatPanel error={error} onTraceRequest={run} status={status} showExamples={!trace} />}
             inspectorOpen={inspectorOpen}
             onToggleInspector={() => setInspectorOpen((open) => !open)}
             onReset={startOver}

@@ -38,10 +38,14 @@ export function Facts({ rows }: { rows: [string, string][] }) {
 /** The one section chrome: uppercase label, optional right-aligned note, body. */
 export function Panel({
   children,
+  hint,
   note,
   title,
 }: {
   children: ReactNode
+  /** One plain sentence above the data, for a reader meeting the section
+   *  name for the first time. The technical name stays the label. */
+  hint?: string
   note?: string
   title: string
 }) {
@@ -56,6 +60,7 @@ export function Panel({
       >
         {title}
       </SectionLabel>
+      {hint ? <p className="text-text-tertiary -mt-1 mb-2 text-[12px] leading-5">{hint}</p> : null}
       {children}
     </section>
   )
