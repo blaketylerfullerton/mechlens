@@ -34,6 +34,9 @@ class FakeSAE:
         self.n_features = n_features
         self.W_dec = torch.zeros(n_features, d_model)
 
+    def to(self, device: str) -> "FakeSAE":
+        return self
+
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         acts = torch.zeros(x.shape[0], self.n_features)
         for token in range(x.shape[0]):
