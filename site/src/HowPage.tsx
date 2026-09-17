@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react'
-import { IconBrandGithub } from '@tabler/icons-react'
 import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
@@ -7,9 +6,8 @@ import 'katex/dist/katex.min.css'
 import './home.css'
 import './how.css'
 import source from './content/how.md?raw'
-import { navigate } from './lib/routing'
+import { SiteFooter, SiteHeader } from './SiteChrome'
 
-const REPO = 'https://github.com/blaketylerfullerton/mechlens'
 
 /** `## 01 · Get the activations` -> a slug the contents rail and the URL share. */
 function slugify(text: string) {
@@ -49,18 +47,7 @@ export default function HowPage() {
   return (
     <div className="homepage how-page">
       <a className="skip-link" href="#main">Skip to content</a>
-      <header className="site-header">
-        <nav className="container nav" aria-label="Main navigation">
-          <a href="/" className="wordmark" onClick={navigate('/')} aria-label="Mechlens home">
-            <img src="/logo.svg" alt="" width={26} height={26} />mechlens
-          </a>
-          <div className="nav-links">
-            <a href="/how" aria-current="page">How</a>
-            <a href="/#setup" onClick={navigate('/#setup')}>Setup</a>
-            <a href={REPO}><IconBrandGithub size={16} stroke={1.5} />GitHub</a>
-          </div>
-        </nav>
-      </header>
+      <SiteHeader current="how" />
 
       <main id="main">
         <section className="container how-hero">
@@ -107,10 +94,7 @@ export default function HowPage() {
         </div>
       </main>
 
-      <footer className="container footer">
-        <span>mechlens <span className="footer-divider">/</span> Open source, open to inspection.</span>
-        <a href={`${REPO}/blob/main/LICENSE`}>Apache-2.0</a>
-      </footer>
+      <SiteFooter />
     </div>
   )
 }
