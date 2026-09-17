@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 import type { Trace } from '@/lib/api-types'
+import { decisionLayer } from '@/lib/highlights'
 import { TokenStrip } from './TokenStrip'
 import { visibleToken } from './format'
 
@@ -77,16 +78,19 @@ export function TraceResponse({ trace, running, followingLatest, onFollowLatest,
           <span className="text-text-secondary">{running ? 'Waiting for the first token…' : 'No text generated.'}</span>
         ) : aligned ? (
           <>
-            {generated.map((item) => (
+            {generated.map((item) => {
+              const decided = decisionLayer(trace, item.step)
+              return (
               <button type="button" key={item.step}
                 aria-label={`Inspect token ${item.step}: ${visibleToken(item.token.text)}`}
                 aria-pressed={highlighted === item.step}
-                title={`Token ${item.step} · click to inspect`}
+                title={decided !== null ? `Token ${item.step} — the model settled on this by layer ${decided} of ${trace.n_layers} · click to inspect` : `Token ${item.step} · click to inspect`}
                 onClick={() => onSelect(item.step)}
                 className={`inline cursor-pointer rounded-xs p-0 text-left align-baseline whitespace-pre-wrap hover:bg-fn/10 hover:outline hover:outline-fn/50 ${highlighted === item.step ? 'bg-fn/10 text-fn' : 'text-text-primary'}`}>
                 {item.token.text}
               </button>
-            ))}
+              )
+            })}
             {pendingText ? <span title="Activations available after the next model step" className="text-text-secondary">{pendingText}</span> : null}
           </>
         ) : trace.completion}
@@ -105,7 +109,7 @@ export function TraceResponse({ trace, running, followingLatest, onFollowLatest,
         </span>
         {explainable ? (
           <button type="button" onClick={() => onExplain?.(selection.position)} className="text-fn rounded-xs">
-            Explain this prediction
+            Why this word
           </button>
         ) : null}
       </div>

@@ -78,7 +78,7 @@ export function Inspector({ state, step, running = false, trainingRunId, selecte
       </section>
 
       {state.logit_lens ? (
-        <Panel note={`H ${formatNumber(state.logit_lens.entropy)}`} title="Layer readout">
+        <Panel hint="What the model would have guessed if asked at this layer — compare with its final answer below." note={`H ${formatNumber(state.logit_lens.entropy)}`} title="Layer readout">
           <Distribution tokens={state.logit_lens.top_k} />
         </Panel>
       ) : (
@@ -86,7 +86,7 @@ export function Inspector({ state, step, running = false, trainingRunId, selecte
       )}
 
       {state.features.length > 0 ? (
-        <Panel note={`${state.features.length} active`} title="SAE features">
+        <Panel hint="Concepts the model noticed here — the strongest active features." note={`${state.features.length} active`} title="SAE features">
           {trainingRunId ? <p className="text-text-secondary mb-2 text-xs">Select a feature to see example passages.</p> : null}
           <FeatureList features={state.features} selected={selectedFeature} onSelect={trainingRunId ? onSelectFeature : undefined} />
         </Panel>
@@ -94,7 +94,7 @@ export function Inspector({ state, step, running = false, trainingRunId, selecte
 
       {trainingRunId && selectedFeature != null ? <FeatureExamples runId={trainingRunId} featureId={selectedFeature} /> : null}
 
-      <Panel note={`H ${formatNumber(step.logits.entropy)}`} title="Next-token distribution">
+      <Panel hint="What it considered writing next, and how sure it was." note={`H ${formatNumber(step.logits.entropy)}`} title="Next-token distribution">
         <Distribution tokens={step.logits.top_k} />
       </Panel>
     </aside>
