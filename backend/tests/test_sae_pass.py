@@ -29,6 +29,9 @@ class FakeSAE:
         self.acts = acts
         self.recon = recon
 
+    def to(self, device: str) -> "FakeSAE":
+        return self
+
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         return self.acts
 

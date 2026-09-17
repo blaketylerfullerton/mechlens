@@ -108,6 +108,8 @@ def test_reencoding_subset_invalidates_old_layers_labels_and_layout():
     result.trace.layout["0/7"] = NodePosition(x=1, y=2, z=3)
     result.trace.passes += [PassRecord(name="labels"), PassRecord(name="layout")]
     class SAE:
+        def to(self, device):
+            return self
         def encode(self, x):
             return torch.ones(len(x), 3)
         def decode(self, a):
@@ -124,6 +126,7 @@ def test_reencoding_subset_invalidates_old_layers_labels_and_layout():
 def test_sae_rejects_real_metadata_for_another_model():
     result = make_result()
     sae = SimpleNamespace(cfg=SimpleNamespace(metadata=SimpleNamespace(model_name="other-model")))
+    sae.to = lambda device: sae
     with pytest.raises(ValueError, match="SAE expects"):
         apply(SAEPass(layers=[0], saes={0: sae}, hook="hook_resid_post"), result.trace, result.residuals)
 

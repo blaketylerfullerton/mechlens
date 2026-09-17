@@ -29,11 +29,21 @@ def config():
         evaluation_text="a different evaluation document " * 3)
 
 
-def test_real_training_roundtrip_and_frozen_model(tmp_path, model, config):
+def test_real_training_roundtrip_and_frozen_model(tmp_path, model, config, monkeypatch):
+    from app.training import runner
     store = RunStore(tmp_path)
     run = store.create(config.model_dump())
     weights = {k: v.clone() for k, v in model.state_dict().items()}
     flags = [p.requires_grad for p in model.parameters()]
+    # The first checkpoint is pruned once a later one lands, so its weights are
+    # read as it is written rather than from disk afterwards.
+    first_step = []
+    original = runner.checkpoint
+    def recording(store, run_id, sae, trainer, manifest):
+        if not first_step:
+            first_step.append(sae.W_enc.detach().clone())
+        return original(store, run_id, sae, trainer, manifest)
+    monkeypatch.setattr(runner, "checkpoint", recording)
     train(store, run["id"], model)
     saved = store.get(run["id"])
     assert saved["status"] == "completed"
@@ -52,10 +62,12 @@ def test_real_training_roundtrip_and_frozen_model(tmp_path, model, config):
     assert sae.encode(torch.randn(3, 16)).shape == (3, 32)
     assert manifest["model"] == "training-test"
     assert len(manifest["artifact_id"]) == 64
-    # The trained weights differ from the first-step checkpoint.
-    from sae_lens import SAE
-    first = SAE.load_from_disk(tmp_path / run["id"] / "checkpoint-16")
-    assert not torch.equal(first.W_enc, sae.W_enc)
+    # The trained weights differ from the first-step checkpoint, and only the
+    # newest checkpoint is kept.
+    assert not torch.equal(first_step[0], sae.W_enc)
+    assert [p.name for p in (tmp_path / run["id"]).glob("checkpoint-*")] == [
+        f"checkpoint-{config.training_tokens}"
+    ]
     # Content identity is enforced at the loading boundary.
     path = tmp_path / manifest["path"] / "cfg.json"
     path.write_text(path.read_text() + " ")
