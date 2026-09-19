@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 
 import { Brain, type SelectionVia } from '@/components/Brain'
 import { ResourceMeter } from '@/components/ResourceMeter'
@@ -61,7 +61,7 @@ type StageProps = {
   progress: JobProgress | null
   onSelectLayer: (layer: number) => void
   onSelectCell: (layer: number, position: number) => void
-  onSelectPosition: (position: number) => void
+  onSelectPosition: (position: number, inspect?: boolean) => void
   onExplain?: (position: number) => void
 }
 
@@ -97,6 +97,36 @@ export function Stage({
   const loaded = trace !== null && trace.steps.length > 0 && selection !== null
   const customSAE = customDictionary || (trace?.passes.some((pass) => pass.name === 'sae' && String(pass.params.release).startsWith('local/')) ?? false)
   const showGrid = loaded && (view === 'grid' || customSAE)
+  const positions = useMemo(() => trace?.steps
+    .filter((step) => step.token.source === 'generated' && step.layers.some((layer) => layer.features.length > 0))
+    .map((step) => step.step) ?? [], [trace])
+  const [replay, setReplay] = useState<{ traceId: string; position: number } | null>(null)
+  const replaying = replay !== null && replay.traceId === trace?.trace_id &&
+    replay.position === selection?.position && selection?.via === 'token' &&
+    status === 'done' && !showGrid
+  if (replay && !replaying) setReplay(null)
+
+  useEffect(() => {
+    if (!replaying || !replay) return
+    const timer = window.setTimeout(() => {
+      const next = positions[positions.indexOf(replay.position) + 1]
+      if (next === undefined) setReplay(null)
+      else {
+        setReplay({ ...replay, position: next })
+        onSelectPosition(next, false)
+      }
+    }, 1400)
+    return () => window.clearTimeout(timer)
+  }, [replaying, replay, positions, onSelectPosition])
+
+  const pauseReplay = () => setReplay(null)
+  const toggleReplay = () => {
+    if (replaying) return pauseReplay()
+    if (!trace || positions.length === 0) return
+    setView('brain')
+    setReplay({ traceId: trace.trace_id, position: positions[0] })
+    onSelectPosition(positions[0], false)
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
@@ -105,7 +135,7 @@ export function Stage({
           <TraceHeader trace={trace} status={status} progress={progress} />
           <div className="flex items-center gap-3">
             <ResourceMeter />
-            {customSAE ? <span className="text-text-tertiary text-xs">Custom SAE · grid · no atlas or labels</span> : <ViewToggle onChange={setView} view={view} />}
+            {customSAE ? <span className="text-text-tertiary text-xs">Custom SAE · grid · no atlas or labels</span> : <ViewToggle onChange={(next) => { pauseReplay(); setView(next) }} view={view} />}
             <button type="button" aria-expanded={inspectorOpen} aria-controls="trace-inspector"
               onClick={onToggleInspector}
               className="text-text-secondary hover:text-text-primary rounded-xs px-2 py-1 text-[12px]">
@@ -151,7 +181,9 @@ export function Stage({
             inert={showGrid ? true : undefined}
           >
             {customSAE ? <div className="text-text-secondary flex h-full items-center justify-center p-8 text-center text-sm">Enter a prompt to inspect this dictionary’s features in the layer grid. No atlas or labels have been generated for it.</div> : <Brain
-              onSelectLayer={onSelectLayer}
+              onSelectLayer={(layer) => { pauseReplay(); onSelectLayer(layer) }}
+              replaying={replaying}
+              onPauseReplay={pauseReplay}
               paused={showGrid}
               progress={progress}
               selection={selection}
@@ -178,7 +210,10 @@ export function Stage({
           running={status === 'running'}
           followingLatest={followingLatest}
           onFollowLatest={onFollowLatest}
-          onSelect={onSelectPosition}
+          onSelect={(position) => { pauseReplay(); onSelectPosition(position) }}
+          replaying={replaying}
+          canReplay={!customSAE && status === 'done' && positions.length > 0}
+          onToggleReplay={toggleReplay}
           onExplain={onExplain}
           selection={selection}
         />

@@ -5,7 +5,10 @@ import { TokenStrip } from './TokenStrip'
 import { visibleToken } from './format'
 
 /** One response serves both reading and inspection. Raw token notation is opt-in. */
-export function TraceResponse({ trace, running, followingLatest, onFollowLatest, onSelect, onExplain, selection }: {
+export function TraceResponse({ trace, running, followingLatest, onFollowLatest, onSelect, onExplain, selection, replaying = false, canReplay = false, onToggleReplay }: {
+  replaying?: boolean
+  canReplay?: boolean
+  onToggleReplay?: () => void
   trace: Trace
   running: boolean
   followingLatest: boolean
@@ -43,6 +46,11 @@ export function TraceResponse({ trace, running, followingLatest, onFollowLatest,
     if (followingLatest && element) element.scrollTop = element.scrollHeight
   }, [trace.completion, followingLatest])
 
+  useEffect(() => {
+    if (replaying) responseRef.current?.querySelector('[aria-pressed="true"]')
+      ?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' })
+  }, [replaying, selection.position])
+
   return (
     <section aria-label="Model response" className="border-border-subtle shrink-0 border-t pt-4">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -59,6 +67,12 @@ export function TraceResponse({ trace, running, followingLatest, onFollowLatest,
           ) : null}
         </div>
         <div className="flex items-center gap-3 text-[12px]">
+          {canReplay ? (
+            <button type="button" aria-pressed={replaying} onClick={onToggleReplay}
+              className="border-fn/40 bg-fn/10 text-fn rounded-md border px-3 py-1.5 font-medium hover:bg-fn/20">
+              {replaying ? 'Ⅱ Pause replay' : '▶ Replay response'}
+            </button>
+          ) : null}
           {running && !followingLatest ? (
             <button type="button" onClick={onFollowLatest} className="text-fn rounded-xs px-1 py-1">
               Follow latest

@@ -77,9 +77,9 @@ function App() {
   // Picking a token keeps the layer you were looking at — so moving along one
   // axis never silently resets the other.
   const selectPosition = useCallback(
-    (position: number) => {
+    (position: number, inspect = true) => {
       if (!trace || !currentSelection) return
-      setInspectorOpen(true)
+      if (inspect) setInspectorOpen(true)
       setSelection({
         layer: currentSelection.layer,
         position,
