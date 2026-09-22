@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
+from ..paths import data_dir
 from ..capture import generate_trace
 from ..passes import apply
 from ..passes.sae import SAEPass
@@ -412,4 +413,4 @@ def router(get_model, compute_lock, store: RunStore, prepare_model=None):
 
 
 def default_root():
-    return Path(os.environ.get("MECHLENS_TRAINING_DIR", Path(__file__).resolve().parents[2] / "data" / "training"))
+    return Path(os.environ.get("MECHLENS_TRAINING_DIR", data_dir() / "training"))

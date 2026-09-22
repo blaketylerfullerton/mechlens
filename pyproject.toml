@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mechlens"
+version = "0.1.0"
+description = "Inspect and steer language model internals on your GPU"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+dynamic = ["dependencies"]
+
+[project.scripts]
+mechlens = "app.command:main"
+
+[tool.setuptools.packages.find]
+where = ["backend"]
+include = ["app", "app.*"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["backend/requirements.txt"]}

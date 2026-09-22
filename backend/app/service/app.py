@@ -15,6 +15,7 @@ around the forward-pass section, not what enforces that — see design.md.
 
 from __future__ import annotations
 
+import os
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -67,6 +68,7 @@ def create_app(
     atlas_source: str | None = DEFAULT_ATLAS_SOURCE,
     training_dir: Path | None = None,
     circuits_dir: Path | None = None,
+    api_token: str | None = None,
 ) -> FastAPI:
     """`sae_provider(layer) -> SAE-like` defaults to `sae_cache.get_sae`; a
     test overrides it with a fake so /steer does not need a real Gemma Scope
@@ -127,6 +129,12 @@ def create_app(
         yield
 
     app = FastAPI(lifespan=lifespan)
+    token = api_token if api_token is not None else os.environ.get("MECHLENS_API_TOKEN", "")
+    if token:
+        if not token.isascii() or any(c.isspace() for c in token):
+            raise ValueError("API token must contain ASCII characters without whitespace")
+        from .auth import BearerAuthMiddleware
+        app.add_middleware(BearerAuthMiddleware, token=token)
     def prepare_training_model(repository: str):
         if repository not in model_cache.SUPPORTED_TRAINING_MODELS:
             raise HTTPException(422, "Unsupported model repository")

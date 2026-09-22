@@ -13,7 +13,9 @@ import numpy as np
 from .sae_cache import DEFAULT_WIDTH, neuronpedia_id
 from .schema import FeatureLabel
 
-DEFAULT_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "neuronpedia.db"
+from .paths import data_dir
+
+DEFAULT_DB_PATH = data_dir() / "neuronpedia.db"
 
 SITE = "https://www.neuronpedia.org"
 API = SITE + "/api/feature/{model_id}/{source_set}/{feature}"

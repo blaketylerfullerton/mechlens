@@ -17,7 +17,9 @@ from pathlib import Path
 from ..store import atomic_write_text
 from .schema import Analysis
 
-DEFAULT_DIR = Path(__file__).resolve().parents[2] / "data" / "circuits"
+from ..paths import data_dir
+
+DEFAULT_DIR = data_dir() / "circuits"
 
 
 class AnalysisStore:

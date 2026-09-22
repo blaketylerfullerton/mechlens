@@ -14,9 +14,7 @@ There is a second half: a training workspace that trains your *own* SAE on one
 layer, measures how good it is, and labels its features with a local LLM. See
 [Training your own SAE](#training-your-own-sae).
 
-**Today this is a repo you clone and set up**, not a tool you install — see
-[Setup](#setup). Making it one command is the plan, and it is written down in
-[Where this is going](#where-this-is-going).
+**The inference backend is now installable from this repository:** `pip install -e .`, then `mechlens serve`. The browser UI still runs separately; cloud pairing and automatic tunnels are not implemented yet. See [Serving the inference API](#serving-the-inference-api).
 
 
 ## Where this is going
@@ -81,6 +79,55 @@ npm --prefix frontend install
 ```
 
 The CLI below needs only the Python half. The browser interface needs both.
+
+## Serving the inference API
+
+From the repository root, in your Python environment:
+
+```bash
+pip install -e .
+mechlens serve
+```
+
+For an existing environment that already has `backend/requirements.txt` installed, use `pip install --no-deps -e .` to register the command without resolving dependencies again. A fresh install uses the existing backend requirements, including the pinned Git dependency for circuit tracing; it requires Git and can download substantial model-runtime dependencies. This package is not published to PyPI yet.
+
+The API binds to `127.0.0.1:8000`. It starts listening while the model warms up; `GET /health` reports `loading`, `ready`, or `error`. Gemma still requires Hugging Face access and an accepted model license. Stop with Ctrl+C. Start the existing Vite frontend separately (`npm --prefix frontend run dev`) to use the local UI.
+
+```bash
+mechlens serve --help
+mechlens serve --port 8001 --data-dir /path/to/persistent/mechlens
+mechlens trace --help
+```
+
+Editable installs reuse `backend/data` when it exists. Otherwise `serve` defaults to `~/.local/share/mechlens`. `--data-dir` or `MECHLENS_DATA_DIR` selects the labels database (`neuronpedia.db`), training runs, and circuit analyses. `MECHLENS_TRAINING_DIR` can still override the training path. Assets are not bundled or downloaded by this command: copy/build the label database and atlas as described below to enable those features. Model downloads retain Hugging Face's normal cache location. The existing trace CLI retains its existing output-directory behavior.
+
+### Authentication for remote connections
+
+Set a secret through `MECHLENS_API_TOKEN` or a token file. Do not pass the secret as a CLI argument or commit it.
+
+```bash
+# Create once, keep private; reuse the file on subsequent starts.
+(umask 077; python -c 'import secrets; print(secrets.token_urlsafe(32))' > /tmp/mechlens-api-token)
+mechlens serve --token-file /tmp/mechlens-api-token
+```
+
+Requests then require `Authorization: Bearer <token>`, including `/health`, `/stats`, docs, and all inference routes. Use HTTPS through a tunnel for remote traffic. For a tunnel connector on the same machine, keep the default loopback bind. Explicit non-loopback binding (`--host 0.0.0.0`) requires a token. Existing direct Uvicorn launches also honor `MECHLENS_API_TOKEN`, but only `mechlens serve` enforces the bind-address check. The local frontend does not inject this token yet; the cloud proxy will eventually attach it server-side.
+
+### Jupyter / GPU notebooks
+
+Once these changes have been pushed, install the repository at the commit you want:
+
+```python
+%pip install "git+https://github.com/blaketylerfullerton/mechlens.git@<commit>"
+```
+
+Then run in another cell:
+
+```python
+!mechlens serve
+```
+
+The cell remains running and the process loads its own model on that machine. It does not reuse an existing notebook model. Interrupt the cell to stop it. This version starts the inference API only: it does not produce a public URL. A manually configured authenticated tunnel is the next integration step; device pairing and automatic tunnel creation will follow. Start with the local flow before testing a notebook provider.
 
 ## Running it
 
