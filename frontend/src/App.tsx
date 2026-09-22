@@ -1,3 +1,4 @@
+import { CLOUD_VIEWER } from '@/lib/api-client'
 import { useCallback, useMemo, useState } from 'react'
 import { Toaster } from 'sonner'
 
@@ -157,7 +158,7 @@ function App() {
       <Toaster richColors theme="dark" position="bottom-right" />
       <nav aria-label="Workspace" className="border-border-subtle mx-auto flex w-full max-w-[1800px] shrink-0 items-center gap-4 border-b px-4 py-4 text-sm sm:gap-6 sm:px-8">
         <span className="font-medium tracking-tight sm:mr-4">mechlens</span>
-        {(['viewer', 'circuits', 'training', 'dictionaries'] as const).map((item) => <button key={item} aria-current={page === item ? 'page' : undefined}
+        {(CLOUD_VIEWER ? ['viewer'] as const : ['viewer', 'circuits', 'training', 'dictionaries'] as const).map((item) => <button key={item} aria-current={page === item ? 'page' : undefined}
           className={page === item ? 'text-text-primary' : 'text-text-tertiary'} onClick={() => { if (item === 'training') openTraining(); else setPage(item) }}>{item === 'viewer' ? 'Explore' : item === 'circuits' ? 'Circuits' : item === 'training' ? 'Training' : 'Dictionaries'}</button>)}
       </nav>
       {trainingVisited ? <div hidden={page !== 'training'} className={page === 'training' ? 'min-h-0 flex-1 overflow-y-auto' : 'hidden'}><TrainingPage active={page === 'training'} navigation={trainingNavigation} onInspect={inspectDictionary} onDictionaries={openDictionaries} /></div> : null}
@@ -181,7 +182,7 @@ function App() {
             onSelectCell={selectCell}
             onSelectLayer={selectLayer}
             onSelectPosition={selectPosition}
-            onExplain={explainPrediction}
+            onExplain={CLOUD_VIEWER ? undefined : explainPrediction}
             progress={progress}
             selection={currentSelection}
             status={status}

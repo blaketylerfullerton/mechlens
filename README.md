@@ -14,7 +14,7 @@ There is a second half: a training workspace that trains your *own* SAE on one
 layer, measures how good it is, and labels its features with a local LLM. See
 [Training your own SAE](#training-your-own-sae).
 
-**The inference backend is now installable from this repository:** `pip install -e .`, then `mechlens serve`. The browser UI still runs separately; cloud pairing and automatic tunnels are not implemented yet. See [Serving the inference API](#serving-the-inference-api).
+**The inference backend is now installable from this repository:** `pip install -e .`, then `mechlens serve`. The browser UI still runs separately. `mechlens serve --cloud <url>` pairs the GPU with a Mechlens Cloud workspace over a tunnel. See [Serving the inference API](#serving-the-inference-api).
 
 
 ## Where this is going
@@ -100,6 +100,35 @@ mechlens trace --help
 ```
 
 Editable installs reuse `backend/data` when it exists. Otherwise `serve` defaults to `~/.local/share/mechlens`. `--data-dir` or `MECHLENS_DATA_DIR` selects the labels database (`neuronpedia.db`), training runs, and circuit analyses. `MECHLENS_TRAINING_DIR` can still override the training path. Assets are not bundled or downloaded by this command: copy/build the label database and atlas as described below to enable those features. Model downloads retain Hugging Face's normal cache location. The existing trace CLI retains its existing output-directory behavior.
+
+### Connecting this GPU to Mechlens Cloud
+
+```bash
+mechlens serve --cloud https://your-mechlens-cloud.example.com
+```
+
+This prints an activation code. Sign in to the cloud app in a browser, open
+`/activate`, and type the code. The GPU then serves your workspace until you
+stop the process.
+
+Nothing is configured on this machine and no Cloudflare account is used:
+`--cloud` starts an anonymous `cloudflared` quick tunnel, generates a bearer
+token for this run, and reports both to the cloud only after checking that a
+request actually reaches this process through the tunnel. The tunnel hostname
+is internal plumbing — browsers talk to the cloud app, which proxies — so a
+throwaway hostname is fine. Install `cloudflared` first; no login is required.
+
+Quick tunnels have no uptime guarantee and sometimes fail to route. Any other
+public HTTPS URL works instead, including the port-forwarding URL most rented
+GPU hosts already provide:
+
+```bash
+mechlens serve --cloud https://your-mechlens-cloud.example.com \
+               --tunnel-url https://abc123-8000.proxy.your-gpu-host.com
+```
+
+That URL must reach this API's port, and the port must not be exposed without
+the token that `--cloud` generates.
 
 ### Authentication for remote connections
 

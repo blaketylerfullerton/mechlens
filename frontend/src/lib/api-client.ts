@@ -11,7 +11,12 @@ import type {
 // Exported because the UI prints it: an empty state that tells you to call the
 // API, or an error that says it could not be reached, has to name the same URL
 // this client actually uses rather than a plausible-looking one.
-export const API_BASE_URL: string = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
+export const CLOUD_VIEWER = import.meta.env.VITE_CLOUD_VIEWER === 'true'
+const workspace = new URLSearchParams(window.location.search).get('workspace')
+if (CLOUD_VIEWER && !/^[a-f0-9]{32}$/.test(workspace ?? '')) throw new Error('Missing cloud workspace')
+export const API_BASE_URL: string = CLOUD_VIEWER
+  ? `/api/workspaces/${workspace}/inference`
+  : import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000' 
 
 const BASE_URL = API_BASE_URL
 

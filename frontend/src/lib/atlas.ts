@@ -223,7 +223,7 @@ export function sourceClaim(source: AtlasSource): string {
 }
 
 /** Load the idle atlas, or null if it is not there or not readable. */
-export async function loadAtlas(url = '/atlas-idle.json'): Promise<Atlas | null> {
+export async function loadAtlas(url = `${import.meta.env.BASE_URL}atlas-idle.json`): Promise<Atlas | null> {
   try {
     const response = await fetch(url)
     if (!response.ok) return null

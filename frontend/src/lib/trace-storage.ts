@@ -1,5 +1,5 @@
 import type { Trace } from './api-types'
-import { API_BASE_URL } from './api-client'
+import { API_BASE_URL, CLOUD_VIEWER } from './api-client'
 
 // IndexedDB avoids localStorage's small synchronous quota for multi-MB traces.
 // Keep one completed trace per backend. Partial runs never replace it.
@@ -16,6 +16,7 @@ function openDatabase(): Promise<IDBDatabase> {
 }
 
 export async function readLastTrace(): Promise<Trace | null> {
+  if (CLOUD_VIEWER) return null
   const database = await openDatabase()
   try {
     return await new Promise((resolve, reject) => {
@@ -35,6 +36,7 @@ export async function readLastTrace(): Promise<Trace | null> {
 }
 
 export async function saveLastTrace(trace: Trace): Promise<void> {
+  if (CLOUD_VIEWER) return
   const database = await openDatabase()
   try {
     await new Promise<void>((resolve, reject) => {
@@ -53,6 +55,7 @@ export async function saveLastTrace(trace: Trace): Promise<void> {
  * Resolves even when there was nothing stored: "already gone" is the state
  * the caller asked for. */
 export async function clearLastTrace(): Promise<void> {
+  if (CLOUD_VIEWER) return
   const database = await openDatabase()
   try {
     await new Promise<void>((resolve, reject) => {
