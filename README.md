@@ -14,7 +14,7 @@ There is a second half: a training workspace that trains your *own* SAE on one
 layer, measures how good it is, and labels its features with a local LLM. See
 [Training your own SAE](#training-your-own-sae).
 
-**The inference backend is now installable from this repository:** `pip install -e .`, then `mechlens serve`. The browser UI lives in the Mechlens Cloud repository and runs separately. `mechlens serve --cloud <url>` pairs the GPU with a Mechlens Cloud workspace over a tunnel. See [Serving the inference API](#serving-the-inference-api).
+**The inference backend is now installable from this repository:** `pip install -e .`, then `mechlens serve`. The browser UI lives in the Mechlens Cloud repository and runs separately. `mechlens serve --cloud <url>` pairs the GPU with a Mechlens Cloud workspace; the GPU dials out, so no tunnel or open port is needed. See [Serving the inference API](#serving-the-inference-api).
 
 
 ## Where this is going
@@ -104,8 +104,6 @@ and tells you to run `mechlens download`.
 - Circuit tracing and SAE training need files `mechlens download` does not
   fetch (transcoders, training data). To let those download, run with
   `MECHLENS_ALLOW_DOWNLOADS=1 mechlens serve`.
-- The one exception is `cloudflared`. `--cloud` downloads it to
-  `~/.local/bin/cloudflared` the first time if it is not installed.
 
 For an existing environment that already has `backend/requirements.txt` installed, use `pip install --no-deps -e .` to register the command without resolving dependencies again. A fresh install uses the existing backend requirements, including the pinned Git dependency for circuit tracing; it requires Git and can download substantial model-runtime dependencies. This package is not published to PyPI yet.
 
@@ -127,19 +125,20 @@ mechlens serve --cloud https://your-mechlens-cloud.example.com
 
 This prints an activation code. Sign in to the cloud app in a browser, open
 `/activate`, and type the code. The GPU then serves your workspace until you
-stop the process.
+stop the process. The terminal and the cloud's Compute page both show what it
+is doing: code accepted, model loading, ready, or the error that stopped it.
 
-Nothing is configured on this machine and no Cloudflare account is used:
-`--cloud` starts an anonymous `cloudflared` quick tunnel, generates a bearer
-token for this run, and reports both to the cloud only after checking that a
-request actually reaches this process through the tunnel. The tunnel hostname
-is internal plumbing — browsers talk to the cloud app, which proxies — so a
-throwaway hostname is fine. If `cloudflared` is not installed, it is downloaded
-to `~/.local/bin/cloudflared` on first use; no login is required.
+Nothing is configured on this machine and nothing listens on the internet. The
+GPU makes ordinary outbound HTTPS requests to the cloud and asks it for work;
+the cloud hands it browser requests, and it answers them from this API on
+loopback. If this box can reach the cloud's URL, it works, including behind NAT,
+strict firewalls, and managed notebooks that forbid tunnels. A box that only
+reaches the internet through a proxy works too: `HTTPS_PROXY` is honored. If
+the network drops or the cloud redeploys, the GPU reconnects by itself.
 
-Quick tunnels have no uptime guarantee and sometimes fail to route. Any other
-public HTTPS URL works instead, including the port-forwarding URL most rented
-GPU hosts already provide:
+If you already have a public HTTPS URL for this API (for example the
+port-forwarding URL a rented GPU host provides), the cloud can call it
+directly instead:
 
 ```bash
 mechlens serve --cloud https://your-mechlens-cloud.example.com \
