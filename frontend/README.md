@@ -1,32 +1,14 @@
-# React + TypeScript + Vite
+# The viewer has moved
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+The single viewer source now lives in `mechlens-cloud/frontend/src/viewer`.
 
-Currently, two official plugins are available:
+For standalone development, run `npm ci` then `npm run dev:local` in
+`mechlens-cloud/frontend`, and `mechlens serve` on the GPU machine.
+Open http://localhost:5173; the default API is http://localhost:8000.
+Set `VITE_API_BASE_URL` to override the local API URL.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+`make dev` in Mechlens uses that same Cloud checkout (override its location
+with `CLOUD_FRONTEND=/path/to/mechlens-cloud/frontend`).
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
-```
-
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+For the hosted workspace, run `make up` in `mechlens-cloud` and pair the GPU
+with `mechlens serve --cloud http://localhost:5175`.

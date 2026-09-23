@@ -4,13 +4,15 @@
 #   make down   stop whatever `make dev` started
 #
 # Logs and PIDs live in .dev/ (gitignored). Backend serves on :8000, the port
-# the frontend's VITE_API_BASE_URL points at.
+# the shared Cloud frontend uses in standalone mode.
 #
 # `dev` refuses to start on top of a live run: a second vite cannot have 5173,
 # so it silently takes 5174 and you end up with the browser on one port and a
 # stale build serving the other.
 
 BACKEND_PORT ?= 8000
+CLOUD_FRONTEND ?= ../mechlens-cloud/frontend
+VIEWER_DIR := $(abspath $(CLOUD_FRONTEND))
 
 # Prefer the repo-root venv if it exists, else fall back to whatever's on PATH.
 # The venv path is made absolute because the backend starts from backend/.
@@ -24,12 +26,12 @@ FRONTEND_PID := $(RUN)/frontend.pid
 .PHONY: dev down check-stale
 
 dev: check-stale $(RUN)
-	@if [ ! -f frontend/.env ]; then cp frontend/.env.example frontend/.env; fi
+	@test -f "$(VIEWER_DIR)/package.json" || { echo "Set CLOUD_FRONTEND to the mechlens-cloud/frontend checkout"; exit 1; }
 	@echo "starting backend on :$(BACKEND_PORT) ..."
 	@cd backend && setsid $(UVICORN) app.service.app:app --port $(BACKEND_PORT) \
 		> ../$(RUN)/backend.log 2>&1 & echo $$! > $(BACKEND_PID)
 	@echo "starting frontend ..."
-	@cd frontend && setsid npm run dev > ../$(RUN)/frontend.log 2>&1 & echo $$! > $(FRONTEND_PID)
+	@setsid env VITE_API_BASE_URL=http://localhost:$(BACKEND_PORT) npm --prefix "$(VIEWER_DIR)" run dev:local > $(RUN)/frontend.log 2>&1 & echo $$! > $(FRONTEND_PID)
 	@printf "waiting for the backend to answer on :$(BACKEND_PORT) "
 	@for i in $$(seq 1 40); do \
 		if curl -sf -m 2 http://localhost:$(BACKEND_PORT)/health > $(RUN)/health.json 2>/dev/null; then \

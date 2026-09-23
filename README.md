@@ -14,7 +14,7 @@ There is a second half: a training workspace that trains your *own* SAE on one
 layer, measures how good it is, and labels its features with a local LLM. See
 [Training your own SAE](#training-your-own-sae).
 
-**The inference backend is now installable from this repository:** `pip install -e .`, then `mechlens serve`. The browser UI still runs separately. `mechlens serve --cloud <url>` pairs the GPU with a Mechlens Cloud workspace over a tunnel. See [Serving the inference API](#serving-the-inference-api).
+**The inference backend is now installable from this repository:** `pip install -e .`, then `mechlens serve`. The browser UI lives in the Mechlens Cloud repository and runs separately. `mechlens serve --cloud <url>` pairs the GPU with a Mechlens Cloud workspace over a tunnel. See [Serving the inference API](#serving-the-inference-api).
 
 
 ## Where this is going
@@ -75,7 +75,7 @@ saying how much to trust what you are looking at.
 python -m venv venv && source venv/bin/activate
 pip install -r backend/requirements.txt
 huggingface-cli login   # gemma is gated: accept the license at hf.co/google/gemma-2-2b
-npm --prefix frontend install
+npm --prefix ../mechlens-cloud/frontend ci
 ```
 
 The CLI below needs only the Python half. The browser interface needs both.
@@ -91,7 +91,7 @@ mechlens serve
 
 For an existing environment that already has `backend/requirements.txt` installed, use `pip install --no-deps -e .` to register the command without resolving dependencies again. A fresh install uses the existing backend requirements, including the pinned Git dependency for circuit tracing; it requires Git and can download substantial model-runtime dependencies. This package is not published to PyPI yet.
 
-The API binds to `127.0.0.1:8000`. It starts listening while the model warms up; `GET /health` reports `loading`, `ready`, or `error`. Gemma still requires Hugging Face access and an accepted model license. Stop with Ctrl+C. Start the existing Vite frontend separately (`npm --prefix frontend run dev`) to use the local UI.
+The API binds to `127.0.0.1:8000`. It starts listening while the model warms up; `GET /health` reports `loading`, `ready`, or `error`. Gemma still requires Hugging Face access and an accepted model license. Stop with Ctrl+C. The viewer source lives in `mechlens-cloud/frontend`. Start it with `npm --prefix ../mechlens-cloud/frontend run dev:local` to use the local UI.
 
 ```bash
 mechlens serve --help
@@ -140,7 +140,7 @@ Set a secret through `MECHLENS_API_TOKEN` or a token file. Do not pass the secre
 mechlens serve --token-file /tmp/mechlens-api-token
 ```
 
-Requests then require `Authorization: Bearer <token>`, including `/health`, `/stats`, docs, and all inference routes. Use HTTPS through a tunnel for remote traffic. For a tunnel connector on the same machine, keep the default loopback bind. Explicit non-loopback binding (`--host 0.0.0.0`) requires a token. Existing direct Uvicorn launches also honor `MECHLENS_API_TOKEN`, but only `mechlens serve` enforces the bind-address check. The local frontend does not inject this token yet; the cloud proxy will eventually attach it server-side.
+Requests then require `Authorization: Bearer <token>`, including `/health`, `/stats`, docs, and all inference routes. Use HTTPS through a tunnel for remote traffic. For a tunnel connector on the same machine, keep the default loopback bind. Explicit non-loopback binding (`--host 0.0.0.0`) requires a token. Existing direct Uvicorn launches also honor `MECHLENS_API_TOKEN`, but only `mechlens serve` enforces the bind-address check. The local frontend does not inject this token; the Cloud proxy attaches it server-side.
 
 ### Jupyter / GPU notebooks
 
@@ -165,8 +165,10 @@ make dev     # backend on :8000, frontend on :5173, both in the background
 make down    # stop them
 ```
 
-`make dev` copies `frontend/.env.example` into place on first run and waits for
-the backend to answer `/health` before printing its URLs. The model loads in the
+`make dev` runs the single viewer source from `../mechlens-cloud/frontend` in
+local mode (override the checkout with `CLOUD_FRONTEND=/path/to/frontend`).
+Run `npm ci` there first. It waits for the backend to answer `/health` before
+printing its URLs. The model loads in the
 background, so `/trace` answers 503 until it is ready and the UI retries on its
 own. Logs and PIDs live in `.dev/` (gitignored).
 
@@ -178,10 +180,9 @@ one port and a stale server on the other.
 make site    # the landing page on :5180, foreground
 ```
 
-`site/` is the landing page and is deliberately standalone — no backend, no
-model, no GPU — because it is meant to deploy somewhere public, unlike
-`frontend/`, which is the local tool. It is not deployed anywhere today; that is
-roadmap item 1.
+`site/` is the older standalone landing-page project. The active Cloud landing
+page and the single viewer source live in `mechlens-cloud/frontend`.
+`frontend/README.md` points to the new viewer location.
 
 ## Use
 
@@ -533,7 +534,7 @@ intended hardware has not been run yet.
 | `scripts/import_neuronpedia.py` | one-time load of the explanation export into SQLite |
 | `scripts/verify_neuronpedia_mapping.py` | proves our SAE features are the ones Neuronpedia labelled |
 | `scripts/build_feature_atlas.py` | one-time UMAP layout of every feature; the only module importing umap |
-| `frontend/` | the local tool — trace viewer, atlas, chat panel, Training page (vite, :5173) |
+| `../mechlens-cloud/frontend/src/viewer/` | the single viewer source; hosted in Cloud or run in local mode (:5173) |
 | `site/` | the landing page; standalone, no backend, not deployed yet (:5180) |
 
 `LayerState.edges` holds `resid`/`attn`/`mlp` contributions once the
@@ -588,3 +589,9 @@ optional. And `test_atlas_deps.py` imports each module in a fresh interpreter to
 confirm `umap` never reaches the service: the atlas is a precomputed table, so
 serving it needs no projection library, and `app/schema.py` still imports
 nothing but pydantic.
+
+### Viewer contract tests
+
+The TypeScript lit-set contract tests use the adjacent Cloud checkout. Set
+`MECHLENS_VIEWER_ROOT=/path/to/mechlens-cloud/frontend/src/viewer` when it is
+elsewhere. These tests require Node 22+ and skip when viewer sources are absent.

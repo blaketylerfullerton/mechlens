@@ -1,4 +1,4 @@
-"""`frontend/src/lib/lit.ts`, exercised against real trace shapes.
+"""`mechlens-cloud/frontend/src/viewer/lib/lit.ts`, exercised against real trace shapes.
 
 Which features a trace lights is where almost every honesty requirement on the
 brain view actually lives — the scope, the top-k slice, the BOS exclusion, the
@@ -15,6 +15,7 @@ would fail exactly the way the original could, which is the failure mode
 from __future__ import annotations
 
 import json
+import os
 import re
 import tempfile
 import subprocess
@@ -22,8 +23,9 @@ from pathlib import Path
 
 import pytest
 
-FRONTEND = Path(__file__).resolve().parents[2] / "frontend"
-LIT = FRONTEND / "src" / "lib" / "lit.ts"
+VIEWER = Path(os.environ.get("MECHLENS_VIEWER_ROOT",
+    Path(__file__).resolve().parents[3] / "mechlens-cloud" / "frontend" / "src" / "viewer"))
+LIT = VIEWER / "lib" / "lit.ts"
 
 
 def _node_available() -> bool:
@@ -49,7 +51,7 @@ def _stage(into: Path) -> Path:
     rewrite of the specifier only — no logic is restated, which is the whole
     point of running the real file.
     """
-    lib = FRONTEND / "src" / "lib"
+    lib = VIEWER / "lib"
     for name in ("lit.ts", "atlas.ts", "api-types.ts", "kdtree.ts"):
         source = (lib / name).read_text()
         source = re.sub(r"(from\s+'\./[A-Za-z0-9_-]+)'", r"\1.ts'", source)
