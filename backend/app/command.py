@@ -19,13 +19,37 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--token-file", type=Path, help="read bearer token from a file; alternatively set MECHLENS_API_TOKEN")
     serve.add_argument("--cloud", metavar="URL", help="pair this GPU with a Mechlens Cloud workspace over a quick tunnel")
     serve.add_argument("--tunnel-url", metavar="URL", help="with --cloud: use this public HTTPS URL instead of starting cloudflared")
+    download = sub.add_parser("download", help="download gemma-2-2b and its Gemma Scope SAEs (nothing else downloads them)")
+    download.add_argument("--no-saes", action="store_true", help="only the model weights, not the ~8GB of SAEs")
     for command in ("trace", "enrich", "show", "experiment"):
         sub.add_parser(command, add_help=False, help=f"run the existing {command} CLI")
     return parser
 
 
+def block_hub_downloads() -> None:
+    """Make Hugging Face read only what is already cached; a missing file errors instead of downloading.
+
+    Must run before anything imports huggingface_hub, which reads these once at import.
+    MECHLENS_ALLOW_DOWNLOADS=1 turns it off.
+    """
+    if os.environ.get("MECHLENS_ALLOW_DOWNLOADS") == "1":
+        return
+    for name in ("HF_HUB_OFFLINE", "HF_DATASETS_OFFLINE", "TRANSFORMERS_OFFLINE"):
+        os.environ[name] = "1"
+    # transformers <=4.57.3 asks the hub "is this a Mistral model?" on every
+    # tokenizer load, ignoring offline mode. None of our models are; answer no.
+    import types
+    import huggingface_hub
+    huggingface_hub.model_info = lambda *args, **kwargs: types.SimpleNamespace(tags=None)
+
+
 def main(argv: list[str] | None = None) -> None:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "download":
+        from .downloads import download
+        download(build_parser().parse_args(argv).no_saes)
+        return
+    block_hub_downloads()
     if argv and argv[0] in {"trace", "enrich", "show", "experiment"}:
         from .cli import build_parser as legacy_parser
         args = legacy_parser().parse_args(argv)

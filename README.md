@@ -86,12 +86,30 @@ From the repository root, in your Python environment:
 
 ```bash
 pip install -e .
+mechlens download   # once per machine: gemma-2-2b (~5GB) + Gemma Scope SAEs (~8GB)
 mechlens serve
 ```
 
+### No automatic downloads
+
+Mechlens never downloads model weights, SAEs, or datasets on its own. Every
+command except `mechlens download` runs with Hugging Face in offline mode, so
+it only uses what is already in `~/.cache/huggingface`. If something is
+missing, the server does not quietly fetch gigabytes. It says what is missing
+and tells you to run `mechlens download`.
+
+- `mechlens download` fetches gemma-2-2b and the 26 Gemma Scope SAEs.
+  `--no-saes` fetches only the model. Accept the license at
+  hf.co/google/gemma-2-2b and run `huggingface-cli login` first.
+- Circuit tracing and SAE training need files `mechlens download` does not
+  fetch (transcoders, training data). To let those download, run with
+  `MECHLENS_ALLOW_DOWNLOADS=1 mechlens serve`.
+- The one exception is `cloudflared`. `--cloud` downloads it to
+  `~/.local/bin/cloudflared` the first time if it is not installed.
+
 For an existing environment that already has `backend/requirements.txt` installed, use `pip install --no-deps -e .` to register the command without resolving dependencies again. A fresh install uses the existing backend requirements, including the pinned Git dependency for circuit tracing; it requires Git and can download substantial model-runtime dependencies. This package is not published to PyPI yet.
 
-The API binds to `127.0.0.1:8000`. It starts listening while the model warms up; `GET /health` reports `loading`, `ready`, or `error`. Gemma still requires Hugging Face access and an accepted model license. Stop with Ctrl+C. The viewer source lives in `mechlens-cloud/frontend`. Start it with `npm --prefix ../mechlens-cloud/frontend run dev:local` to use the local UI.
+The API binds to `127.0.0.1:8000`. It starts listening while the model warms up; `GET /health` reports `loading`, `ready`, or `error`. Stop with Ctrl+C. The viewer source lives in `mechlens-cloud/frontend`. Start it with `npm --prefix ../mechlens-cloud/frontend run dev:local` to use the local UI.
 
 ```bash
 mechlens serve --help
@@ -99,7 +117,7 @@ mechlens serve --port 8001 --data-dir /path/to/persistent/mechlens
 mechlens trace --help
 ```
 
-Editable installs reuse `backend/data` when it exists. Otherwise `serve` defaults to `~/.local/share/mechlens`. `--data-dir` or `MECHLENS_DATA_DIR` selects the labels database (`neuronpedia.db`), training runs, and circuit analyses. `MECHLENS_TRAINING_DIR` can still override the training path. Assets are not bundled or downloaded by this command: copy/build the label database and atlas as described below to enable those features. Model downloads retain Hugging Face's normal cache location. The existing trace CLI retains its existing output-directory behavior.
+Editable installs reuse `backend/data` when it exists. Otherwise `serve` defaults to `~/.local/share/mechlens`. `--data-dir` or `MECHLENS_DATA_DIR` selects the labels database (`neuronpedia.db`), training runs, and circuit analyses. `MECHLENS_TRAINING_DIR` can still override the training path. Assets are not bundled or downloaded by this command: copy/build the label database and atlas as described below to enable those features. Models are read from Hugging Face's normal cache location. The existing trace CLI retains its existing output-directory behavior.
 
 ### Connecting this GPU to Mechlens Cloud
 
@@ -116,7 +134,8 @@ Nothing is configured on this machine and no Cloudflare account is used:
 token for this run, and reports both to the cloud only after checking that a
 request actually reaches this process through the tunnel. The tunnel hostname
 is internal plumbing — browsers talk to the cloud app, which proxies — so a
-throwaway hostname is fine. Install `cloudflared` first; no login is required.
+throwaway hostname is fine. If `cloudflared` is not installed, it is downloaded
+to `~/.local/bin/cloudflared` on first use; no login is required.
 
 Quick tunnels have no uptime guarantee and sometimes fail to route. Any other
 public HTTPS URL works instead, including the port-forwarding URL most rented

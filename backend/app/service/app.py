@@ -101,6 +101,9 @@ def create_app(
         try:
             state["model"] = model_cache.get_model()
         except Exception as exc:  # reported by /health and as a 503 per route
+            if os.environ.get("HF_HUB_OFFLINE") == "1":
+                exc = RuntimeError(f"{exc}\nDownloads are off. Run `mechlens download` once to fetch the weights.")
+            print(f"Model failed to load: {exc}", flush=True)
             state["load_error"] = exc
 
     def get_model() -> HookedTransformer:
