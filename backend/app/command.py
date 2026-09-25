@@ -19,6 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--token-file", type=Path, help="read bearer token from a file; alternatively set MECHLENS_API_TOKEN")
     serve.add_argument("--cloud", metavar="URL", help="pair this GPU with a Mechlens Cloud workspace; it dials out, so no tunnel or open port is needed")
     serve.add_argument("--tunnel-url", metavar="URL", help="with --cloud: have the cloud call this public HTTPS URL directly instead of relaying through the outbound connection")
+    sub.add_parser("export-run", add_help=False, help="export a saved dictionary for Cloud import")
     download = sub.add_parser("download", help="download gemma-2-2b and its Gemma Scope SAEs (nothing else downloads them)")
     download.add_argument("--no-saes", action="store_true", help="only the model weights, not the ~8GB of SAEs")
     for command in ("trace", "enrich", "show", "experiment"):
@@ -45,6 +46,10 @@ def block_hub_downloads() -> None:
 
 def main(argv: list[str] | None = None) -> None:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "export-run":
+        from .export_run import main as export_main
+        export_main(argv[1:])
+        return
     if argv and argv[0] == "download":
         from .downloads import download
         download(build_parser().parse_args(argv).no_saes)

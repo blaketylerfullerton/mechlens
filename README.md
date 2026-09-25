@@ -613,3 +613,21 @@ nothing but pydantic.
 The TypeScript lit-set contract tests use the adjacent Cloud checkout. Set
 `MECHLENS_VIEWER_ROOT=/path/to/mechlens-cloud/frontend/src/viewer` when it is
 elsewhere. These tests require Node 22+ and skip when viewer sources are absent.
+
+### Export a trained dictionary to Mechlens Cloud
+
+`mechlens export-run` uses only the standard library and never loads a model.
+
+```bash
+mechlens export-run --list
+mechlens export-run --run RUN_ID --output ~/Downloads/mechlens-run.zip
+```
+
+Open Cloud → Dictionaries and import the ZIP. The export preserves the saved
+run, retained metrics, current checkpoint (including resume state), examples,
+labels, and interpretation-job records. It includes user-supplied training text.
+Original files remain untouched. Use `--training-dir /path/to/training` to select
+another store; the existing data-directory environment variables are honored.
+Only stopped runs with saved checkpoints can be exported. Cloud preserves the
+snapshot independently of GPU pairing; executing/resuming an imported dictionary
+from Cloud is a separate feature.
