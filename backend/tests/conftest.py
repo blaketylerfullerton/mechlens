@@ -25,3 +25,11 @@ def _restore_environ():
 def _private_state_dir(tmp_path, monkeypatch):
     """A paired CloudLink writes its session file here; never into the real home."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+
+@pytest.fixture
+def gemma_default(monkeypatch):
+    """For tests written against Gemma Scope data (its source sets, its 26
+    layers, its 16k width): pin the default model rather than rewriting them
+    around whatever the built-in default happens to be."""
+    monkeypatch.setenv("MECHLENS_MODEL", "gemma-2-2b")

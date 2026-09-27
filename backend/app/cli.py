@@ -26,9 +26,9 @@ from pathlib import Path
 import numpy as np
 
 from .capture import DEFAULT_MAX_NEW_TOKENS, DEFAULT_TOP_K, generate_trace
-from .model_cache import MODEL_NAME, get_model
+from .model_cache import get_model
 from .passes import apply
-from .labels import DEFAULT_DB_PATH, feature_url
+from .labels import feature_url
 from .passes.attribution import DEFAULT_TOP_K as ATTRIBUTION_TOP_K
 from .passes.attribution import AttributionPass
 from .passes.labels import LabelsPass
@@ -36,7 +36,6 @@ from .passes.lens import DEFAULT_TOP_K as LENS_TOP_K
 from .passes.lens import LogitLensPass
 from .passes.sae import DEFAULT_TOP_K as SAE_TOP_K
 from .passes.sae import SAEPass
-from .sae_cache import DEFAULT_WIDTH
 from .schema import Trace
 from .store import DEFAULT_TRACE_DIR, load, save_trace, update_trace
 
@@ -125,7 +124,7 @@ def print_sae_summary(trace: Trace, layer: int | None = None, position: int | No
         # taken on faith — click through and the activating examples should
         # look like the label says they will.
         top = state.features[0]
-        print(f"\n  {feature_url(layer, top.index)}")
+        print(f"\n  {feature_url(layer, top.index, record.params['width'], record.params['release'])}")
 
 
 def print_lens_summary(trace: Trace, position: int | None = None) -> None:
@@ -280,7 +279,7 @@ def cmd_trace(args: argparse.Namespace) -> None:
     if args.sae:
         layers = parse_layers(args.layers, result.trace.n_layers)
         apply(
-            SAEPass(width=args.width or DEFAULT_WIDTH, top_k=args.sae_top_k, layers=layers, device=args.device),
+            SAEPass(width=args.width, top_k=args.sae_top_k, layers=layers, device=args.device),
             result.trace,
             result.residuals,
         )
@@ -333,7 +332,7 @@ def cmd_enrich(args: argparse.Namespace) -> None:
     if args.sae:
         layers = parse_layers(args.layers, trace.n_layers)
         apply(
-            SAEPass(width=args.width or DEFAULT_WIDTH, top_k=args.sae_top_k, layers=layers, device=args.device),
+            SAEPass(width=args.width, top_k=args.sae_top_k, layers=layers, device=args.device),
             trace,
             residuals,
         )
@@ -413,7 +412,9 @@ def cmd_experiment(args: argparse.Namespace) -> None:
     from .sae_cache import get_sae
 
     model = get_model()
-    sae = get_sae(args.layer, args.width)
+    from .profiles import get_release, release_for
+    spec = release_for(model.cfg.model_name) or get_release()
+    sae = get_sae(args.layer, args.width, None, spec.release)
     if args.target_token_id is not None:
         target = args.target_token_id
     else:
@@ -425,7 +426,8 @@ def cmd_experiment(args: argparse.Namespace) -> None:
     for role, prompts in (("example", args.prompt), ("control", args.control_prompt)):
         for prompt in prompts:
             report = measure_feature(model, sae, prompt, args.layer, args.feature_idx,
-                                     target, args.coefficients, width=args.width, position=args.position)
+                                     target, args.coefficients, width=args.width, position=args.position,
+                                     release=spec.release)
             report["role"] = role
             reports.append(report)
     args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -444,7 +446,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
 
     def add_sae_flags(sp: argparse.ArgumentParser) -> None:
-        sp.add_argument("--width", default=None, help="SAE width: 16k, 65k, 262k")
+        sp.add_argument("--width", default=None, help="SAE width, as the release names it (gemma: 16k, 65k, 262k; default: the release's first)")
         sp.add_argument("--sae-top-k", type=int, default=SAE_TOP_K, help="features kept per layer")
         sp.add_argument("--layers", help="subset to encode, e.g. '0-5,20' (default: all)")
         sp.add_argument("--device", help="cuda / cpu (default: cuda when available)")
@@ -459,7 +461,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     def add_label_flags(sp: argparse.ArgumentParser) -> None:
         sp.add_argument("--labels", action="store_true", help="attach Neuronpedia labels")
-        sp.add_argument("--labels-db", type=Path, default=DEFAULT_DB_PATH)
+        sp.add_argument("--labels-db", type=Path, default=None, help="label DB (default: the SAE release's own, under the data directory)")
         sp.add_argument(
             "--fetch-missing",
             action="store_true",
@@ -480,7 +482,7 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("-p", "--prompt", default=PROMPT)
     t.add_argument("-n", "--max-new-tokens", type=int, default=DEFAULT_MAX_NEW_TOKENS)
     t.add_argument("-k", "--top-k", type=int, default=DEFAULT_TOP_K, help="next-token candidates kept")
-    t.add_argument("--model", default=MODEL_NAME)
+    t.add_argument("--model", default=None, help="TransformerLens model (default: MECHLENS_MODEL or the built-in default)")
     t.add_argument("--out-dir", type=Path, default=DEFAULT_TRACE_DIR)
     t.add_argument("--name", help="filename stem; defaults to the generated trace id")
     t.add_argument("--no-stop-at-eos", action="store_true")
@@ -514,7 +516,7 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument("--layer", type=int, required=True)
     x.add_argument("--feature-idx", type=int, required=True)
     x.add_argument("--position", type=int, help="intervention token position, including BOS; default last")
-    x.add_argument("--width", default=DEFAULT_WIDTH, choices=["16k", "65k", "262k"])
+    x.add_argument("--width", default=None, help="SAE width (default: the release's first)")
     target = x.add_mutually_exclusive_group(required=True)
     target.add_argument("--target", help="exact next-token text, including leading space")
     target.add_argument("--target-token-id", type=int)

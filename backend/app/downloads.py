@@ -5,27 +5,34 @@ first just avoids waiting on a multi-GB fetch when the server starts.
 """
 from __future__ import annotations
 
-MODEL_REPO = "google/gemma-2-2b"
-# Only what TransformerLens loads; the repo also carries a ~10GB .gguf we never use.
-MODEL_FILES = ["*.json", "*.safetensors", "tokenizer.model"]
+from .profiles import get_profile
 
 
-def download(skip_saes: bool = False) -> None:
+def download(skip_saes: bool = False, model: str | None = None) -> None:
     from huggingface_hub import snapshot_download
     from huggingface_hub.errors import GatedRepoError
+    from transformer_lens.loading_from_pretrained import get_official_model_name
 
-    print(f"Downloading {MODEL_REPO} (~5GB)...", flush=True)
+    profile = get_profile(model)
+    # The repo TransformerLens itself fetches from, so the cache entry is the
+    # one `mechlens serve` reads ("gpt2", not its "openai-community/gpt2" alias).
+    repo = get_official_model_name(profile.load_name)
+    print(f"Downloading {profile.name} from {repo}...", flush=True)
     try:
-        snapshot_download(MODEL_REPO, allow_patterns=MODEL_FILES)
+        snapshot_download(repo, allow_patterns=list(profile.model_files))
     except GatedRepoError:
         raise SystemExit(
-            f"{MODEL_REPO} is gated: accept the license at https://hf.co/{MODEL_REPO}, "
+            f"{repo} is gated: accept the license at https://hf.co/{repo}, "
             "then run `huggingface-cli login` and try again.") from None
-    if not skip_saes:
+    if not skip_saes and profile.saes is not None:
         from sae_lens.loading.pretrained_saes_directory import get_pretrained_saes_directory
-        from .sae_cache import RELEASE
-        release = get_pretrained_saes_directory()[RELEASE]
-        paths = [f"{path}/*" for path in release.saes_map.values()]
-        print(f"Downloading {len(paths)} Gemma Scope SAEs from {release.repo_id} (~8GB)...", flush=True)
+        spec = profile.saes
+        release = get_pretrained_saes_directory()[spec.release]
+        # One SAE per layer at the default width, not every variant the
+        # release publishes — Gemma Scope alone would otherwise be hundreds of GB.
+        paths = [f"{release.saes_map[spec.sae_id(layer)]}/*" for layer in range(profile.n_layers)]
+        print(f"Downloading {len(paths)} {spec.default_width} SAEs from {release.repo_id}...", flush=True)
         snapshot_download(release.repo_id, allow_patterns=paths)
+    elif profile.saes is None:
+        print(f"{profile.name} has no published SAE release; skipping SAEs.", flush=True)
     print("Done. `mechlens serve` will now load everything from ~/.cache/huggingface.", flush=True)

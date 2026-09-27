@@ -19,6 +19,9 @@ from app.passes.sae import SAEPass
 from app.schema import ResidualRef
 from factories import D_MODEL, N_LAYERS, N_TOKENS, make_result
 
+# Written against Gemma Scope data; see conftest.gemma_default.
+pytestmark = pytest.mark.usefixtures("gemma_default")
+
 D_SAE = 32
 
 
@@ -205,7 +208,7 @@ def test_real_gemma_scope_sae_is_jumprelu_gated():
     """
     from app.sae_cache import get_sae
 
-    sae = get_sae(20, device="cpu")
+    sae = get_sae(20, device="cpu", release="gemma-scope-2b-pt-res-canonical")
     assert sae.cfg.d_in == 2304
     assert sae.cfg.d_sae == 16384
 

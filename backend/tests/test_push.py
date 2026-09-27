@@ -59,10 +59,10 @@ def test_picked_run_is_exported_and_uploaded_with_the_session(training, monkeypa
 
     real_upload = push.upload
     monkeypatch.setattr(push, 'upload', lambda session, path: real_upload(session, path, httpx.Client(transport=httpx.MockTransport(cloud))))
-    monkeypatch.setattr(push, 'choose', lambda labels: 0)
+    monkeypatch.setattr(push, 'choose', lambda labels: [0])
     push.main([])
     assert seen == {'auth': 'Bearer tok', 'path': '/api/gpu/dictionaries/import', 'run': RUN}
-    assert 'Pushed' in capsys.readouterr().out
+    assert 'pushed' in capsys.readouterr().out
     assert not list(training.glob('.push-*'))  # the temporary ZIP is cleaned up
 
 
@@ -77,6 +77,32 @@ def test_expired_pairing_is_explained(training, tmp_path):
 
 def test_numbered_fallback_when_not_a_terminal(monkeypatch):
     monkeypatch.setattr('builtins.input', lambda prompt: '2')
-    assert push.choose_by_number(['one', 'two']) == 1
+    assert push.choose_by_number(['one', 'two']) == [1]
+    monkeypatch.setattr('builtins.input', lambda prompt: '1,3-4')
+    assert push.choose_by_number(['a', 'b', 'c', 'd']) == [0, 2, 3]
+    monkeypatch.setattr('builtins.input', lambda prompt: 'all')
+    assert push.choose_by_number(['a', 'b']) == [0, 1]
     monkeypatch.setattr('builtins.input', lambda prompt: '')
-    assert push.choose_by_number(['one']) is None
+    assert push.choose_by_number(['one']) == []
+
+
+def test_all_pushes_every_saved_run_one_zip_each(training, monkeypatch, capsys):
+    other = 'c' * 32
+    (training / other / 'checkpoint-8').mkdir(parents=True)
+    (training / other / 'checkpoint-8' / 'weights').write_bytes(b'more weights')
+    with sqlite3.connect(training / 'runs.sqlite3') as db:
+        run = dict(id=other, status='completed', config={'layer': 5}, checkpoint={'path': other + '/checkpoint-8'})
+        db.execute('INSERT INTO runs VALUES (?,?)', (other, json.dumps(run)))
+    pair(training)
+    sent = []
+
+    def cloud(request):
+        with zipfile.ZipFile(__import__('io').BytesIO(request.read())) as archive:
+            sent.append(json.loads(archive.read('import.json'))['run']['id'])
+        return httpx.Response(200, json={'already_imported': False, 'dictionary': {}})
+
+    real_upload = push.upload
+    monkeypatch.setattr(push, 'upload', lambda session, path: real_upload(session, path, httpx.Client(transport=httpx.MockTransport(cloud))))
+    push.main(['--all'])
+    assert sorted(sent) == sorted([RUN, other])
+    assert 'Done' in capsys.readouterr().out

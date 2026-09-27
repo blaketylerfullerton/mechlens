@@ -12,6 +12,9 @@ import pytest
 
 from app.labels import EXPLAINER_PREFERENCE, LabelRow, LabelStore, feature_url, pick_explanation
 
+# Written against Gemma Scope data; see conftest.gemma_default.
+pytestmark = pytest.mark.usefixtures("gemma_default")
+
 LAYER = 20
 SOURCE_SET = "20-gemmascope-res-16k"
 

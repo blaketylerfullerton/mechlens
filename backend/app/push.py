@@ -64,8 +64,11 @@ def describe(run: dict) -> str:
     return '  ·  '.join(part for part in parts if part)
 
 
-def choose(labels: list[str]) -> int | None:
-    """Arrow keys (or j/k, Tab) to move, Enter to pick, q or Esc to cancel."""
+def choose(labels: list[str]) -> list[int]:
+    """Arrow keys (or j/k, Tab) to move, Space to tick, a to tick all, Enter to push, q or Esc to cancel.
+
+    Enter with nothing ticked pushes the highlighted one.
+    """
     try:
         import termios
         import tty
@@ -73,17 +76,18 @@ def choose(labels: list[str]) -> int | None:
         termios = None
     if termios is None or not (sys.stdin.isatty() and sys.stdout.isatty()):
         return choose_by_number(labels)
-    fd, index = sys.stdin.fileno(), 0
+    fd, index, ticked = sys.stdin.fileno(), 0, set()
     saved = termios.tcgetattr(fd)
 
     def draw(first: bool):
         out = '' if first else f'\x1b[{len(labels)}A'
         for i, label in enumerate(labels):
-            out += '\r\x1b[2K' + (f'\x1b[1m❯ {label}\x1b[0m' if i == index else f'  {label}') + '\n'
+            row = f"{'[x]' if i in ticked else '[ ]'} {label}"
+            out += '\r\x1b[2K' + (f'\x1b[1m❯ {row}\x1b[0m' if i == index else f'  {row}') + '\n'
         sys.stdout.write(out)
         sys.stdout.flush()
 
-    print('Which dictionary do you want to push?  (↑/↓ to move, Enter to push, q to cancel)')
+    print('Which dictionaries do you want to push?  (↑/↓ move, Space tick, a all, Enter push, q cancel)')
     try:
         tty.setcbreak(fd)  # keys arrive one at a time; Ctrl+C still works
         sys.stdout.write('\x1b[?25l')  # hide the cursor while the list is up
@@ -94,10 +98,14 @@ def choose(labels: list[str]) -> int | None:
                 index = (index - 1) % len(labels)
             elif key in (b'\x1b[B', b'j', b'\t'):
                 index = (index + 1) % len(labels)
+            elif key == b' ':
+                ticked ^= {index}
+            elif key == b'a':
+                ticked = set() if len(ticked) == len(labels) else set(range(len(labels)))
             elif key in (b'\n', b'\r'):
-                return index
+                return sorted(ticked) or [index]
             elif key in (b'q', b'\x1b'):
-                return None
+                return []
             draw(False)
     finally:
         sys.stdout.write('\x1b[?25h')
@@ -105,15 +113,24 @@ def choose(labels: list[str]) -> int | None:
         termios.tcsetattr(fd, termios.TCSADRAIN, saved)
 
 
-def choose_by_number(labels: list[str]) -> int | None:
+def choose_by_number(labels: list[str]) -> list[int]:
     for n, label in enumerate(labels, 1):
         print(f'  {n}. {label}')
-    answer = input('Push which one? (number, blank to cancel) ').strip()
+    answer = input('Push which? (e.g. 3, 1,4 or 2-7, "all", blank to cancel) ').strip().lower()
     if not answer:
-        return None
-    if not answer.isdigit() or not 1 <= int(answer) <= len(labels):
-        raise PushError(f'Pick a number from 1 to {len(labels)}')
-    return int(answer) - 1
+        return []
+    if answer == 'all':
+        return list(range(len(labels)))
+    picked = set()
+    for part in answer.replace(' ', '').split(','):
+        low, _, high = part.partition('-')
+        if not low.isdigit() or (high and not high.isdigit()):
+            raise PushError(f'Pick numbers from 1 to {len(labels)}, like 1,3 or 2-5')
+        for n in range(int(low), int(high or low) + 1):
+            if not 1 <= n <= len(labels):
+                raise PushError(f'Pick numbers from 1 to {len(labels)}')
+            picked.add(n - 1)
+    return sorted(picked)
 
 
 def upload(session: dict, path: Path, client: httpx.Client | None = None) -> dict:
@@ -152,9 +169,18 @@ def upload(session: dict, path: Path, client: httpx.Client | None = None) -> dic
     return response.json()
 
 
+def push_one(session: dict, training_dir: Path, run: dict) -> dict:
+    print(f'Packing {describe(run)} ...')
+    # Beside the runs, so a big export stays on the same disk and never in /tmp's RAM.
+    with tempfile.TemporaryDirectory(dir=training_dir, prefix='.push-') as folder:
+        path = export_run(training_dir, run['id'], Path(folder) / f"mechlens-{run['id']}.zip")
+        return upload(session, path)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog='mechlens push', description=__doc__.splitlines()[0].strip('`'))
-    parser.add_argument('--run', help='push this run ID without asking')
+    parser.add_argument('--run', action='append', help='push this run ID without asking (repeat for more)')
+    parser.add_argument('--all', action='store_true', help='push every stopped run with a saved dictionary')
     parser.add_argument('--training-dir', type=Path, help='defaults to the one mechlens serve is using')
     args = parser.parse_args(argv)
     try:
@@ -164,31 +190,42 @@ def main(argv=None):
             raise PushError('Pass --training-dir; the running mechlens serve did not say where its runs are.')
         runs = saved_runs(training_dir)
         if args.run:
-            run = next((r for r in runs if r['id'] == args.run), None)
-            if run is None:
-                raise PushError('That run is not stopped with a saved dictionary (or does not exist).')
+            by_id = {r['id']: r for r in runs}
+            missing = [rid for rid in args.run if rid not in by_id]
+            if missing:
+                raise PushError(f'Not stopped with a saved dictionary (or does not exist): {", ".join(missing)}')
+            chosen = [by_id[rid] for rid in dict.fromkeys(args.run)]
+        elif not runs:
+            raise PushError('No stopped runs with a saved dictionary yet. Train one first.')
+        elif args.all:
+            chosen = runs
         else:
-            if not runs:
-                raise PushError('No stopped runs with a saved dictionary yet. Train one first.')
             if len(runs) > MAX_CHOICES:
-                print(f'Showing the newest {MAX_CHOICES} of {len(runs)}; use --run ID for older ones.')
+                print(f'Showing the newest {MAX_CHOICES} of {len(runs)}; use --all or --run ID for older ones.')
                 runs = runs[:MAX_CHOICES]
-            picked = choose([describe(run) for run in runs])
-            if picked is None:
+            chosen = [runs[i] for i in choose([describe(run) for run in runs])]
+            if not chosen:
                 print('Cancelled. Nothing was pushed.')
                 return
-            run = runs[picked]
-        print(f'Packing {describe(run)} ...')
-        # Beside the runs, so a big export stays on the same disk and never in /tmp's RAM.
-        with tempfile.TemporaryDirectory(dir=training_dir, prefix='.push-') as folder:
-            path = export_run(training_dir, run['id'], Path(folder) / f"mechlens-{run['id']}.zip")
-            result = upload(session, path)
         where = session['cloud_url'].rstrip('/') + '/app/dictionaries'
-        if result.get('already_imported'):
-            print(f'Already in your workspace; nothing new was uploaded. {where}')
-        else:
-            print(f'Pushed. It is in Cloud → Dictionaries: {where}')
+        failed = []
+        for n, run in enumerate(chosen, 1):
+            if len(chosen) > 1:
+                print(f'[{n}/{len(chosen)}]', end=' ')
+            try:
+                result = push_one(session, training_dir, run)
+            except (PushError, ValueError, OSError) as exc:
+                if len(chosen) == 1:
+                    raise
+                print(f'  failed: {exc}')
+                failed.append(run)
+                continue
+            print('  already in your workspace' if result.get('already_imported') else '  pushed')
+        if failed:
+            ids = ' '.join(f'--run {r["id"]}' for r in failed)
+            parser.exit(1, f'Push failed for {len(failed)} of {len(chosen)}. Retry them with: mechlens push {ids}\n')
+        print(f'Done. It is in Cloud → Dictionaries: {where}')
     except (PushError, ValueError, OSError, sqlite3.Error) as exc:
         parser.exit(1, f'Push failed: {exc}\n')
     except KeyboardInterrupt:
-        parser.exit(130, '\nCancelled. Nothing was pushed.\n')
+        parser.exit(130, '\nCancelled. Anything already marked pushed is in your workspace.\n')

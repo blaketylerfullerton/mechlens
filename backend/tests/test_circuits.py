@@ -369,9 +369,9 @@ def test_transcoder_features_are_not_gemma_scope_features():
     """A transcoder approximates an MLP block and has its own feature space. The
     residual SAEs mechlens already serves are a different dictionary, so nothing
     may join them by layer/index."""
-    from app.sae_cache import RELEASE
+    from app.profiles import RELEASES
 
-    assert adapter.TRANSCODER_SET != RELEASE
+    assert adapter.TRANSCODER_SET not in RELEASES
     assert "gemma-scope-2b-pt-res" not in adapter.TRANSCODER_SET
 
 

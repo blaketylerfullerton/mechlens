@@ -1,8 +1,9 @@
-"""Gemma Scope SAE loading, cached per process — the SAE twin of model_cache.
+"""SAE loading, cached per process — the SAE twin of model_cache.
 
-Release `gemma-scope-2b-pt-res-canonical` carries one SAE per layer of
-gemma-2-2b trained on `hook_resid_post`, "canonical" meaning Google's pick of
-the L0 sweep for that layer (~100 active features at 16k width).
+Which release, which SAE per layer and which widths exist come from
+`profiles`; a release defaults to the default model's. The numbers below are
+Gemma Scope's (`gemma-scope-2b-pt-res-canonical`, one SAE per layer of
+gemma-2-2b, "canonical" meaning Google's pick of the L0 sweep for that layer).
 
 Memory: a 16k SAE is W_enc[2304, 16384] + W_dec[16384, 2304] + biases ≈ 302MB
 in fp32, so all 26 come to ~7.9GB. On a unified-memory box (GB10: one 128GB
@@ -23,15 +24,14 @@ from functools import lru_cache
 import torch
 from sae_lens import SAE
 
-RELEASE = "gemma-scope-2b-pt-res-canonical"
-DEFAULT_WIDTH = "16k"
+from .profiles import RESID_HOOK, SAERelease, get_release, reads_layer
 
-# The SAEs are trained on this site; capture.RESID_HOOK must agree with it.
-SAE_HOOK = "hook_resid_post"
+# The trace-side hook site every SAE is matched against; see profiles.reads_layer.
+SAE_HOOK = RESID_HOOK
 
 
-def sae_id(layer: int, width: str = DEFAULT_WIDTH) -> str:
-    return f"layer_{layer}/width_{width}/canonical"
+def sae_id(layer: int, width: str | None = None, release: str | None = None) -> str:
+    return get_release(release).sae_id(layer, width)
 
 
 def pick_device() -> str:
@@ -39,8 +39,8 @@ def pick_device() -> str:
 
 
 @lru_cache(maxsize=None)
-def neuronpedia_id(layer: int, width: str = DEFAULT_WIDTH) -> tuple[str, str]:
-    """Our SAE -> Neuronpedia's (model_id, source_set), e.g. layer 20 at 16k:
+def neuronpedia_id(layer: int, width: str | None = None, release: str | None = None) -> tuple[str, str]:
+    """Our SAE -> Neuronpedia's (model_id, source_set), e.g. Gemma Scope layer 20 at 16k:
 
         ("gemma-2-2b", "20-gemmascope-res-16k")
 
@@ -52,41 +52,59 @@ def neuronpedia_id(layer: int, width: str = DEFAULT_WIDTH) -> tuple[str, str]:
 
     Verified empirically — see scripts/verify_neuronpedia_mapping.py.
     """
-    from sae_lens.loading.pretrained_saes_directory import get_pretrained_saes_directory
-
-    full = get_pretrained_saes_directory()[RELEASE].neuronpedia_id[sae_id(layer, width)]
-    if full is None:
-        raise KeyError(f"SAELens has no Neuronpedia id for {sae_id(layer, width)}")
-    model_id, source_set = full.split("/", 1)
-    return model_id, source_set
+    return get_release(release).neuronpedia_id(layer, width)
 
 
 @lru_cache(maxsize=32)
-def get_sae(layer: int, width: str = DEFAULT_WIDTH, device: str | None = None) -> SAE:
+def get_sae(layer: int, width: str | None = None, device: str | None = None, release: str | None = None) -> SAE:
     """Load one layer's SAE; later calls with the same args reuse it.
 
     fp32 throughout: the residuals on disk are fp32, and at these sizes the
-    precision is free. Downloads ~302MB per layer on first use, then reads
-    from ~/.cache/huggingface.
+    precision is free. Downloads on first use, then reads from
+    ~/.cache/huggingface.
     """
-    sae = SAE.from_pretrained(RELEASE, sae_id(layer, width), device=device or pick_device(), dtype="float32")
+    spec: SAERelease = get_release(release)
+    sae = SAE.from_pretrained(spec.release, spec.sae_id(layer, width), device=device or pick_device(), dtype="float32")
     sae.eval()
 
     # The SAE knows which activation site it was trained on. Trusting the
     # release name here would be how you silently encode resid_pre with a
     # resid_post SAE and get plausible-looking nonsense.
     hook = sae.cfg.metadata.hook_name
-    assert hook == f"blocks.{layer}.{SAE_HOOK}", f"layer {layer} SAE expects {hook}"
+    assert reads_layer(hook, layer), f"layer {layer} SAE expects {hook}"
     return sae
 
 
-def load_layers(layers: list[int], width: str = DEFAULT_WIDTH, device: str | None = None) -> dict[int, SAE]:
-    """Load several SAEs, reporting progress — the first call downloads ~8GB."""
+def expects_centered(sae) -> bool:
+    """Whether the SAE was trained on a model loaded with center_writing_weights.
+
+    gpt2-small-res-jb was. Mechlens loads models unprocessed, so its residuals
+    carry a per-vector mean those SAEs never saw — explained variance goes
+    from ~0.95 to negative on later layers. The fix is exact, not a
+    correction: the residual stream is a sum of writes, so centering every
+    write is the same as subtracting the finished vector's mean
+    (`center_input`). LayerNorm removes that mean anyway, so the model's
+    behaviour is untouched.
+    """
+    metadata = getattr(getattr(sae, "cfg", None), "metadata", None)
+    kwargs = getattr(metadata, "model_from_pretrained_kwargs", None) or {}
+    return bool(kwargs.get("center_writing_weights"))
+
+
+def center_input(sae, x: torch.Tensor) -> torch.Tensor:
+    """`x` as the SAE's training model would have produced it; see expects_centered."""
+    return x - x.mean(dim=-1, keepdim=True) if expects_centered(sae) else x
+
+
+def load_layers(layers: list[int], width: str | None = None, device: str | None = None,
+                release: str | None = None) -> dict[int, SAE]:
+    """Load several SAEs, reporting progress — the first call downloads them."""
     device = device or pick_device()
+    width = get_release(release).check_width(width)
     saes: dict[int, SAE] = {}
     t0 = time.time()
     for i, layer in enumerate(layers):
-        saes[layer] = get_sae(layer, width, device)
+        saes[layer] = get_sae(layer, width, device, release)
         print(f"\rSAEs {i + 1}/{len(layers)} ({time.time() - t0:.0f}s)", end="", flush=True)
     d_sae = saes[layers[0]].cfg.d_sae
     print(f"\rloaded {len(layers)} {width} SAEs (d_sae={d_sae}) in {time.time() - t0:.0f}s on {device}")

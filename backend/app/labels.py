@@ -10,12 +10,17 @@ from pathlib import Path
 
 import numpy as np
 
-from .sae_cache import DEFAULT_WIDTH, neuronpedia_id
+from .profiles import get_release
+from .sae_cache import neuronpedia_id
 from .schema import FeatureLabel
 
 from .paths import data_dir
 
-DEFAULT_DB_PATH = data_dir() / "neuronpedia.db"
+
+def default_db_path(release: str | None = None) -> Path:
+    """One label DB per SAE release, so two models' source sets never share a table."""
+    return data_dir() / get_release(release).label_db
+
 
 SITE = "https://www.neuronpedia.org"
 API = SITE + "/api/feature/{model_id}/{source_set}/{feature}"
@@ -102,23 +107,24 @@ CREATE TABLE IF NOT EXISTS atlas_cluster (
 """
 
 
-def feature_url(layer: int, feature: int, width: str = DEFAULT_WIDTH) -> str:
+def feature_url(layer: int, feature: int, width: str | None = None, release: str | None = None) -> str:
     """The page a user clicks through to for raw activating examples."""
-    model_id, source_set = neuronpedia_id(layer, width)
+    model_id, source_set = neuronpedia_id(layer, width, release)
     return URL_TEMPLATE.format(model_id=model_id, source_set=source_set, feature=feature)
 
 
-def source_set_template(n_layers: int = 26, width: str = DEFAULT_WIDTH) -> str | None:
+def source_set_template(n_layers: int, width: str | None = None, release: str | None = None) -> str | None:
     """"{layer}-gemmascope-res-16k", if every layer really follows that shape.
 
-    Lets a trace record the whole per-layer mapping as one string instead of 26
-    entries. Returns None rather than guessing if any layer breaks the pattern,
+    Lets a trace record the whole per-layer mapping as one string instead of one
+    entry per layer. gpt2-small-res-jb does not qualify: trace layer L is its
+    source set L+1, so the per-layer list (`source_sets`) is the only answer. Returns None rather than guessing if any layer breaks the pattern,
     because a frontend building URLs off a wrong template links every feature
     to the wrong page.
     """
     template: str | None = None
     for layer in range(n_layers):
-        _, source_set = neuronpedia_id(layer, width)
+        _, source_set = neuronpedia_id(layer, width, release)
         candidate = source_set.replace(str(layer), "{layer}", 1)
         if template is None:
             template = candidate
@@ -127,7 +133,13 @@ def source_set_template(n_layers: int = 26, width: str = DEFAULT_WIDTH) -> str |
     return template
 
 
-def url_template(layer: int = 0, width: str = DEFAULT_WIDTH) -> str:
+def source_sets(layers: Iterable[int], width: str | None = None, release: str | None = None) -> str:
+    """"layer:source_set" pairs, comma-joined — what a frontend links with when
+    no single template fits. `params` values are scalars, hence the string."""
+    return ",".join(f"{layer}:{neuronpedia_id(layer, width, release)[1]}" for layer in layers)
+
+
+def url_template(layer: int = 0, width: str | None = None) -> str:
     """The template itself, for a PassRecord to record once per trace.
 
     `{source_set}` still carries the layer, so a consumer needs the per-layer
@@ -272,14 +284,17 @@ class LabelStore:
 
     def __init__(
         self,
-        path: Path | str = DEFAULT_DB_PATH,
-        width: str = DEFAULT_WIDTH,
+        path: Path | str | None = None,
+        width: str | None = None,
         fetch_missing: bool = False,
         max_fetches: int = 200,
         timeout_s: float = 30.0,
+        release: str | None = None,
     ) -> None:
-        self.path = Path(path)
-        self.width = width
+        spec = get_release(release)
+        self.release = spec.release
+        self.path = Path(path) if path is not None else data_dir() / spec.label_db
+        self.width = spec.check_width(width)
         self.fetch_missing = fetch_missing
         self.max_fetches = max_fetches
         self.timeout_s = timeout_s
@@ -319,7 +334,7 @@ class LabelStore:
         if not wanted:
             return {}
 
-        _, source_set = neuronpedia_id(layer, self.width)
+        _, source_set = neuronpedia_id(layer, self.width, self.release)
         found: dict[int, FeatureLabel] = {}
         seen: set[int] = set()
 
@@ -356,7 +371,7 @@ class LabelStore:
         Read the module docstring before pooling these across layers: the text
         they embed comes from two different explainers depending on the layer.
         """
-        _, source_set = neuronpedia_id(layer, self.width)
+        _, source_set = neuronpedia_id(layer, self.width, self.release)
         out: dict[int, np.ndarray] = {}
         for chunk in _chunked(list(features), 500):
             placeholders = ",".join("?" * len(chunk))
@@ -662,7 +677,7 @@ class LabelStore:
 
         import requests  # local: the offline path should not need it
 
-        model_id, _ = neuronpedia_id(layer, self.width)
+        model_id, _ = neuronpedia_id(layer, self.width, self.release)
         url = API.format(model_id=model_id, source_set=source_set, feature=feature)
         self.fetched += 1
         try:
@@ -711,6 +726,10 @@ class LabelStore:
             "with_embedding": row["with_embedding"] or 0,
         }
 
+    def has_labels(self) -> bool:
+        """Any label text at all — the cheap form of `stats()["labelled"] > 0`."""
+        return self.conn.execute("SELECT 1 FROM labels WHERE text IS NOT NULL LIMIT 1").fetchone() is not None
+
     def source_sets(self) -> list[str]:
         return [
             r["source_set"]
@@ -732,7 +751,8 @@ def _chunked(items: list, size: int) -> Iterator[list]:
 _default: LabelStore | None = None
 
 
-def get_label(layer: int, feature_idx: int, width: str = DEFAULT_WIDTH) -> FeatureLabel | None:
+def get_label(layer: int, feature_idx: int, width: str | None = None,
+              release: str | None = None) -> FeatureLabel | None:
     """One-off lookup against the default DB, for a REPL or a notebook.
 
     A pass or a server should build its own `LabelStore` — this one holds a
@@ -740,6 +760,7 @@ def get_label(layer: int, feature_idx: int, width: str = DEFAULT_WIDTH) -> Featu
     for anything that wants to control when the DB is closed.
     """
     global _default
-    if _default is None or _default.width != width:
-        _default = LabelStore(width=width)
+    wanted = get_release(release)
+    if _default is None or (_default.release, _default.width) != (wanted.release, wanted.check_width(width)):
+        _default = LabelStore(width=width, release=release)
     return _default.get(layer, feature_idx)

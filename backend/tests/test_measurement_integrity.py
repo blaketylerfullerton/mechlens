@@ -12,9 +12,14 @@ from app.passes.attribution import AttributionPass
 from app.passes.labels import LabelsPass
 from app.passes.layout import LayoutPass
 from app.passes.sae import SAEPass
-from app.sae_cache import RELEASE
+from app.profiles import GEMMA_SCOPE
+
+RELEASE = GEMMA_SCOPE.release
 from app.schema import Feature, FeatureLabel, NodePosition, PassRecord, SteeringInfo
 from factories import make_result
+
+# Written against Gemma Scope data; see conftest.gemma_default.
+pytestmark = pytest.mark.usefixtures("gemma_default")
 
 
 def featured(width="16k"):

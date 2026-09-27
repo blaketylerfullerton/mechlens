@@ -13,12 +13,14 @@ from importlib.metadata import version
 import torch
 
 from .capture import RESID_HOOK
-from .sae_cache import RELEASE, DEFAULT_WIDTH, sae_id
+from .profiles import get_release, reads_layer, release_for, same_model
+from .sae_cache import center_input
 
 
 def measure_feature(
     model, sae, prompt: str, layer: int, feature_idx: int, target_token_id: int,
-    coefficients: list[float], *, width: str = DEFAULT_WIDTH, position: int | None = None,
+    coefficients: list[float], *, width: str | None = None, position: int | None = None,
+    release: str | None = None,
 ) -> dict:
     """Baseline, zero control, ablation and additions at one selected position.
 
@@ -38,7 +40,7 @@ def measure_feature(
         raise ValueError("feature experiments require unprocessed model weights")
     metadata = getattr(getattr(sae, "cfg", None), "metadata", None)
     expected_model = getattr(metadata, "model_name", None)
-    if expected_model and expected_model != model.cfg.model_name:
+    if expected_model and not same_model(expected_model, model.cfg.model_name):
         raise ValueError("SAE and model identities do not match")
     if sae.W_dec.shape[1] != model.cfg.d_model:
         raise ValueError("SAE residual dimensions do not match model")
@@ -50,8 +52,10 @@ def measure_feature(
         raise ValueError("intervention position out of range")
     hook_name = f"blocks.{layer}.{RESID_HOOK}"
     expected_hook = getattr(metadata, "hook_name", None)
-    if expected_hook and expected_hook != hook_name:
+    if expected_hook and not reads_layer(expected_hook, layer):
         raise ValueError("SAE was trained at a different hook")
+    spec = get_release(release) if release else release_for(model.cfg.model_name) or get_release()
+    width = spec.check_width(width)
     direction = sae.W_dec[feature_idx].detach()
     rows = []
     model.eval()
@@ -62,14 +66,14 @@ def measure_feature(
         def intervene(resid, hook):
             x = resid[:, position, :]
             encoder_device = getattr(sae, "W_enc", sae.W_dec).device
-            a = sae.encode(x.to(device=encoder_device, dtype=sae.W_dec.dtype))[:, feature_idx]
+            a = sae.encode(center_input(sae, x.to(device=encoder_device, dtype=sae.W_dec.dtype)))[:, feature_idx]
             observed["activation_before"] = float(a[0])
             if mode == "baseline":
                 return resid
             delta = -a if mode == "ablation" else x.new_full((x.shape[0],), coefficient)
             out = resid.clone()
             out[:, position, :] += delta.to(x).unsqueeze(-1) * direction.to(x)
-            after = sae.encode(out[:, position, :].to(device=encoder_device, dtype=sae.W_dec.dtype))
+            after = sae.encode(center_input(sae, out[:, position, :].to(device=encoder_device, dtype=sae.W_dec.dtype)))
             observed["activation_after"] = float(after[0, feature_idx])
             return out
         with torch.no_grad(), model.hooks(fwd_hooks=[(hook_name, intervene)]):
@@ -100,7 +104,7 @@ def measure_feature(
         "prompt": prompt, "token_ids": tokens[0].tolist(),
         "layer": layer, "position": position, "feature_idx": feature_idx,
         "target_token_id": target_token_id,
-        "release": RELEASE, "width": width, "sae_id": sae_id(layer, width), "hook": hook_name,
+        "release": spec.release, "width": width, "sae_id": spec.sae_id(layer, width), "hook": hook_name,
         "direction_sha256": hashlib.sha256(direction.float().cpu().numpy().tobytes()).hexdigest(),
         "zero_control_max_error": zero_error, "measurements": rows,
         "interpretation": "Effect of a residual-direction intervention at one position on a fixed-prefix next-token score; not proof of a complete circuit.",

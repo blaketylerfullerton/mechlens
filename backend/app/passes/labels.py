@@ -23,8 +23,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..labels import DEFAULT_DB_PATH, LabelStore, URL_TEMPLATE, source_set_template
-from ..sae_cache import DEFAULT_WIDTH, RELEASE
+from ..labels import LabelStore, URL_TEMPLATE, source_set_template, source_sets
 from ..identity import feature_identity
 from ..schema import PassRecord, Trace, label_key
 
@@ -35,7 +34,7 @@ class LabelsPass:
 
     name: str = field(default="labels", init=False)
     width: str | None = None
-    db_path: Path = DEFAULT_DB_PATH
+    db_path: Path | None = None  # None = the SAE release's own label DB
     fetch_missing: bool = False
     max_fetches: int = 200
     verbose: bool = True
@@ -55,14 +54,17 @@ class LabelsPass:
         release, width = feature_identity(trace)
         if self.width is not None and self.width != width:
             raise ValueError(f"labels width {self.width} does not match SAE width {width}")
-        if self.store is not None and self.store.width != width:
-            raise ValueError(f"label store width {self.store.width} does not match SAE width {width}")
+        if self.store is not None and (self.store.release, self.store.width) != (release, width):
+            raise ValueError(
+                f"label store release/width {self.store.release}/{self.store.width} "
+                f"does not match SAE {release}/{width}")
         trace.labels = {}
         store = self.store or LabelStore(
             self.db_path,
             width=width,
             fetch_missing=self.fetch_missing,
             max_fetches=self.max_fetches,
+            release=release,
         )
         owned = self.store is None
         t0 = time.time()
@@ -90,13 +92,14 @@ class LabelsPass:
         return PassRecord(
             name=self.name,
             params={
-                "release": RELEASE,
+                "release": release,
                 "width": width,
-                "neuronpedia_model": _model_id(width),
+                "neuronpedia_model": _model_id(width, release),
                 # Enough for a frontend to build every link itself. The URL is a
                 # pure function of these three, so storing 6000 of them would be
                 # storing the same f-string 6000 times.
-                "source_set_template": source_set_template(trace.n_layers, width) or "",
+                "source_set_template": source_set_template(trace.n_layers, width, release) or "",
+                "source_sets": source_sets(sorted(wanted), width, release),
                 "url_template": URL_TEMPLATE,
                 "fetch_missing": self.fetch_missing,
                 # Neuronpedia's export does not use one explainer throughout —
@@ -132,7 +135,7 @@ def _features_by_layer(trace: Trace) -> dict[int, list[int]]:
     return {layer: sorted(features) for layer, features in wanted.items()}
 
 
-def _model_id(width: str) -> str:
+def _model_id(width: str, release: str) -> str:
     from ..sae_cache import neuronpedia_id
 
-    return neuronpedia_id(0, width)[0]
+    return neuronpedia_id(0, width, release)[0]

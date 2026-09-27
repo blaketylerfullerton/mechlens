@@ -8,8 +8,8 @@ from app import cloud_link
 from app.cloud_link import CloudLink
 
 
-def make_link(cloud_handler, local_handler, tunnel_url=None):
-    link = CloudLink("https://cloud.example", 8000, "gpu-secret", tunnel_url)
+def make_link(cloud_handler, local_handler):
+    link = CloudLink("https://cloud.example", 8000, "gpu-secret")
     link.session_token = "session"
     link.cloud = httpx.Client(transport=httpx.MockTransport(cloud_handler))
     link.local = httpx.Client(transport=httpx.MockTransport(local_handler))
@@ -125,26 +125,7 @@ def test_status_is_reported_and_printed_when_it_changes(capsys, monkeypatch):
     assert "Model ready" in out and "Model failed to load: CUDA out of memory" in out
 
 
-def test_tunnel_mode_registers_the_url_and_starts_no_relay(monkeypatch):
-    calls = []
-
-    def cloud(request):
-        calls.append((request.url.path, json.loads(request.read() or b"{}")))
-        if request.url.path == "/api/pairing/poll":
-            return httpx.Response(200, json={"status": "connected", "session_token": "s", "workspace": {"name": "W"}})
-        return httpx.Response(200, json={"ok": True})
-
-    link = make_link(cloud, lambda r: httpx.Response(200, json={"status": "ready"}), tunnel_url="https://mine.example")
-    link._poll_token = "p"
-    monkeypatch.setattr(link, "_report_status", lambda: None)
-    started = []
-    monkeypatch.setattr(cloud_link.threading, "Thread", lambda **kw: started.append(kw))
-    link.run()
-    assert ("/api/gpu/register", {"gpu_token": "gpu-secret", "tunnel_url": "https://mine.example"}) in calls
-    assert started == []
-
-
-def test_relay_mode_registers_without_a_url(monkeypatch):
+def test_registers_and_starts_the_relay_workers(monkeypatch):
     calls = []
 
     def cloud(request):
@@ -202,10 +183,11 @@ def test_paired_session_is_shared_for_push_and_removed_on_close(monkeypatch, tmp
             return httpx.Response(200, json={"status": "connected", "session_token": "s", "workspace": {"name": "W"}})
         return httpx.Response(200, json={"ok": True})
 
-    link = make_link(cloud, lambda r: httpx.Response(200), tunnel_url="https://mine.example")
+    link = make_link(cloud, lambda r: httpx.Response(200))
     link.training_dir = tmp_path / "training"
     link._poll_token = "p"
     monkeypatch.setattr(link, "_report_status", lambda: None)
+    monkeypatch.setattr(link, "_relay_worker", lambda: None)
     link.run()
     path = cloud_link.session_file()
     assert json.loads(path.read_text()) == {"cloud_url": "https://cloud.example", "session_token": "s",

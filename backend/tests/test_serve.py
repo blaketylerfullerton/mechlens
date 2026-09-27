@@ -21,7 +21,7 @@ except SystemExit as exc:
     assert exc.code == 0
 assert 'torch' not in sys.modules
 assert 'app.service.app' not in sys.modules
-'''], capture_output=True, text=True)
+'''], capture_output=True, text=True, cwd=Path(__file__).resolve().parents[1])
     assert result.returncode == 0, result.stderr
     assert '--token-file' in result.stdout
 

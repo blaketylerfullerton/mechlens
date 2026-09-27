@@ -2,8 +2,8 @@
 
 `create_app(model=..., label_db_path=...)` takes the same dependency-injection
 shape as `LogitLensPass.model` / `SAEPass.saes` — a test hands in the tiny CPU
-model and a throwaway label DB instead of paying for gemma's load and the
-69MB Neuronpedia export. Importing this module does not itself load a model;
+model and a throwaway label DB instead of paying for a real model's load and
+its Neuronpedia export. Importing this module does not itself load a model;
 the module-level `app` below loads one when it starts (`lifespan`), on a
 warm-up thread so the port binds first — until that finishes, the routes that
 need the model answer 503 and GET /health reports "loading".
@@ -35,7 +35,8 @@ from ..passes.labels import LabelsPass
 from ..passes.layout import DEFAULT_ATLAS_SOURCE, LayoutPass
 from ..passes.lens import LogitLensPass
 from ..passes.sae import SAEPass
-from ..sae_cache import DEFAULT_WIDTH, RELEASE, get_sae
+from ..profiles import SAERelease, default_model, get_release, release_for
+from ..sae_cache import get_sae
 from ..schema import SteeringInfo, Trace
 from . import jobs, stats
 from .models import (
@@ -53,10 +54,6 @@ from .models import (
 from .steering import build_intervention
 from .scheduling import serialized
 
-# Structural upper bound on a feature index for a width, without loading the
-# SAE itself — GET /feature stays a cheap DB lookup, per design.md.
-WIDTH_D_SAE = {"16k": 16384, "65k": 65536, "262k": 262144}
-
 _forward_lock = threading.Lock()
 
 
@@ -70,9 +67,11 @@ def create_app(
     circuits_dir: Path | None = None,
     api_token: str | None = None,
 ) -> FastAPI:
-    """`sae_provider(layer) -> SAE-like` defaults to `sae_cache.get_sae`; a
-    test overrides it with a fake so /steer does not need a real Gemma Scope
-    SAE (which would not even match the tiny CPU test model's dimensions).
+    """`sae_provider(layer) -> SAE-like` defaults to `sae_cache.get_sae` for the
+    served model's release; a test overrides it with a fake so /steer does not
+    need a real SAE (which would not even match the tiny CPU test model's
+    dimensions). With a fake and a model that has no release, the default
+    model's release stands in as the dictionary identity.
 
     `atlas_version` pins one atlas; `atlas_source` (the default) picks the most
     recent build from one source representation. Several atlases coexist by
@@ -86,13 +85,35 @@ def create_app(
     from ..circuits.store import AnalysisStore
     training_store = RunStore(training_dir or default_root())
     circuits_store = AnalysisStore(circuits_dir)
-    sae_provider = sae_provider or (lambda layer: get_sae(layer))
+    injected_saes = sae_provider is not None
+
+    def active_release() -> SAERelease | None:
+        """The SAE release for the model being served, or the one about to be."""
+        found = release_for(served_name())
+        if found is None and injected_saes:
+            return get_release()
+        return found
+
+    def served_name() -> str:
+        cfg = getattr(state["model"], "cfg", None)
+        return cfg.model_name if cfg is not None else default_model()
+
+    def require_release(model_name: str) -> SAERelease:
+        spec = active_release()
+        if spec is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{model_name} has no published SAE release, so features, labels and the atlas are unavailable",
+            )
+        return spec
+
+    sae_provider = sae_provider or (lambda layer: get_sae(layer, release=require_release("this model").release))
 
     def load_model() -> None:
         """The blocking load, run once on the lifespan's warm-up thread.
 
         Doing this inline in `lifespan` would keep uvicorn from binding its
-        port until gemma is in memory — which is minutes, not seconds, the
+        port until the model is in memory — which is minutes, not seconds, the
         first time the weights are fetched from the hub — so a browser calling
         the API during startup got a connection error rather than an answer.
         Off-thread, the port is open immediately and `get_model` below can say
@@ -114,8 +135,9 @@ def create_app(
             )
         raise HTTPException(status_code=503, detail="model is still loading, retry in a moment")
 
-    def open_label_store() -> LabelStore:
-        return LabelStore(label_db_path) if label_db_path is not None else LabelStore()
+    def open_label_store(spec: SAERelease | None = None) -> LabelStore:
+        spec = spec or require_release("this model")
+        return LabelStore(label_db_path, release=spec.release)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -182,18 +204,36 @@ def create_app(
         allow_headers=["*"],
     )
 
+    def labels_available(spec: SAERelease | None) -> bool:
+        if spec is None:
+            return False
+        try:
+            with open_label_store(spec) as store:
+                return store.has_labels()
+        except Exception:  # noqa: BLE001 - an unreadable DB is "no labels" to a client
+            return False
+
     @app.get("/health", response_model=HealthResponse)
     def get_health() -> HealthResponse:
         """Readiness of the model, so a client can tell "not loaded yet" from
         "not running at all" — the two look identical from a failed fetch."""
+        model_ = state["model"]
+        spec = active_release()
+        about = dict(
+            model=served_name(),
+            n_layers=getattr(getattr(model_, "cfg", None), "n_layers", None),
+            sae_release=spec.release if spec else None,
+            sae_width=spec.default_width if spec else None,
+            labels_available=labels_available(spec),
+        )
         if state["load_error"] is not None:
-            return HealthResponse(status="error", detail=str(state["load_error"]))
-        return HealthResponse(status="ready" if state["model"] is not None else "loading")
+            return HealthResponse(status="error", detail=str(state["load_error"]), **about)
+        return HealthResponse(status="ready" if model_ is not None else "loading", **about)
 
     @app.get("/stats", response_model=StatsResponse)
     def get_stats() -> StatsResponse:
         """Host memory and GPU load. Unlike every other route here this one
-        does not need the model: it answers while gemma is still loading,
+        does not need the model: it answers while the model is still loading,
         which is the window where "is this machine actually doing anything"
         is the question a reader most wants answered."""
         return StatsResponse(**stats.collect())
@@ -208,6 +248,9 @@ def create_app(
         wants_sae = "sae" in req.passes
         wants_labels = "labels" in req.passes
         sae_layers = req.sae_layers
+        # Resolved now, against the model this request runs on: a later model
+        # switch must not change which dictionary a queued job encodes with.
+        spec = require_release(m.cfg.model_name) if wants_sae or wants_labels else None
 
         if wants_sae and sae_layers is not None:
             over = [layer for layer in sae_layers if layer >= m.cfg.n_layers]
@@ -222,7 +265,7 @@ def create_app(
         # job for it would report a runtime error for something knowable now.
         if wants_labels:
             try:
-                with open_label_store() as store:
+                with open_label_store(spec) as store:
                     if store.stats().get("labelled", 0) == 0:
                         raise HTTPException(
                             status_code=422,
@@ -285,9 +328,9 @@ def create_app(
                         if layer not in live_saes:
                             live_saes[layer] = sae_provider(layer)
                     apply(SAEPass(layers=layers, saes=live_saes, device=str(m.cfg.device),
-                                  hook=captured.hook, verbose=False), chunk, residuals)
+                                  release=spec.release, hook=captured.hook, verbose=False), chunk, residuals)
                     if any(state.features for step in chunk.steps for state in step.layers):
-                        with open_label_store() as store:
+                        with open_label_store(spec) as store:
                             if wants_labels:
                                 apply(LabelsPass(store=store, verbose=False), chunk, residuals)
                             apply(LayoutPass(store=store, atlas_version=atlas_version,
@@ -330,6 +373,7 @@ def create_app(
                             # on the real box (both cuda); the difference shows
                             # up when the two disagree.
                             device=str(m.cfg.device),
+                            release=spec.release,
                             hook=result.hook,
                             verbose=False,
                             on_progress=lambda done, total: report("sae", done, total),
@@ -358,7 +402,7 @@ def create_app(
             # Outside the forward lock: a lookup against SQLite, no GPU work,
             # so it must not hold the guard the forward passes share.
             if wants_labels:
-                with open_label_store() as store:
+                with open_label_store(spec) as store:
                     apply(
                         LabelsPass(store=store, verbose=False),
                         result.trace,
@@ -371,7 +415,7 @@ def create_app(
             # rather than failing when none has been built — an unbuilt atlas
             # is a deployment state, not an error, and the record says which.
             if wants_sae:
-                with open_label_store() as store:
+                with open_label_store(spec) as store:
                     apply(
                         LayoutPass(
                             store=store,
@@ -384,7 +428,7 @@ def create_app(
                     )
 
             # The residual array falls out of scope with the closure here; it is
-            # ~7MB for a 31-token gemma trace and nothing downstream needs it.
+            # ~7MB for a 31-token gemma-2-2b trace and nothing downstream needs it.
             return result.trace
 
         return JobResponse(job_id=jobs.submit(run))
@@ -406,6 +450,7 @@ def create_app(
         if req.layer >= m.cfg.n_layers:
             raise HTTPException(status_code=422, detail=f"layer must be < {m.cfg.n_layers}")
 
+        require_release(m.cfg.model_name)
         sae = sae_provider(req.layer)
         if req.feature_idx >= sae.W_dec.shape[0]:
             raise HTTPException(
@@ -434,16 +479,19 @@ def create_app(
         """The atlas, whole or sampled — positions, clusters, names, record.
 
         Deliberately not behind `get_model()`: the atlas is a precomputed table
-        in SQLite, so this answers while gemma is still loading and on a
+        in SQLite, so this answers while the model is still loading and on a
         deployment with no GPU at all. That is a requirement, not an
         optimisation — the brain draws its node cloud before any trace exists.
 
         `sample` caps the node count using the same deterministic subsample the
         idle asset is cut with, so a client asking twice gets the same nodes.
         """
-        with open_label_store() as store:
+        spec = active_release()
+        if spec is None:
+            raise HTTPException(status_code=404, detail="no atlas: this model has no published SAE release")
+        with open_label_store(spec) as store:
             record = store.atlas_record(version or atlas_version, source=atlas_source,
-                                        release=RELEASE, width=DEFAULT_WIDTH)
+                                        release=spec.release, width=spec.default_width)
             # 404 rather than an empty atlas: "no atlas has been built" and "an
             # atlas that placed nothing" are different facts, and a client that
             # cannot tell them apart will render one as the other.
@@ -517,11 +565,13 @@ def create_app(
         if layer < 0 or layer >= m.cfg.n_layers:
             raise HTTPException(status_code=404, detail="layer out of range")
 
-        max_idx = WIDTH_D_SAE.get(DEFAULT_WIDTH)
-        if idx < 0 or (max_idx is not None and idx >= max_idx):
+        spec = require_release(m.cfg.model_name)
+        # Structural upper bound on a feature index, without loading the SAE
+        # itself — GET /feature stays a cheap DB lookup, per design.md.
+        if idx < 0 or idx >= spec.widths[spec.default_width]:
             raise HTTPException(status_code=404, detail="feature index out of range")
 
-        with open_label_store() as store:
+        with open_label_store(spec) as store:
             label = store.get(layer, idx)
 
         return FeatureResponse(
@@ -531,7 +581,7 @@ def create_app(
             explainer=label.explainer if label else None,
             explanation_type=label.explanation_type if label else None,
             score=label.score if label else None,
-            url=feature_url(layer, idx),
+            url=feature_url(layer, idx, spec.default_width, spec.release),
         )
 
     return app

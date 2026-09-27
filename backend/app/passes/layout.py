@@ -44,7 +44,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..labels import DEFAULT_DB_PATH, LabelStore
+from ..labels import LabelStore
 from ..identity import feature_identity
 from ..schema import NodePosition, PassRecord, Trace, label_key
 from .labels import _features_by_layer
@@ -60,7 +60,7 @@ class LayoutPass:
     """Fills Trace.layout for every feature the SAE pass recorded."""
 
     name: str = field(default="layout", init=False)
-    db_path: Path = DEFAULT_DB_PATH
+    db_path: Path | None = None  # None = the SAE release's own label DB
     # Pin one atlas outright. None means "the most recent one built from
     # `source`", which is what a deployment normally wants.
     atlas_version: str | None = None
@@ -83,7 +83,7 @@ class LayoutPass:
         release, width = feature_identity(trace)
         trace.layout = {}
         pairs = [(layer, feature) for layer, features in wanted.items() for feature in features]
-        store = self.store or LabelStore(self.db_path)
+        store = self.store or LabelStore(self.db_path, width=width, release=release)
         owned = self.store is None
         t0 = time.time()
 

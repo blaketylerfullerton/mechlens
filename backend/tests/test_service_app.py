@@ -18,6 +18,9 @@ from app.labels import LabelRow, LabelStore
 from app.service import jobs
 from app.service.app import create_app
 
+# Written against Gemma Scope data; see conftest.gemma_default.
+pytestmark = pytest.mark.usefixtures("gemma_default")
+
 PROMPT = "Once upon a time there was a"
 
 
@@ -702,8 +705,13 @@ def test_model_is_loaded_at_most_once_across_requests(monkeypatch, tiny_model, t
     assert calls["n"] == 1
 
 
-def test_health_is_ready_when_a_model_is_injected(client):
-    assert client.get("/health").json() == {"status": "ready", "detail": None}
+def test_health_is_ready_when_a_model_is_injected(client, tiny_model):
+    health = client.get("/health").json()
+    assert health["status"] == "ready" and health["detail"] is None
+    # What a client needs to adapt to the served model instead of assuming one.
+    assert health["model"] == tiny_model.cfg.model_name
+    assert health["n_layers"] == tiny_model.cfg.n_layers
+    assert health["sae_release"]  # the injected fake SAEs stand in for the default release
 
 
 def test_routes_answer_503_while_the_model_is_still_loading(monkeypatch, tmp_path):
@@ -1009,3 +1017,26 @@ def test_live_trace_publishes_before_analysis_finishes(tiny_model, tmp_path, mon
         assert enriched[0].labels
         assert all(not p.stats for p in enriched[0].passes)
         assert any(p['stats'] for p in trace['passes'])
+
+
+def test_a_model_without_an_sae_release_traces_but_refuses_features(tiny_model, tmp_path):
+    """No fake SAEs injected: tiny-stories has no published release, so the
+    service says so up front instead of encoding with another model's SAEs."""
+    jobs.JOBS.clear()
+    app = create_app(model=tiny_model, label_db_path=tmp_path / "labels.db")
+    with TestClient(app) as c:
+        health = c.get("/health").json()
+        assert health["sae_release"] is None and health["labels_available"] is False
+
+        refused = c.post("/trace", json={"prompt": PROMPT, "max_tokens": 1, "passes": ["sae"]})
+        assert refused.status_code == 422
+        assert "no published SAE release" in refused.json()["detail"]
+
+        job_id = c.post("/trace", json={"prompt": PROMPT, "max_tokens": 1, "passes": ["lens"]}).json()["job_id"]
+        assert _poll(c, job_id).json()["status"] == "done"
+
+
+def test_health_reports_whether_labels_exist(client, tmp_path):
+    assert client.get("/health").json()["labels_available"] is False
+    _seed_labels(tmp_path / "labels.db", n_layers=1, features=[0])
+    assert client.get("/health").json()["labels_available"] is True

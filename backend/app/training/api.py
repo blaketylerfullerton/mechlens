@@ -73,18 +73,19 @@ def router(get_model, compute_lock, store: RunStore, prepare_model=None):
 
     @api.get("/options")
     def options():
-        from ..model_cache import MODEL_NAME, SUPPORTED_TRAINING_MODELS, pick_device
+        from ..model_cache import SUPPORTED_TRAINING_MODELS, pick_device
+        from ..profiles import default_model, find_profile
         try:
             model = get_model()
             model_name, layers, dimension = model.cfg.model_name, model.cfg.n_layers, model.cfg.d_model
             readiness = "ready"
             device = str(model.cfg.device)
         except HTTPException as exc:
-            model_name, layers, dimension = MODEL_NAME, None, None
+            model_name, layers, dimension = default_model(), None, None
             readiness = str(exc.detail)
             device = pick_device()[0]
-        return dict(model=model_name, model_repository=next((repo for repo, name in SUPPORTED_TRAINING_MODELS.items()
-                    if name == model_name), None) if readiness == "ready" else None,
+        profile = find_profile(model_name)
+        return dict(model=model_name, model_repository=profile.repository if profile and readiness == "ready" else None,
                     layers=layers, d_in=dimension, device=device,
                     supported_models=list(SUPPORTED_TRAINING_MODELS), multi_layer=True, storage_management=True, model_downloads=True,
                     readiness=readiness, architecture="standard", datasets=["tiny-stories", "text"],
@@ -120,8 +121,9 @@ def router(get_model, compute_lock, store: RunStore, prepare_model=None):
     @serialized
     def create_batch(req: BatchRequest):
         from ..model_cache import SUPPORTED_TRAINING_MODELS
+        from ..profiles import same_model
         model = get_model()
-        if SUPPORTED_TRAINING_MODELS.get(req.model_repository) != model.cfg.model_name:
+        if req.model_repository not in SUPPORTED_TRAINING_MODELS or not same_model(req.model_repository, model.cfg.model_name):
             raise HTTPException(409, "Prepare the selected model before starting training")
         layers = sorted(set(req.layers))
         if len(layers) != len(req.layers) or any(layer < 0 or layer >= model.cfg.n_layers for layer in layers):
@@ -158,6 +160,7 @@ def router(get_model, compute_lock, store: RunStore, prepare_model=None):
         long wait, and the cache is shared with anything else on this machine.
         """
         from ..model_cache import SUPPORTED_TRAINING_MODELS
+        from ..profiles import same_model
 
         try:
             loaded = get_model().cfg.model_name
@@ -182,7 +185,7 @@ def router(get_model, compute_lock, store: RunStore, prepare_model=None):
         for repository, name in SUPPORTED_TRAINING_MODELS.items():
             size = cached.get(repository, by_name.get(repository.split("/")[-1]))
             records.append(dict(repository=repository, name=name, bytes=size,
-                                downloaded=size is not None, loaded=name == loaded))
+                                downloaded=size is not None, loaded=loaded is not None and same_model(name, loaded)))
         return dict(models=records, total_bytes=sum(record["bytes"] or 0 for record in records),
                     scan_error=scan_error)
 

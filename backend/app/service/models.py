@@ -69,11 +69,22 @@ class SteerRequest(BaseModel):
 
 class HealthResponse(BaseModel):
     """`status` is about the model, not the process: the server binds its port
-    before gemma is in memory, so "loading" is a normal answer for the first
-    few seconds (minutes, if the weights are not in the HF cache yet)."""
+    before the model is in memory, so "loading" is a normal answer for the first
+    few seconds (minutes, if the weights are not in the HF cache yet).
+
+    `model` is the model being served (or loading); `n_layers` is known once it
+    is ready. `sae_release` is None for a model with no published SAEs, which is
+    how a client knows not to offer features, labels or the atlas."""
 
     status: Literal["loading", "ready", "error"]
     detail: str | None = None
+    model: str | None = None
+    n_layers: int | None = None
+    sae_release: str | None = None
+    sae_width: str | None = None
+    # Whether the release's label DB holds any labels, so a client can leave
+    # the "labels" pass out rather than have the request refused.
+    labels_available: bool = False
 
 
 class StatsResponse(BaseModel):
