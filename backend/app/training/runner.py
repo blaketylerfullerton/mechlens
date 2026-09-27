@@ -185,7 +185,7 @@ def train(store: RunStore, run_id: str, model, *, sources=None, resume=False):
     store.update(run_id, phase="preparing", status="running")
     train_texts, eval_texts, data = sources if sources is not None else text_sources(cfg,
         previous["provenance"]["dataset"] if resume else None)
-    manifest = dict(model_identity(model), run_id=run_id, layer=cfg.layer, hook=hook,
+    manifest = dict(model_identity(model), n_layers=model.cfg.n_layers, run_id=run_id, layer=cfg.layer, hook=hook,
                     features=cfg.features, architecture="standard", normalize_activations="none",
                     seed=cfg.seed, dataset=data, config=cfg.model_dump(exclude={"training_text", "evaluation_text"}),
                     versions={p: version(p) for p in ("sae-lens", "torch", "transformer-lens")},

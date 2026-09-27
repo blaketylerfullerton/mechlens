@@ -61,6 +61,7 @@ def test_real_training_roundtrip_and_frozen_model(tmp_path, model, config, monke
     sae, manifest = load_artifact(store, run["id"], model)
     assert sae.encode(torch.randn(3, 16)).shape == (3, 32)
     assert manifest["model"] == "training-test"
+    assert manifest["n_layers"] == 1
     assert len(manifest["artifact_id"]) == 64
     # The trained weights differ from the first-step checkpoint, and only the
     # newest checkpoint is kept.
