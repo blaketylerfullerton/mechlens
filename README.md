@@ -90,20 +90,15 @@ mechlens download   # once per machine: gemma-2-2b (~5GB) + Gemma Scope SAEs (~8
 mechlens serve
 ```
 
-### No automatic downloads
+### Downloads
 
-Mechlens never downloads model weights, SAEs, or datasets on its own. Every
-command except `mechlens download` runs with Hugging Face in offline mode, so
-it only uses what is already in `~/.cache/huggingface`. If something is
-missing, the server does not quietly fetch gigabytes. It says what is missing
-and tells you to run `mechlens download`.
+Mechlens downloads model weights, SAEs, and datasets from Hugging Face the
+first time something needs them, and caches them in `~/.cache/huggingface`.
 
-- `mechlens download` fetches gemma-2-2b and the 26 Gemma Scope SAEs.
+- `mechlens download` fetches gemma-2-2b and the 26 Gemma Scope SAEs ahead of
+  time, so the first `mechlens serve` doesn't sit on a multi-GB fetch.
   `--no-saes` fetches only the model. Accept the license at
   hf.co/google/gemma-2-2b and run `huggingface-cli login` first.
-- Circuit tracing and SAE training need files `mechlens download` does not
-  fetch (transcoders, training data). To let those download, run with
-  `MECHLENS_ALLOW_DOWNLOADS=1 mechlens serve`.
 
 For an existing environment that already has `backend/requirements.txt` installed, use `pip install --no-deps -e .` to register the command without resolving dependencies again. A fresh install uses the existing backend requirements, including the pinned Git dependency for circuit tracing; it requires Git and can download substantial model-runtime dependencies. This package is not published to PyPI yet.
 
@@ -616,7 +611,20 @@ elsewhere. These tests require Node 22+ and skip when viewer sources are absent.
 
 ### Export a trained dictionary to Mechlens Cloud
 
-`mechlens export-run` uses only the standard library and never loads a model.
+The quick way, while `mechlens serve --cloud URL` is running and paired:
+
+```bash
+mechlens push
+```
+
+Pick a run with the arrow keys and press Enter. It exports the run, uploads it
+to the paired workspace and deletes the temporary ZIP. `mechlens push --run RUN_ID`
+skips the list. A running serve leaves its session in
+`~/.local/state/mechlens/cloud-session.json` (readable only by you) and removes it
+on exit; that is how push signs in without pairing again.
+
+To make a ZIP by hand instead: `mechlens export-run` uses only the standard
+library and never loads a model.
 
 ```bash
 mechlens export-run --list

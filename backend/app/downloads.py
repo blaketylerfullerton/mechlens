@@ -1,7 +1,7 @@
-"""`mechlens download`: the one place model weights and SAEs are fetched.
+"""`mechlens download`: fetch model weights and SAEs ahead of time.
 
-Every other command runs with Hugging Face offline (see command.block_hub_downloads),
-so on a fresh machine this has to be run once before `mechlens serve`.
+Other commands also download what they are missing on first use; running this
+first just avoids waiting on a multi-GB fetch when the server starts.
 """
 from __future__ import annotations
 

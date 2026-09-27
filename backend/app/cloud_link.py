@@ -15,6 +15,9 @@ for this API: the cloud then calls that URL directly and the relay is not used.
 from __future__ import annotations
 
 import base64
+import json
+import os
+from pathlib import Path
 import threading
 from urllib.parse import urlsplit
 
@@ -41,6 +44,14 @@ class Unpaired(Exception):
     """The cloud no longer knows this GPU's session."""
 
 
+def session_file() -> Path:
+    """Where a paired `mechlens serve` leaves its session for `mechlens push`.
+
+    Only exists while serve is running and paired; readable by this user only.
+    """
+    return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "mechlens" / "cloud-session.json"
+
+
 def normalize_cloud_url(value: str) -> str:
     url = urlsplit(value)
     if url.scheme not in {"http", "https"} or not url.netloc or url.query or url.fragment:
@@ -52,8 +63,9 @@ class CloudLink:
     """Owns the pairing handshake, the relay workers and the status reports."""
 
     def __init__(self, cloud_url: str, port: int, gpu_token: str, tunnel_url: str | None = None,
-                 host: str = "127.0.0.1"):
+                 host: str = "127.0.0.1", training_dir: Path | None = None):
         self.cloud_url = cloud_url
+        self.training_dir = training_dir
         self.gpu_token = gpu_token
         self.tunnel_url = tunnel_url
         self.local_url = f"http://{f'[{host}]' if ':' in host else host}:{port}"
@@ -101,6 +113,7 @@ class CloudLink:
                 threading.Thread(target=self._relay_worker, name=f"cloud-relay-{n}", daemon=True).start()
             print("Connected to the cloud. No tunnel needed; this GPU dials out.", flush=True)
         print("Keep this process running while you use your workspace.", flush=True)
+        self._share_session()
         self._report_status()
 
     def _await_activation(self) -> str:
@@ -230,6 +243,30 @@ class CloudLink:
         except ValueError:
             raise CloudError(f"unexpected answer from {url}") from None
 
+    def _share_session(self) -> None:
+        """Let `mechlens push` upload through this pairing instead of pairing again."""
+        path = session_file()
+        body = {"cloud_url": self.cloud_url, "session_token": self.session_token,
+                "training_dir": str(self.training_dir) if self.training_dir else None}
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temp = path.with_suffix(".partial")
+            fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as handle:
+                json.dump(body, handle)
+            os.replace(temp, path)
+        except OSError as exc:
+            print(f"Could not save the cloud session for mechlens push ({exc}); pairing still works.", flush=True)
+
+    def _unshare_session(self) -> None:
+        # Only remove our own: a newer serve may have replaced the file.
+        path = session_file()
+        try:
+            if json.loads(path.read_text()).get("session_token") == self.session_token:
+                path.unlink()
+        except (OSError, ValueError, AttributeError):
+            pass
+
     def _went_offline(self, exc: Exception) -> None:
         with self._lock:
             if self._offline:
@@ -248,12 +285,14 @@ class CloudLink:
             if self._stop.is_set():
                 return
             self._stop.set()
+        self._unshare_session()
         print("The cloud disconnected this GPU (another GPU was paired to the workspace, or it was removed). "
               "Restart mechlens serve --cloud to pair again.", flush=True)
 
     def close(self) -> None:
         self._stop.set()
         if self.session_token:
+            self._unshare_session()
             try:
                 self.cloud.post(self.cloud_url + "/api/gpu/disconnect", json={}, headers=self._auth(), timeout=5)
             except httpx.HTTPError:

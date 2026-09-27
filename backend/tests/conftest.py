@@ -19,3 +19,9 @@ def _restore_environ():
     yield
     os.environ.clear()
     os.environ.update(saved)
+
+
+@pytest.fixture(autouse=True)
+def _private_state_dir(tmp_path, monkeypatch):
+    """A paired CloudLink writes its session file here; never into the real home."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))

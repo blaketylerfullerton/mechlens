@@ -194,3 +194,22 @@ def test_pairing_survives_a_network_blip_but_not_an_expired_code(monkeypatch):
         assert "expired" in str(exc)
     else:
         raise AssertionError("an expired code must end the wait")
+
+
+def test_paired_session_is_shared_for_push_and_removed_on_close(monkeypatch, tmp_path):
+    def cloud(request):
+        if request.url.path == "/api/pairing/poll":
+            return httpx.Response(200, json={"status": "connected", "session_token": "s", "workspace": {"name": "W"}})
+        return httpx.Response(200, json={"ok": True})
+
+    link = make_link(cloud, lambda r: httpx.Response(200), tunnel_url="https://mine.example")
+    link.training_dir = tmp_path / "training"
+    link._poll_token = "p"
+    monkeypatch.setattr(link, "_report_status", lambda: None)
+    link.run()
+    path = cloud_link.session_file()
+    assert json.loads(path.read_text()) == {"cloud_url": "https://cloud.example", "session_token": "s",
+                                            "training_dir": str(tmp_path / "training")}
+    assert path.stat().st_mode & 0o777 == 0o600
+    link.close()
+    assert not path.exists()
