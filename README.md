@@ -684,9 +684,11 @@ The quick way, while `mechlens serve --cloud URL` is running and paired:
 mechlens push
 ```
 
-Pick a run with the arrow keys and press Enter. It exports the run, uploads it
-to the paired workspace and deletes the temporary ZIP. `mechlens push --run RUN_ID`
-skips the list. A running serve leaves its session in
+Move with the arrow keys, Space ticks a run, `a` ticks them all, Enter pushes.
+Each ticked run is exported, uploaded to the paired workspace and its temporary
+ZIP deleted, one after another. `mechlens push --all` pushes every saved run
+(e.g. all 26 layers) without asking; `mechlens push --run ID [--run ID ...]`
+pushes specific ones. If some fail, push prints the `--run` flags to retry just those. A running serve leaves its session in
 `~/.local/state/mechlens/cloud-session.json` (readable only by you) and removes it
 on exit; that is how push signs in without pairing again.
 
