@@ -1,6 +1,7 @@
 """Build the feature atlas: a fixed position and a cluster for every SAE feature.
 
-    python scripts/build_feature_atlas.py                    # all 26 layers, ~7.9GB of SAEs
+    python scripts/build_feature_atlas.py                    # every layer of the default model
+    python scripts/build_feature_atlas.py --model gemma-2-2b # all 26 layers, ~7.9GB of SAEs
     python scripts/build_feature_atlas.py --layers 0-5       # a smaller slice
     python scripts/build_feature_atlas.py --dry-run          # measure, print, write nothing
 
@@ -66,13 +67,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app import atlas  # noqa: E402
 from app.labels import (  # noqa: E402
-    DEFAULT_DB_PATH,
     AtlasRecord,
     ClusterRow,
     LabelStore,
     LayoutRow,
 )
-from app.sae_cache import DEFAULT_WIDTH, RELEASE, get_sae, pick_device  # noqa: E402
+from app.profiles import get_profile, get_release, model_for_release  # noqa: E402
+from app.sae_cache import get_sae, pick_device  # noqa: E402
 
 # Dimensions to reduce to before UMAP; 0 disables the step, which is the
 # default, and the default is measured rather than conventional.
@@ -133,10 +134,11 @@ DEFAULT_SOURCE = "labels"
 
 def load_decoder_directions(
     layers: list[int],
-    width: str = DEFAULT_WIDTH,
+    width: str | None = None,
     device: str | None = None,
     sae_provider=None,
     verbose: bool = True,
+    release: str | None = None,
 ) -> tuple[np.ndarray, list[tuple[int, int]]]:
     """Every layer's `W_dec` rows, stacked, with the key for each row.
 
@@ -144,7 +146,7 @@ def load_decoder_directions(
     premise: the rows share a basis, so they are projected together and a
     feature from layer 12 can land beside one from layer 20.
     """
-    provider = sae_provider or (lambda layer: get_sae(layer, width, device or pick_device()))
+    provider = sae_provider or (lambda layer: get_sae(layer, width, device or pick_device(), release))
 
     blocks: list[np.ndarray] = []
     keys: list[tuple[int, int]] = []
@@ -176,10 +178,11 @@ def load_decoder_directions(
 
 def load_label_embeddings(
     layers: list[int],
-    width: str = DEFAULT_WIDTH,
+    width: str | None = None,
     store: LabelStore | None = None,
-    db_path: Path | str = DEFAULT_DB_PATH,
+    db_path: Path | str | None = None,
     verbose: bool = True,
+    release: str | None = None,
 ) -> tuple[np.ndarray, list[tuple[int, int]]]:
     """Every feature's explanation embedding, stacked, with the key for each row.
 
@@ -189,12 +192,13 @@ def load_label_embeddings(
     position, plus everything not covered by an `--embeddings` import.
     """
     owned = store is None
-    store = store or LabelStore(db_path, width=width)
+    store = store or LabelStore(db_path, width=width, release=release)
+    d_sae = get_release(store.release).widths[store.width]
     try:
         keys: list[tuple[int, int]] = []
         vectors: list[np.ndarray] = []
         for layer in layers:
-            found = store.embeddings(layer, range(WIDTH_D_SAE.get(width, 16384)))
+            found = store.embeddings(layer, range(d_sae))
             for feature in sorted(found):
                 keys.append((layer, feature))
                 vectors.append(found[feature])
@@ -219,9 +223,6 @@ def load_label_embeddings(
     return np.stack(vectors).astype(np.float32), keys
 
 
-# Feature counts per SAE width, for enumerating candidate indices without
-# loading an SAE. Mirrors service/app.py's table of the same name.
-WIDTH_D_SAE = {"16k": 16384, "65k": 65536, "262k": 262144}
 
 
 # --------------------------------------------------------------------------
@@ -499,7 +500,7 @@ def explainer_influence(labels: np.ndarray, keys: list, explainers: dict) -> dic
 def build(
     layers: list[int],
     source: str = DEFAULT_SOURCE,
-    width: str = DEFAULT_WIDTH,
+    width: str | None = None,
     seed: int = 0,
     pca_dim: int = DEFAULT_PCA_DIM,
     n_neighbors: int = DEFAULT_N_NEIGHBORS,
@@ -511,13 +512,14 @@ def build(
     coherence_margin: float = atlas.DEFAULT_COHERENCE_MARGIN,
     cross_sample: int = DEFAULT_CROSS_SAMPLE,
     subsample: int = DEFAULT_SUBSAMPLE,
-    db_path: Path | str = DEFAULT_DB_PATH,
+    db_path: Path | str | None = None,
     device: str | None = None,
     sae_provider=None,
     store: LabelStore | None = None,
     subsample_out: Path | str | None = None,
     dry_run: bool = False,
     verbose: bool = True,
+    release: str | None = None,
 ) -> dict:
     """Build one atlas from one source, measure it, and write it beside the labels.
 
@@ -533,11 +535,13 @@ def build(
         raise ValueError(f"source must be one of {SOURCES}, got {source!r}")
 
     owned = store is None
-    store = store or LabelStore(db_path, width=width)
+    store = store or LabelStore(db_path, width=width, release=release)
+    # The store resolves defaults; from here on both are the dictionary's own.
+    release, width = store.release, store.width
 
     if source == "decoder":
         vectors, keys = load_decoder_directions(
-            layers, width, device, sae_provider, verbose=verbose
+            layers, width, device, sae_provider, verbose=verbose, release=release
         )
     else:
         vectors, keys = load_label_embeddings(layers, width, store=store, verbose=verbose)
@@ -573,7 +577,7 @@ def build(
             if source == "decoder":
                 lookup = {key: i for i, key in enumerate(keys)}
                 return vectors[[lookup[key] for key in sample_keys]]
-            provider = sae_provider or (lambda layer: get_sae(layer, width, device or pick_device()))
+            provider = sae_provider or (lambda layer: get_sae(layer, width, device or pick_device(), release))
             rows = {}
             for layer in sorted({key[0] for key in sample_keys}):
                 wanted = [feature for l, feature in sample_keys if l == layer]
@@ -644,11 +648,11 @@ def build(
             sort_keys=True,
         ).encode()).hexdigest()
         params["artifact_sha256"] = artifact_hash
-        version = atlas.atlas_version(RELEASE, width, seed, params)
+        version = atlas.atlas_version(release, width, seed, params)
 
         record = AtlasRecord(
             atlas_version=version,
-            release=RELEASE,
+            release=release,
             width=width,
             seed=seed,
             params=params,
@@ -691,6 +695,7 @@ def build(
             seed,
             source=source,
             metrics=metrics,
+            release=release,
         )
 
     summary = {
@@ -718,6 +723,7 @@ def write_subsample(
     seed: int,
     source: str = DEFAULT_SOURCE,
     metrics: dict | None = None,
+    release: str | None = None,
 ) -> dict:
     """The asset the idle brain renders: a uniform sample, labelled as one.
 
@@ -733,6 +739,9 @@ def write_subsample(
     metrics = metrics or {}
     payload = {
         "atlas_version": version,
+        # Whose features these are: the viewer only lines a trace up against an
+        # atlas built from the same model.
+        "model": model_for_release(release) if release else None,
         # The source is in the asset, not only in the DB, because the view has
         # to state what "near" means and the two sources mean different things.
         "source": source,
@@ -786,11 +795,12 @@ def write_subsample(
 
 def rewrite_subsample(
     path: Path,
-    db_path: str,
+    db_path: str | None,
     atlas_version: str | None = None,
     source: str = DEFAULT_SOURCE,
     size: int = DEFAULT_SUBSAMPLE,
     seed: int = 0,
+    release: str | None = None,
 ) -> dict:
     """Re-emit the idle asset from an atlas already in the DB.
 
@@ -803,11 +813,12 @@ def rewrite_subsample(
     Same sample as the build would draw, because `subsample_indices` is seeded
     and the row order is the layout table's own.
     """
-    with LabelStore(db_path) as store:
-        record = store.atlas_record(atlas_version, source=None if atlas_version else source)
+    with LabelStore(db_path, release=release) as store:
+        record = store.atlas_record(atlas_version, source=None if atlas_version else source,
+                                    release=store.release)
         if record is None:
             raise SystemExit(
-                f"no atlas in {db_path}"
+                f"no atlas in {store.path}"
                 + (f" for version {atlas_version}" if atlas_version else f" from source {source}")
             )
         version = record.atlas_version
@@ -835,6 +846,7 @@ def rewrite_subsample(
         seed,
         source=str(record.params.get("source", source)),
         metrics=record.metrics,
+        release=record.release,
     )
 
 
@@ -911,7 +923,7 @@ def report(summary: dict, clusters: list[ClusterRow]) -> None:
         print("\n  dry run — nothing written")
 
 
-def parse_layers(spec: str, default_n: int = 26) -> list[int]:
+def parse_layers(spec: str, default_n: int) -> list[int]:
     """"0-25", "0,4,8", "20" -> a sorted list of distinct layers."""
     if not spec:
         return list(range(default_n))
@@ -932,14 +944,15 @@ def parse_layers(spec: str, default_n: int = 26) -> list[int]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--layers", default="", help='e.g. "0-25" or "0,4,8" (default: all 26)')
+    parser.add_argument("--model", help="whose SAE release (default: MECHLENS_MODEL or the built-in default)")
+    parser.add_argument("--layers", default="", help='e.g. "0-25" or "0,4,8" (default: all)')
     parser.add_argument(
         "--source",
         default=DEFAULT_SOURCE,
         choices=SOURCES,
         help="what to project: explanation embeddings (default) or SAE decoder directions",
     )
-    parser.add_argument("--width", default=DEFAULT_WIDTH)
+    parser.add_argument("--width", default=None, help="SAE width (default: the release's first)")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--pca-dim", type=int, default=DEFAULT_PCA_DIM)
     parser.add_argument("--n-neighbors", type=int, default=DEFAULT_N_NEIGHBORS)
@@ -956,7 +969,7 @@ def main() -> None:
     )
     parser.add_argument("--cross-sample", type=int, default=DEFAULT_CROSS_SAMPLE)
     parser.add_argument("--subsample", type=int, default=DEFAULT_SUBSAMPLE)
-    parser.add_argument("--db", default=str(DEFAULT_DB_PATH))
+    parser.add_argument("--db", default=None, help="default: the release's label DB in the data directory")
     parser.add_argument("--device", default=None)
     parser.add_argument(
         "--subsample-out",
@@ -972,6 +985,11 @@ def main() -> None:
         "--atlas-version", default="", help="with --asset-only: which atlas (default: latest)"
     )
     args = parser.parse_args()
+    profile = get_profile(args.model)
+    if profile.saes is None:
+        raise SystemExit(f"{profile.name} has no SAE release to build an atlas from")
+    release = profile.saes.release
+    args.width = profile.saes.check_width(args.width)
 
     if args.asset_only:
         info = rewrite_subsample(
@@ -981,6 +999,7 @@ def main() -> None:
             source=args.source,
             size=args.subsample,
             seed=args.seed,
+            release=release,
         )
         print(
             f"rewrote {info['path']} — {info['n_sampled']:,} nodes, "
@@ -988,9 +1007,9 @@ def main() -> None:
         )
         return
 
-    layers = parse_layers(args.layers)
+    layers = parse_layers(args.layers, profile.n_layers)
     note = (
-        f"the first run downloads ~{0.302 * len(layers):.1f}GB of SAEs"
+        f"the first run downloads {len(layers)} SAEs"
         if args.source == "decoder"
         else "reading explanation embeddings from the label DB"
     )
@@ -1018,6 +1037,7 @@ def main() -> None:
         device=args.device,
         subsample_out=None if args.dry_run else args.subsample_out,
         dry_run=args.dry_run,
+        release=release,
     )
 
 

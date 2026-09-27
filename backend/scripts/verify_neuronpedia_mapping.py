@@ -42,7 +42,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.model_cache import get_model  # noqa: E402
-from app.sae_cache import DEFAULT_WIDTH, get_sae, neuronpedia_id  # noqa: E402
+from app.sae_cache import get_sae, neuronpedia_id  # noqa: E402
 
 API = "https://www.neuronpedia.org/api/feature/{model}/{source_set}/{index}"
 TIMEOUT_S = 30
@@ -218,7 +218,7 @@ def main() -> None:
     p.add_argument("--layers", default="0,12,20", help="comma-separated (default: 0,12,20)")
     p.add_argument("-n", "--n-features", type=int, default=2, help="features per layer")
     p.add_argument("--features", help="explicit indices, e.g. '12082'; implies one layer")
-    p.add_argument("--width", default=DEFAULT_WIDTH)
+    p.add_argument("--width", default=None, help="SAE width (default: the release's first)")
     p.add_argument("--device", help="cuda / cpu (default: cuda when available)")
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()

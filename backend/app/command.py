@@ -15,14 +15,16 @@ def build_parser() -> argparse.ArgumentParser:
     serve = sub.add_parser("serve", help="start the inference API on this machine")
     serve.add_argument("--host", default="127.0.0.1", help="bind address (default: 127.0.0.1)")
     serve.add_argument("--port", type=int, default=8000)
+    serve.add_argument("--model", help="TransformerLens model to load, e.g. gpt2 or gemma-2-2b (or MECHLENS_MODEL)")
     serve.add_argument("--data-dir", type=Path, help="labels, training and circuits directory (or MECHLENS_DATA_DIR)")
     serve.add_argument("--token-file", type=Path, help="read bearer token from a file; alternatively set MECHLENS_API_TOKEN")
     serve.add_argument("--cloud", metavar="URL", help="pair this GPU with a Mechlens Cloud workspace; it dials out, so no tunnel or open port is needed")
     serve.add_argument("--tunnel-url", metavar="URL", help="with --cloud: have the cloud call this public HTTPS URL directly instead of relaying through the outbound connection")
     sub.add_parser("export-run", add_help=False, help="export a saved dictionary for Cloud import")
     sub.add_parser("push", add_help=False, help="pick a saved dictionary and send it to your Cloud workspace")
-    download = sub.add_parser("download", help="download gemma-2-2b and its Gemma Scope SAEs (nothing else downloads them)")
-    download.add_argument("--no-saes", action="store_true", help="only the model weights, not the ~8GB of SAEs")
+    download = sub.add_parser("download", help="download a model and its SAEs ahead of time")
+    download.add_argument("--model", help="which model (default: MECHLENS_MODEL or the built-in default)")
+    download.add_argument("--no-saes", action="store_true", help="only the model weights, not the SAEs")
     for command in ("trace", "enrich", "show", "experiment"):
         sub.add_parser(command, add_help=False, help=f"run the existing {command} CLI")
     return parser
@@ -40,7 +42,13 @@ def main(argv: list[str] | None = None) -> None:
         return
     if argv and argv[0] == "download":
         from .downloads import download
-        download(build_parser().parse_args(argv).no_saes)
+        from .profiles import get_profile
+        args = build_parser().parse_args(argv)
+        try:
+            get_profile(args.model)
+        except KeyError as exc:
+            raise SystemExit(exc.args[0]) from None
+        download(args.no_saes, args.model)
         return
     if argv and argv[0] in {"trace", "enrich", "show", "experiment"}:
         from .cli import build_parser as legacy_parser
@@ -51,6 +59,9 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     if not 1 <= args.port <= 65535:
         parser.error("--port must be between 1 and 65535")
+    if args.model:
+        # Read by model_cache and profiles in this process and the server's.
+        os.environ["MECHLENS_MODEL"] = args.model
     token = os.environ.get("MECHLENS_API_TOKEN", "")
     if args.token_file:
         try:
@@ -96,6 +107,11 @@ def main(argv: list[str] | None = None) -> None:
     os.environ["MECHLENS_DATA_DIR"] = str(data_dir)
     host = f"[{args.host}]" if ":" in args.host else args.host
     print(f"Mechlens inference API: http://{host}:{args.port}", flush=True)
+    from .profiles import default_model, find_profile
+    model_name = default_model()
+    profile = find_profile(model_name)
+    saes = profile.saes.release if profile and profile.saes else "none (features, labels and atlas are off)"
+    print(f"Model: {model_name} | SAEs: {saes}", flush=True)
     print(f"Data directory: {data_dir}", flush=True)
     print(f"Authentication: {'bearer token required' if token else 'local access without a token'}", flush=True)
     print("Model readiness: GET /health. Stop with Ctrl+C.", flush=True)

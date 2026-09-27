@@ -1,6 +1,7 @@
 """Bulk-load Neuronpedia's explanation export into the local label DB.
 
-    python scripts/import_neuronpedia.py                      # all 26 layers
+    python scripts/import_neuronpedia.py                      # every layer of the default model
+    python scripts/import_neuronpedia.py --model gemma-2-2b   # another model's release
     python scripts/import_neuronpedia.py --layers 0-5,20      # a subset
     python scripts/import_neuronpedia.py --embeddings         # +vectors (~2GB)
 
@@ -46,8 +47,9 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.labels import DEFAULT_DB_PATH, LabelRow, LabelStore, pick_explanation  # noqa: E402
-from app.sae_cache import DEFAULT_WIDTH, neuronpedia_id  # noqa: E402
+from app.labels import LabelRow, LabelStore, pick_explanation  # noqa: E402
+from app.profiles import ModelProfile, get_profile, get_release  # noqa: E402
+from app.sae_cache import neuronpedia_id  # noqa: E402
 
 BUCKET = "https://neuronpedia-datasets.s3.us-east-1.amazonaws.com"
 S3_NS = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
@@ -57,14 +59,12 @@ S3_NS = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
 WORKERS = 6
 TIMEOUT_S = 180
 
-N_LAYERS = 26  # gemma-2-2b
-WIDTHS = {"16k": 16384, "65k": 65536, "262k": 262144}
 
 
-def parse_layers(spec: str | None) -> list[int]:
+def parse_layers(spec: str | None, n_layers: int) -> list[int]:
     """"0-5,20" -> [0,1,2,3,4,5,20]; None means every layer."""
     if not spec:
-        return list(range(N_LAYERS))
+        return list(range(n_layers))
     out: list[int] = []
     for part in spec.split(","):
         if "-" in part:
@@ -72,7 +72,7 @@ def parse_layers(spec: str | None) -> list[int]:
             out.extend(range(int(lo), int(hi) + 1))
         else:
             out.append(int(part))
-    bad = [i for i in out if not 0 <= i < N_LAYERS]
+    bad = [i for i in out if not 0 <= i < n_layers]
     if bad:
         raise SystemExit(f"layers out of range: {bad}")
     return sorted(set(out))
@@ -183,7 +183,7 @@ def import_layer(
     width: str,
     keep_embeddings: bool,
 ) -> dict:
-    model_id, source_set = neuronpedia_id(layer, width)
+    model_id, source_set = neuronpedia_id(layer, width, store.release)
     t0 = time.time()
 
     keys = list_batches(session, model_id, source_set)
@@ -201,7 +201,7 @@ def import_layer(
     for row in rows:
         explainers[row.explainer or "?"] = explainers.get(row.explainer or "?", 0) + 1
 
-    d_sae = WIDTHS[width]
+    d_sae = get_release(store.release).widths[width]
     return {
         "layer": layer,
         "source_set": source_set,
@@ -215,9 +215,10 @@ def import_layer(
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--layers", help="subset, e.g. '0-5,20' (default: all 26)")
-    p.add_argument("--width", default=DEFAULT_WIDTH, choices=sorted(WIDTHS))
-    p.add_argument("--db", type=Path, default=DEFAULT_DB_PATH)
+    p.add_argument("--model", help="which model's SAE release (default: MECHLENS_MODEL or the built-in default)")
+    p.add_argument("--layers", help="subset, e.g. '0-5,20' (default: all)")
+    p.add_argument("--width", default=None, help="SAE width (default: the release's first)")
+    p.add_argument("--db", type=Path, default=None, help="default: the release's label DB in the data directory")
     p.add_argument(
         "--embeddings",
         action="store_true",
@@ -225,16 +226,20 @@ def main() -> None:
     )
     args = p.parse_args()
 
-    layers = parse_layers(args.layers)
-    print(f"importing {len(layers)} layers at {args.width} into {args.db}")
-    if args.embeddings:
-        print(f"  with embeddings — expect ~{76 * len(layers) / 1000:.1f}GB")
+    profile: ModelProfile = get_profile(args.model)
+    if profile.saes is None:
+        raise SystemExit(f"{profile.name} has no SAE release to import labels for")
+    layers = parse_layers(args.layers, profile.n_layers)
+    args.width = profile.saes.check_width(args.width)
 
     session = requests.Session()
     totals: dict[str, int] = {}
     t0 = time.time()
 
-    with LabelStore(args.db, width=args.width) as store:
+    with LabelStore(args.db, width=args.width, release=profile.saes.release) as store:
+        print(f"importing {len(layers)} {profile.name} layers at {args.width} into {store.path}")
+        if args.embeddings:
+            print(f"  with embeddings — expect ~{76 * len(layers) / 1000:.1f}GB")
         for layer in layers:
             result = import_layer(store, session, layer, args.width, args.embeddings)
             mix = ", ".join(f"{k} {v}" for k, v in sorted(result["explainers"].items()))

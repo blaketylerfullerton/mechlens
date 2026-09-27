@@ -1,6 +1,6 @@
 """Process-wide model cache.
 
-Loading gemma-2-2b takes ~10s (disk deserialize + TransformerLens weight
+Loading a model (gemma-2-2b: ~10s) takes (disk deserialize + TransformerLens weight
 processing) — the HF weights themselves are already cached under
 ~/.cache/huggingface, so nothing is re-downloaded. The only way to avoid
 paying that cost repeatedly is to keep one process alive and reuse the
@@ -20,12 +20,10 @@ from functools import lru_cache
 import torch
 from transformer_lens import HookedTransformer
 
-MODEL_NAME = "gemma-2-2b"  # BASE model. NOT -it: Gemma Scope SAEs are trained on base ("pt") activations.
-SUPPORTED_TRAINING_MODELS = {
-    "google/gemma-2-2b": "gemma-2-2b",
-    "openai-community/gpt2": "gpt2",
-    "roneneldan/TinyStories-1M": "tiny-stories-1M",
-}
+from .profiles import PROFILES, default_model, get_profile
+
+# Hugging Face repo -> the name TransformerLens loads it by.
+SUPPORTED_TRAINING_MODELS = {p.repository: p.load_name for p in PROFILES.values()}
 
 
 def pick_device() -> tuple[str, torch.dtype]:
@@ -41,10 +39,16 @@ def get_model(model_name: str | None = None) -> HookedTransformer:
 
     The default is resolved here rather than in the cached function's
     signature: lru_cache keys on the arguments actually passed, so
-    get_model() and get_model("gemma-2-2b") would otherwise be two distinct
-    keys and load the model twice.
+    get_model() and get_model("gpt2") would otherwise be two distinct keys and
+    load the model twice. Any name a profile knows (alias, repository) resolves
+    to the one TransformerLens loads.
     """
-    return _load(model_name or MODEL_NAME)
+    name = model_name or default_model()
+    try:
+        name = get_profile(name).load_name
+    except KeyError:
+        pass  # not in the registry: TransformerLens may still know it
+    return _load(name)
 
 
 @lru_cache(maxsize=1)

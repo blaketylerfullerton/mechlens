@@ -8,9 +8,14 @@ from app.labels import LabelRow, LabelStore
 from app.passes import apply
 from app.passes.labels import LabelsPass, _features_by_layer
 from app.schema import Feature, PassRecord, label_key
-from app.sae_cache import RELEASE
+from app.profiles import GEMMA_SCOPE
+
+RELEASE = GEMMA_SCOPE.release
 
 from factories import make_result
+
+# Written against Gemma Scope data; see conftest.gemma_default.
+pytestmark = pytest.mark.usefixtures("gemma_default")
 
 SOURCE_SET = "{}-gemmascope-res-16k"
 

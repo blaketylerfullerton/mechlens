@@ -183,17 +183,17 @@ def test_no_layers_is_an_error_not_an_empty_atlas(build_module):
 
 
 def test_parse_layers_accepts_ranges_lists_and_singles(build_module):
-    assert build_module.parse_layers("0-3") == [0, 1, 2, 3]
-    assert build_module.parse_layers("0,4,8") == [0, 4, 8]
-    assert build_module.parse_layers("20") == [20]
-    assert build_module.parse_layers("2-4,0") == [0, 2, 3, 4]
-    assert build_module.parse_layers("") == list(range(26))
-    assert build_module.parse_layers("1,1,1") == [1]
+    assert build_module.parse_layers("0-3", 26) == [0, 1, 2, 3]
+    assert build_module.parse_layers("0,4,8", 26) == [0, 4, 8]
+    assert build_module.parse_layers("20", 26) == [20]
+    assert build_module.parse_layers("2-4,0", 26) == [0, 2, 3, 4]
+    assert build_module.parse_layers("", 26) == list(range(26))
+    assert build_module.parse_layers("1,1,1", 26) == [1]
 
 
 def test_parse_layers_rejects_nonsense(build_module):
     with pytest.raises(ValueError):
-        build_module.parse_layers(",,")
+        build_module.parse_layers(",,", 26)
 
 
 # --------------------------------------------------------------------------

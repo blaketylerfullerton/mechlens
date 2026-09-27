@@ -25,7 +25,12 @@ from importlib.metadata import version
 
 import torch
 
-from ..model_cache import MODEL_NAME, pick_device
+from ..model_cache import pick_device
+
+# The one model circuit-tracer has transcoders for here. Deliberately not the
+# service's default model: circuits stay gemma-only until other models get
+# transcoder sets of their own.
+MODEL_NAME = "gemma-2-2b"
 
 # The per-layer GemmaScope transcoders. Not the residual-stream SAEs in
 # sae_cache: a transcoder approximates an MLP block and defines its own feature

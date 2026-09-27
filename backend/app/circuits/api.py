@@ -14,10 +14,9 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from ..model_cache import MODEL_NAME
 from ..service import jobs
 from ..service.scheduling import serialized
-from .adapter import MAX_PREFIX_TOKENS
+from .adapter import MAX_PREFIX_TOKENS, MODEL_NAME
 from .schema import (
     Analysis,
     AnalysisSettings,

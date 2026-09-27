@@ -19,11 +19,11 @@ from typing import Callable
 import torch
 
 from ..capture import Intervention
-from ..sae_cache import DEFAULT_WIDTH, get_sae
+from ..sae_cache import get_sae
 
 
 def feature_direction(
-    layer: int, feature_idx: int, width: str = DEFAULT_WIDTH, sae: object | None = None
+    layer: int, feature_idx: int, width: str | None = None, sae: object | None = None
 ) -> torch.Tensor:
     """The decoder direction for one SAE feature, in residual space.
 
@@ -52,7 +52,7 @@ def build_intervention(
     layer: int,
     feature_idx: int,
     coefficient: float,
-    width: str = DEFAULT_WIDTH,
+    width: str | None = None,
     sae: object | None = None,
 ) -> Intervention:
     """`(layer, hook_fn)` for `generate_trace(..., intervention=...)`."""

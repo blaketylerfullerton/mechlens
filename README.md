@@ -74,7 +74,8 @@ saying how much to trust what you are looking at.
 ```bash
 python -m venv venv && source venv/bin/activate
 pip install -r backend/requirements.txt
-huggingface-cli login   # gemma is gated: accept the license at hf.co/google/gemma-2-2b
+# Only for gemma-2-2b, which is gated: accept the license at hf.co/google/gemma-2-2b first.
+# huggingface-cli login
 npm --prefix ../mechlens-cloud/frontend ci
 ```
 
@@ -86,19 +87,85 @@ From the repository root, in your Python environment:
 
 ```bash
 pip install -e .
-mechlens download   # once per machine: gemma-2-2b (~5GB) + Gemma Scope SAEs (~8GB)
+mechlens download   # optional, once per machine: gpt2 + its 12 SAEs (~1GB)
 mechlens serve
 ```
+
+### Choosing a model
+
+The default is `gpt2` (gpt2-small): ungated, small, with public SAEs
+(`gpt2-small-res-jb`). Pick another with `--model` or `MECHLENS_MODEL`:
+
+```bash
+mechlens serve --model gemma-2-2b      # gated; ~5GB model + ~8GB Gemma Scope SAEs
+MECHLENS_MODEL=gemma-2-2b mechlens download
+```
+
+Every model-specific fact lives in one table, `backend/app/profiles.py`: the
+TransformerLens name, the Hugging Face repo, and which SAELens release reads
+its residual stream. Adding a model is one entry there. Only TransformerLens
+models with SAELens releases are in scope. A model with no release still
+traces, runs the logit lens and trains its own SAEs; features, labels and the
+atlas report themselves unavailable. Circuits stay gemma-2-2b only: they need
+transcoders, which no other model has here yet.
+
+Labels and the atlas live in one SQLite file per SAE release in the data
+directory (`neuronpedia.db` for Gemma Scope, `labels-gpt2-small-res-jb.db` for
+gpt2). Fill one with `python backend/scripts/import_neuronpedia.py --model <name>`;
+until then `/health` reports `labels_available: false` and the viewer leaves
+labels out.
+
+### What went wrong with gpt2, and how it was fixed
+
+Two problems only showed up when gpt2 was run for real, not in the tests with
+fake SAEs. Both are handled now, but they apply to any model you add.
+
+1. **Some layers gave garbage.** On the first run, layer 5's SAE explained only
+   22% of the activations and layer 10's explained less than nothing (−54),
+   while layers 0 and 11 looked fine. The gpt2 SAEs were trained on a model
+   loaded with `center_writing_weights=True`, which subtracts each residual
+   vector's average value. Mechlens loads models unprocessed, so later layers
+   carry an offset those SAEs never saw. The SAE pass now subtracts that
+   average before encoding, but only for SAEs whose metadata asks for it
+   (`sae_cache.expects_centered`). The fix is exact and does not change the
+   model's output. Every layer now explains 0.95–0.99.
+2. **Layer numbers are off by one.** gpt2's SAEs are trained on
+   `hook_resid_pre`, while mechlens records `hook_resid_post`. Those are the
+   same numbers one block apart, so mechlens layer L uses the SAE SAELens calls
+   L+1, and Neuronpedia's `1-res-jb` is mechlens layer 0. On real data the L+1
+   SAE explains more than the same-numbered one (0.95 vs 0.89), which confirms
+   the mapping.
+
+**When you add a model:** check the SAE pass's explained variance on a real
+prompt for a few layers. Anything below ~0.85 means the SAE and the
+activations don't match.
+
+### What's left to add
+
+- **gpt2 labels.** Traces work, but features show as numbers until you run
+  `python backend/scripts/import_neuronpedia.py --model gpt2`.
+- **A gpt2 atlas.** The bundled atlas (`atlas-idle.json`) is Gemma only, so gpt2
+  traces use the layer grid. Build one with
+  `python backend/scripts/build_feature_atlas.py --model gpt2`.
+- **Downloadable label DBs.** Publish each release's label DB (Hugging Face Hub or
+  a release asset) and have `mechlens download` and `serve` fetch it, so labels
+  don't require running the import script.
+- **Downloading inside `serve`.** Pair with the cloud first, then fetch anything
+  missing, with progress shown on the Compute page.
+- **Circuits for other models.** Still gemma-2-2b only; circuits need transcoders,
+  which no other model here has yet.
+- **More models.** Adding one is an entry in `profiles.py` plus the
+  explained-variance check above.
 
 ### Downloads
 
 Mechlens downloads model weights, SAEs, and datasets from Hugging Face the
 first time something needs them, and caches them in `~/.cache/huggingface`.
 
-- `mechlens download` fetches gemma-2-2b and the 26 Gemma Scope SAEs ahead of
-  time, so the first `mechlens serve` doesn't sit on a multi-GB fetch.
-  `--no-saes` fetches only the model. Accept the license at
-  hf.co/google/gemma-2-2b and run `huggingface-cli login` first.
+- `mechlens download` fetches the model and one SAE per layer ahead of time, so
+  the first `mechlens serve` doesn't sit on a multi-GB fetch. `--no-saes`
+  fetches only the model; `--model` picks which. For gemma-2-2b, accept the
+  license at hf.co/google/gemma-2-2b and run `huggingface-cli login` first.
 
 For an existing environment that already has `backend/requirements.txt` installed, use `pip install --no-deps -e .` to register the command without resolving dependencies again. A fresh install uses the existing backend requirements, including the pinned Git dependency for circuit tracing; it requires Git and can download substantial model-runtime dependencies. This package is not published to PyPI yet.
 
