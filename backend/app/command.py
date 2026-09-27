@@ -19,7 +19,6 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--data-dir", type=Path, help="labels, training and circuits directory (or MECHLENS_DATA_DIR)")
     serve.add_argument("--token-file", type=Path, help="read bearer token from a file; alternatively set MECHLENS_API_TOKEN")
     serve.add_argument("--cloud", metavar="URL", help="pair this GPU with a Mechlens Cloud workspace; it dials out, so no tunnel or open port is needed")
-    serve.add_argument("--tunnel-url", metavar="URL", help="with --cloud: have the cloud call this public HTTPS URL directly instead of relaying through the outbound connection")
     sub.add_parser("export-run", add_help=False, help="export a saved dictionary for Cloud import")
     sub.add_parser("push", add_help=False, help="pick a saved dictionary and send it to your Cloud workspace")
     download = sub.add_parser("download", help="download a model and its SAEs ahead of time")
@@ -72,24 +71,17 @@ def main(argv: list[str] | None = None) -> None:
             parser.error("token file is empty")
     if token and (not token.isascii() or any(c.isspace() for c in token)):
         parser.error("API token must contain ASCII characters without whitespace")
-    cloud_url = tunnel_url = None
-    if args.tunnel_url and not args.cloud:
-        parser.error("--tunnel-url requires --cloud")
+    cloud_url = None
     if args.cloud:
         from .cloud_link import normalize_cloud_url
         try:
             cloud_url = normalize_cloud_url(args.cloud)
         except ValueError as exc:
             parser.error(str(exc))
-        if args.tunnel_url:
-            try:
-                tunnel_url = normalize_cloud_url(args.tunnel_url)
-            except ValueError:
-                parser.error("--tunnel-url must be an HTTP(S) URL")
-        if args.host not in {"127.0.0.1", "::1", "localhost"} and not args.tunnel_url:
+        if args.host not in {"127.0.0.1", "::1", "localhost"}:
             parser.error("--cloud relays requests to this API over loopback; leave --host on loopback")
-        # The tunnel makes this API reachable from the internet, so a token is
-        # mandatory. One is generated per run unless the operator supplied one.
+        # The relay lets the cloud reach this API from the internet, so a token
+        # is mandatory. One is generated per run unless the operator supplied one.
         token = token or secrets.token_urlsafe(32)
     if args.host not in {"127.0.0.1", "::1", "localhost"} and not token:
         parser.error("non-loopback binding requires --token-file or MECHLENS_API_TOKEN")
@@ -120,7 +112,7 @@ def main(argv: list[str] | None = None) -> None:
     if cloud_url:
         from .cloud_link import CloudError, CloudLink
         training_dir = Path(os.environ.get("MECHLENS_TRAINING_DIR", data_dir / "training"))
-        link = CloudLink(cloud_url, args.port, token, tunnel_url, host=args.host, training_dir=training_dir)
+        link = CloudLink(cloud_url, args.port, token, host=args.host, training_dir=training_dir)
         try:
             link.start()
         except CloudError as exc:

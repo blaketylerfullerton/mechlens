@@ -3,14 +3,12 @@
 The GPU never accepts a connection from the internet. It long-polls the cloud
 ("any requests for me?"), runs each request against this process's own API on
 loopback, and posts the answer back. Outbound HTTPS is all it needs, so it
-works on boxes where tunnels are blocked or get the machine killed (managed
-JupyterHub, strict neoclouds, corporate networks). HTTPS_PROXY is honored.
+works on boxes where inbound ports are closed and tunnels are blocked or get
+the machine killed (managed JupyterHub, strict neoclouds, corporate networks).
+HTTPS_PROXY is honored.
 
 Ownership is proved by the activation code: the cloud issues one, this process
 prints it, and whoever is signed in to the workspace types it into the web UI.
-
-`--tunnel-url` is the escape hatch for people who already have a public URL
-for this API: the cloud then calls that URL directly and the relay is not used.
 """
 from __future__ import annotations
 
@@ -62,12 +60,11 @@ def normalize_cloud_url(value: str) -> str:
 class CloudLink:
     """Owns the pairing handshake, the relay workers and the status reports."""
 
-    def __init__(self, cloud_url: str, port: int, gpu_token: str, tunnel_url: str | None = None,
+    def __init__(self, cloud_url: str, port: int, gpu_token: str,
                  host: str = "127.0.0.1", training_dir: Path | None = None):
         self.cloud_url = cloud_url
         self.training_dir = training_dir
         self.gpu_token = gpu_token
-        self.tunnel_url = tunnel_url
         self.local_url = f"http://{f'[{host}]' if ':' in host else host}:{port}"
         self.session_token: str | None = None
         self.code: str | None = None
@@ -99,19 +96,14 @@ class CloudLink:
         try:
             workspace = self._await_activation()
             print(f'Code accepted. Linked to workspace "{workspace}".', flush=True)
-            registration = {"gpu_token": self.gpu_token}
-            if self.tunnel_url:
-                registration["tunnel_url"] = self.tunnel_url
-            self._call("/api/gpu/register", registration, self.session_token)
+            self._call("/api/gpu/register", {"gpu_token": self.gpu_token}, self.session_token)
         except CloudError as exc:
             print(f"Cloud pairing failed: {exc}", flush=True)
             return
-        if self.tunnel_url:
-            print(f"Connected. The cloud reaches this GPU at {self.tunnel_url}.", flush=True)
-        else:
-            for n in range(RELAY_WORKERS):
-                threading.Thread(target=self._relay_worker, name=f"cloud-relay-{n}", daemon=True).start()
-            print("Connected to the cloud. No tunnel needed; this GPU dials out.", flush=True)
+        for n in range(RELAY_WORKERS):
+            threading.Thread(target=self._relay_worker, name=f"cloud-relay-{n}", daemon=True).start()
+        print("Connected to the cloud. This GPU dials out; no open port is needed.", flush=True)
+        print(f"Your workspace: {self.cloud_url}/app", flush=True)
         print("Keep this process running while you use your workspace.", flush=True)
         self._share_session()
         self._report_status()
@@ -198,15 +190,12 @@ class CloudLink:
                 print(STATUS_LINES[state].format(detail=detail), flush=True)
                 last = (state, detail)
             try:
+                # Connectivity is tracked by the relay workers, not here.
                 self._call("/api/gpu/heartbeat", {"state": state, "detail": detail}, self.session_token)
-                if self.tunnel_url:
-                    self._online()  # with the relay, the workers track this
             except CloudError as exc:
                 if exc.status == 401:
                     self._unpaired()
                     return
-                if self.tunnel_url:
-                    self._went_offline(exc)
             if self._stop.wait(STATUS_SECONDS):
                 return
 
