@@ -84,7 +84,11 @@ def create_app(
     from ..training.store import RunStore
     from ..circuits.api import router as circuits_router
     from ..circuits.store import AnalysisStore
+    from ..dictionary_atlas.api import router as atlas_build_router
+    from ..dictionary_atlas.runner import AtlasBuildRunner
+    from ..dictionary_atlas.store import AtlasBuildStore
     training_store = RunStore(training_dir or default_root())
+    atlas_builds = AtlasBuildStore(training_store.root)
     circuits_store = AnalysisStore(circuits_dir)
     sae_provider = sae_provider or (lambda layer: get_sae(layer))
 
@@ -124,6 +128,7 @@ def create_app(
         # process died is unreachable and is marked interrupted rather than
         # left claiming to be running.
         circuits_store.recover()
+        atlas_builds.recover()
         jobs.start_worker()
         if state["model"] is None:  # a test that injected one needs no warm-up
             threading.Thread(target=load_model, name="model-warmup", daemon=True).start()
@@ -169,6 +174,7 @@ def create_app(
 
     app.include_router(training_router(get_model, _forward_lock, training_store, prepare_training_model))
     app.include_router(circuits_router(circuits_store, _forward_lock))
+    app.include_router(atlas_build_router(training_store, atlas_builds, AtlasBuildRunner(atlas_builds)))
 
     # Dev-only: lets the Vite frontend call this API directly from the browser
     # instead of going through a same-origin proxy. A regex rather than a fixed

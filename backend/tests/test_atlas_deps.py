@@ -1,7 +1,9 @@
 """The atlas's build-time dependencies stay build-time.
 
 The atlas is a precomputed table, so serving it needs no projection library at
-all: `scripts/build_feature_atlas.py` imports umap-learn and nothing else does.
+all: umap-learn is imported only inside `app.atlas_projection`'s functions,
+which the build script and local-dictionary builds (run in a child process)
+call.
 `umap-learn` is the expensive one — it pulls numba and llvmlite, which is a
 JIT toolchain the service has no use for.
 
@@ -70,8 +72,16 @@ def test_the_label_store_does_not_import_a_projection_library():
         assert module not in loaded, f"app.labels pulled in {module}"
 
 
-def test_the_build_script_is_the_one_thing_that_needs_umap():
+def test_the_projection_module_is_the_one_thing_that_needs_umap():
     """The complement of the checks above: if this fails, the dependency was
     dropped rather than confined."""
-    source = (BACKEND / "scripts" / "build_feature_atlas.py").read_text()
-    assert "umap" in source
+    source = (BACKEND / "app" / "atlas_projection.py").read_text()
+    assert "import umap" in source
+
+
+def test_importing_the_projection_module_does_not_load_umap():
+    """Imported lazily, so the dictionary-atlas routes can live in the service."""
+    for target in ("app.atlas_projection", "app.dictionary_atlas.api"):
+        loaded = _modules_after_importing(target)
+        for module in BUILD_ONLY:
+            assert module not in loaded, f"{target} pulled in {module}"
