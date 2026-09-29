@@ -21,6 +21,7 @@ from .auto_interp import generate, load_profiles
 from .examples import collect_feature_examples, save_feature_examples
 from .runner import Cancelled, TrainingConfig, load_artifact, train
 from .store import RunStore, TERMINAL
+from .snapshots import snapshot_info, snapshot_path, prepare_snapshot
 
 
 class BatchRequest(BaseModel):
@@ -86,7 +87,7 @@ def router(get_model, compute_lock, store: RunStore, prepare_model=None):
         return dict(model=model_name, model_repository=next((repo for repo, name in SUPPORTED_TRAINING_MODELS.items()
                     if name == model_name), None) if readiness == "ready" else None,
                     layers=layers, d_in=dimension, device=device,
-                    supported_models=list(SUPPORTED_TRAINING_MODELS), multi_layer=True, storage_management=True, model_downloads=True,
+                    supported_models=list(SUPPORTED_TRAINING_MODELS), multi_layer=True, storage_management=True, model_downloads=True, cloud_snapshots=True,
                     readiness=readiness, architecture="standard", datasets=["tiny-stories", "text"],
                     resume_supported=True, compute_policy="One training or inference job at a time",
                     estimate_note="Runtime and memory presets are unbenchmarked on this host.")
@@ -248,6 +249,43 @@ def router(get_model, compute_lock, store: RunStore, prepare_model=None):
     @api.get("/runs/{run_id}")
     def read_run(run_id: str):
         return summary(get_run(run_id))
+
+    @api.get("/runs/{run_id}/snapshot")
+    @serialized
+    def read_snapshot(run_id: str):
+        get_run(run_id)
+        if compute_busy(run_id):
+            raise HTTPException(409, "Wait for this dictionary's active operations to finish before saving")
+        try:
+            return snapshot_info(store, run_id)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+
+    @api.get("/runs/{run_id}/exports/{key}")
+    @serialized
+    def export_snapshot(run_id: str, key: str):
+        # The submission lock prevents resume/delete/new evidence jobs during
+        # snapshot creation; existing jobs are excluded. Transfer uses the copy
+        # and does not hold the lock or occupy the GPU compute queue.
+        try:
+            path = snapshot_path(store, run_id, key)
+            if not path.is_file():
+                get_run(run_id)
+                if compute_busy(run_id):
+                    raise HTTPException(409, "Wait for this dictionary's active operations to finish before saving")
+                path = prepare_snapshot(store, run_id, key)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+        return FileResponse(path, media_type="application/zip", filename="dictionary.zip")
+
+    @api.delete("/runs/{run_id}/exports/{key}")
+    @serialized
+    def remove_snapshot(run_id: str, key: str):
+        try:
+            snapshot_path(store, run_id, key).unlink(missing_ok=True)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        return {"ok": True}
 
     @api.get("/runs/{run_id}/report")
     def validation_report(run_id: str):
