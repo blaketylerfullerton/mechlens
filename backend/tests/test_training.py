@@ -1,6 +1,6 @@
 """Offline integration tests run actual SAELens optimization against a tiny transformer."""
 import threading
-from types import MethodType
+from types import MethodType, SimpleNamespace
 
 import pytest
 import torch
@@ -82,6 +82,7 @@ def test_feature_examples_are_bounded_and_checkpoint_scoped(tmp_path, model, con
     run = store.create(config.model_dump())
     train(store, run["id"], model)
     sae, manifest = load_artifact(store, run["id"], model)
+    model.tokenizer = SimpleNamespace(padding_side="right", decode=lambda ids, **kw: " ".join(map(str, ids)))
     report = collect_feature_examples(model, sae, manifest, config, [0, 1],
         max_examples=2, max_sequences=3)
     assert report["artifact_id"] == manifest["artifact_id"]

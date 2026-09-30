@@ -639,3 +639,22 @@ another store; the existing data-directory environment variables are honored.
 Only stopped runs with saved checkpoints can be exported. Cloud preserves the
 snapshot independently of GPU pairing; executing/resuming an imported dictionary
 from Cloud is a separate feature.
+
+### Token-aligned feature evidence
+
+New feature-example scans save schema-v2 evidence: a window of up to 32 tokens
+on either side of the peak, token IDs, individually decoded pieces, per-token
+activations, and the peak index. Windows stay within the chunk actually passed
+to the model. Individual token pieces can show replacement characters when a
+Unicode character spans tokens; the IDs remain authoritative and `context`
+contains the jointly decoded window.
+
+Training and saved-dictionary viewers color these tokens and outline the peak.
+A separator marks following text, which the model had not seen at the peak.
+Auto-interp uses the same aligned evidence and explicitly separates following
+text from the preceding context. These remain unverified candidate explanations.
+
+Existing examples and labels are preserved. Choose **Scan for examples again**
+to collect token evidence, then generate a new candidate label. Use **Save updated
+snapshot** to carry the new evidence into the Cloud library. No SAE retraining
+or database migration is needed; update both the GPU backend and Cloud app.
